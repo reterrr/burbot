@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from enum import Enum
 
-
 class Wojewodztwo(Enum):
     DOLNOSLASKIE = "dolnośląskie"
     KUJAWSKO_POMORSKIE = "kujawsko-pomorskie"
@@ -5264,7 +5263,7 @@ class Gmina(Enum):
         return obj
 
     @property
-    def teryt(self) -> str:
+    def teryt(self) -> tuple[str, str, GminaType, str, str, str]:
         return self.value
 
     @property
