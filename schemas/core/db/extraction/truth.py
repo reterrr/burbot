@@ -18,6 +18,21 @@ from ..mixins import SoftDeleteMixin, pg_enum
 
 
 class GroundTruth(SoftDeleteMixin, table=True):
+    """Store a human- or system-confirmed label for later validation.
+
+    :ivar id: Database primary key.
+    :ivar source_id: Identifier of the related source.
+    :ivar target_field_id: Identifier of the related target field.
+    :ivar project_id: Identifier of the related project.
+    :ivar operator_id: Identifier of the related operator.
+    :ivar recruitment_id: Identifier of the related recruitment.
+    :ivar element_id: Identifier of the related element.
+    :ivar concrete_value_id: Identifier of the related concrete value.
+    :ivar value: Value.
+    :ivar confirmed_by: Confirmed by.
+    :ivar confirmed_at: Timestamp for confirmed.
+    :ivar notes: Optional notes supplied by an operator or importer.
+    """
     __tablename__ = "ground_truth"
     __table_args__ = (
         CheckConstraint(

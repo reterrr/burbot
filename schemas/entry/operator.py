@@ -1,3 +1,5 @@
+"""Input schema and validation for BUR operators."""
+
 # schemas/entry/operator.py
 
 import re
@@ -7,6 +9,15 @@ from pydantic import AnyHttpUrl, field_validator
 from common import BurInputModel, ExternalRef
 
 class BurOperatorIn(BurInputModel):
+    """Validate an operator supplied by a BUR import.
+
+    :ivar operator_ref: Stable external reference to the operator.
+    :ivar name: Human-readable name.
+    :ivar nip: Normalized ten-digit Polish tax identifier.
+    :ivar website_url: Optional public website URL.
+    :ivar active: Active.
+    :ivar notes: Optional notes supplied by an operator or importer.
+    """
     operator_ref: ExternalRef
 
     name: str
@@ -19,6 +30,12 @@ class BurOperatorIn(BurInputModel):
     @field_validator("nip", mode="before")
     @classmethod
     def normalize_and_validate_nip(cls, value: object) -> str:
+        """Normalize a Polish NIP and validate its checksum.
+
+        :param value: Raw value to normalize and validate.
+        :raises ValueError: If the supplied data violates schema constraints.
+        :return: Normalized ten-digit NIP.
+        """
         if value is None:
             raise ValueError("NIP jest wymagany")
 

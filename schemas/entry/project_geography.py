@@ -1,3 +1,5 @@
+"""Input schemas for assigning geographic units to BUR projects."""
+
 # schemas/entry/project_geography.py
 
 from enum import StrEnum
@@ -14,11 +16,24 @@ from geography.general import (
 
 
 class GeographyAssignmentMode(StrEnum):
+    """Enumerate the supported geography assignment mode values."""
     INCLUDE = "include"
     EXCLUDE = "exclude"
 
 
 class BurProjectGeographyIn(BurInputModel):
+    """Validate one geographic assignment for a BUR project.
+
+    :ivar geography_ref: Stable external reference to the geography.
+    :ivar project_ref: Stable external reference to the project.
+    :ivar mode: Mode.
+    :ivar wojewodztwo: Wojewodztwo.
+    :ivar podregion: Podregion.
+    :ivar powiat: Powiat.
+    :ivar gmina: Gmina.
+    :ivar evidence_url: URL providing evidence information.
+    :ivar notes: Optional notes supplied by an operator or importer.
+    """
     geography_ref: ExternalRef
     project_ref: ExternalRef
 
@@ -36,6 +51,11 @@ class BurProjectGeographyIn(BurInputModel):
     def validate_exactly_one_unit(
             self,
     ) -> "BurProjectGeographyIn":
+        """Validate that exactly one geographic unit is selected.
+
+        :raises ValueError: If the supplied data violates schema constraints.
+        :return: Validated model instance.
+        """
         selected_units = [
             self.wojewodztwo,
             self.podregion,

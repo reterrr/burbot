@@ -1,3 +1,5 @@
+"""Shared Pydantic types and configuration for BUR import schemas."""
+
 # schemas/entry/clear.py
 
 from typing import Annotated
@@ -15,18 +17,7 @@ ExternalRef = Annotated[
 
 
 class BurInputModel(BaseModel):
-    """
-    Bazowy model wszystkich danych wejściowych.
-
-    extra="forbid":
-        literówka w nazwie kolumny nie zostanie cicho zignorowana.
-
-    frozen=True:
-        dane po walidacji są niezmienne.
-
-    str_strip_whitespace=True:
-        usuwa przypadkowe spacje z Excela.
-    """
+    """Provide strict, immutable configuration shared by all BUR input schemas."""
 
     model_config = ConfigDict(
         extra="forbid",

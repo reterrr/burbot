@@ -1,9 +1,12 @@
+"""Expected information categories used by source import schemas."""
+
 # enums/expected_information.py
 
 from enum import StrEnum
 
 
 class ExpectedInformationType(StrEnum):
+    """Enumerate the supported expected information type values."""
     NEW_CALL = "new_call"
     CALL_OPENED = "call_opened"
     CALL_CLOSED = "call_closed"

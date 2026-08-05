@@ -13,7 +13,10 @@ from . import base as _base  # noqa: F401  # configure metadata before tables
 
 
 def utc_now() -> datetime:
-    """Return an aware UTC timestamp for application-side defaults."""
+    """Return the current timezone-aware UTC timestamp.
+
+    :return: Current timezone-aware UTC timestamp.
+    """
 
     return datetime.now(UTC)
 
@@ -22,9 +25,19 @@ def pg_enum[EnumT: Enum](
     enum_class: type[EnumT],
     name: str,
 ) -> TypeEngine[Any]:
-    """Create a named native PostgreSQL enum with stable stored values."""
+    """Build a named native PostgreSQL enum that stores member values.
+
+    :param enum_class: Enum class represented by the database type.
+    :param name: Human-readable or database type name, depending on context.
+    :return: Configured SQLAlchemy PostgreSQL enum type.
+    """
 
     def values(members: type[EnumT]) -> list[str]:
+        """Convert enum members to their stable database values.
+
+        :param members: Enum class whose member values should be returned.
+        :return: String values persisted for the enum members.
+        """
         return [str(member.value) for member in members]
 
     return SAEnum(
@@ -37,7 +50,10 @@ def pg_enum[EnumT: Enum](
 
 
 class CreatedAtMixin(SQLModel):
-    """For append-only and current-state rows."""
+    """Provide reusable created at fields.
+
+    :ivar created_at: Timestamp at which the record was created.
+    """
 
     created_at: datetime = Field(
         default_factory=utc_now,
@@ -50,7 +66,10 @@ class CreatedAtMixin(SQLModel):
 
 
 class UpdatedAtMixin(CreatedAtMixin):
-    """For editable/current-state rows."""
+    """Provide reusable updated at fields.
+
+    :ivar updated_at: Timestamp at which the record was last updated.
+    """
 
     updated_at: datetime = Field(
         default_factory=utc_now,
@@ -64,7 +83,10 @@ class UpdatedAtMixin(CreatedAtMixin):
 
 
 class SoftDeleteMixin(UpdatedAtMixin):
-    """For recoverable deletion of master/configuration rows only."""
+    """Provide reusable soft delete fields.
+
+    :ivar deleted_at: Timestamp of soft deletion, or ``None`` while active.
+    """
 
     deleted_at: datetime | None = Field(
         default=None,

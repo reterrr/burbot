@@ -17,6 +17,12 @@ from ..mixins import SoftDeleteMixin, pg_enum
 
 
 class Phrase(SoftDeleteMixin, table=True):
+    """Represent a normalized phrase used by semantic extraction.
+
+    :ivar id: Database primary key.
+    :ivar phrase: Phrase.
+    :ivar normalized_phrase: Normalized phrase.
+    """
     __tablename__ = "phrases"
 
     id: int | None = Field(default=None, primary_key=True)
@@ -28,6 +34,12 @@ class Phrase(SoftDeleteMixin, table=True):
 
 
 class SemanticClass(SoftDeleteMixin, table=True):
+    """Define a reusable semantic category for phrases.
+
+    :ivar id: Database primary key.
+    :ivar name: Human-readable name.
+    :ivar description: Human-readable description.
+    """
     __tablename__ = "semantic_classes"
 
     id: int | None = Field(default=None, primary_key=True)
@@ -39,6 +51,14 @@ class SemanticClass(SoftDeleteMixin, table=True):
 
 
 class PhraseClassification(SoftDeleteMixin, table=True):
+    """Associate a phrase with a semantic class.
+
+    :ivar id: Database primary key.
+    :ivar phrase_id: Identifier of the related phrase.
+    :ivar semantic_class_id: Identifier of the related semantic class.
+    :ivar confidence: Confidence score between zero and one.
+    :ivar discovered_by: Discovered by.
+    """
     __tablename__ = "phrase_classifications"
     __table_args__ = (
         UniqueConstraint(

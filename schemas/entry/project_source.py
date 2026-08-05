@@ -1,3 +1,5 @@
+"""Input schema linking BUR projects to monitored sources."""
+
 # schemas/entry/project_source.py
 
 from pydantic import Field
@@ -8,6 +10,19 @@ from common import BurInputModel, ExternalRef
 
 
 class BurProjectSourceIn(BurInputModel):
+    """Validate an association between a BUR project and source.
+
+    :ivar project_source_ref: Stable external reference to the project source.
+    :ivar project_ref: Stable external reference to the project.
+    :ivar source_ref: Stable external reference to the source.
+    :ivar source_type: Source type.
+    :ivar mapping_status: Mapping status.
+    :ivar monitoring_enabled: Whether monitoring enabled.
+    :ivar requires_manual_review: Requires manual review.
+    :ivar priority: Priority.
+    :ivar check_interval_minutes: Check interval minutes.
+    :ivar notes: Optional notes supplied by an operator or importer.
+    """
     project_source_ref: ExternalRef
 
     project_ref: ExternalRef

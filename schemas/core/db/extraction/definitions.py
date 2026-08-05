@@ -18,6 +18,14 @@ from ..mixins import SoftDeleteMixin, pg_enum
 
 
 class TokenClass(SoftDeleteMixin, table=True):
+    """Define a reusable class of normalized literal tokens.
+
+    :ivar id: Database primary key.
+    :ivar name: Human-readable name.
+    :ivar validation_regex: Validation regex.
+    :ivar parser_name: Parser name.
+    :ivar description: Human-readable description.
+    """
     __tablename__ = "token_classes"
 
     id: int | None = Field(default=None, primary_key=True)
@@ -37,6 +45,16 @@ class TokenClass(SoftDeleteMixin, table=True):
 
 
 class TargetField(SoftDeleteMixin, table=True):
+    """Define a business field that an extraction may populate.
+
+    :ivar id: Database primary key.
+    :ivar entity_type: Entity type.
+    :ivar name: Human-readable name.
+    :ivar expected_type_id: Identifier of the related expected type.
+    :ivar validation_regex: Validation regex.
+    :ivar description: Human-readable description.
+    :ivar required: Required.
+    """
     __tablename__ = "target_fields"
     __table_args__ = (
         UniqueConstraint(

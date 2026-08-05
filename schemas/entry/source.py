@@ -1,3 +1,5 @@
+"""Input schema describing a monitored BUR source."""
+
 # schemas/entry/source.py
 
 from datetime import datetime
@@ -10,6 +12,18 @@ from common import BurInputModel, ExternalRef
 
 
 class BurSourceIn(BurInputModel):
+    """Validate a monitored source supplied by a BUR import.
+
+    :ivar source_ref: Stable external reference to the source.
+    :ivar name: Human-readable name.
+    :ivar url: Canonical URL of the source.
+    :ivar content_type: Content type.
+    :ivar fetch_strategy: Fetch strategy.
+    :ivar enabled: Enabled.
+    :ivar canonical_url: URL providing canonical information.
+    :ivar last_verified_at: Timestamp for last verified.
+    :ivar notes: Optional notes supplied by an operator or importer.
+    """
     source_ref: ExternalRef
 
     name: str

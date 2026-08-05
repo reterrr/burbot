@@ -27,14 +27,21 @@ from .base import SoftDeleteRepository
 
 
 class ProjectRepository(SoftDeleteRepository[Project, int], Protocol):
-    """Project aggregate, including operators, geographies and source links."""
+    """Define persistence operations for project records."""
 
     async def get_by_number(
         self,
         number: str,
         *,
         include_deleted: bool = False,
-    ) -> Project | None: ...
+    ) -> Project | None:
+        """Retrieve a record by number.
+
+        :param number: Number value.
+        :param include_deleted: Whether soft-deleted records should be included.
+        :return: Matching record, or ``None`` when no record exists.
+        """
+        ...
 
     async def list_by_status(
         self,
@@ -42,87 +49,181 @@ class ProjectRepository(SoftDeleteRepository[Project, int], Protocol):
         *,
         limit: int = 100,
         offset: int = 0,
-    ) -> Sequence[Project]: ...
+    ) -> Sequence[Project]:
+        """List records filtered by status.
+
+        :param status: Status value.
+        :param limit: Maximum number of records to return.
+        :param offset: Number of matching records to skip.
+        :return: Matching records in deterministic repository order.
+        """
+        ...
 
     async def list_operators(
         self,
         project_id: int,
         *,
         include_deleted: bool = False,
-    ) -> Sequence[ProjectOperator]: ...
+    ) -> Sequence[ProjectOperator]:
+        """List operators.
+
+        :param project_id: Identifier of the project.
+        :param include_deleted: Whether soft-deleted records should be included.
+        :return: Matching records in deterministic repository order.
+        """
+        ...
 
     async def put_operator(
         self,
         project_id: int,
         operator_id: int,
         operator_type: OperatorType,
-    ) -> ProjectOperator: ...
+    ) -> ProjectOperator:
+        """Create or update operator.
+
+        :param project_id: Identifier of the project.
+        :param operator_id: Identifier of the operator.
+        :param operator_type: Operator type value.
+        :return: Persisted record reflecting the completed operation.
+        """
+        ...
 
     async def remove_operator(
         self,
         project_id: int,
         operator_id: int,
-    ) -> bool: ...
+    ) -> bool:
+        """Remove operator.
+
+        :param project_id: Identifier of the project.
+        :param operator_id: Identifier of the operator.
+        :return: ``True`` when the requested state change was applied.
+        """
+        ...
 
     async def list_geographies(
         self,
         project_id: int,
         *,
         include_deleted: bool = False,
-    ) -> Sequence[ProjectGeography]: ...
+    ) -> Sequence[ProjectGeography]:
+        """List geographies.
+
+        :param project_id: Identifier of the project.
+        :param include_deleted: Whether soft-deleted records should be included.
+        :return: Matching records in deterministic repository order.
+        """
+        ...
 
     async def put_geography(
         self,
         project_id: int,
         geography_id: int,
         relation_type: RelationType,
-    ) -> ProjectGeography: ...
+    ) -> ProjectGeography:
+        """Create or update geography.
+
+        :param project_id: Identifier of the project.
+        :param geography_id: Identifier of the geography.
+        :param relation_type: Relation type value.
+        :return: Persisted record reflecting the completed operation.
+        """
+        ...
 
     async def remove_geography(
         self,
         project_id: int,
         geography_id: int,
         relation_type: RelationType,
-    ) -> bool: ...
+    ) -> bool:
+        """Remove geography.
+
+        :param project_id: Identifier of the project.
+        :param geography_id: Identifier of the geography.
+        :param relation_type: Relation type value.
+        :return: ``True`` when the requested state change was applied.
+        """
+        ...
 
     async def list_sources(
         self,
         project_id: int,
         *,
         include_deleted: bool = False,
-    ) -> Sequence[ProjectSource]: ...
+    ) -> Sequence[ProjectSource]:
+        """List sources.
+
+        :param project_id: Identifier of the project.
+        :param include_deleted: Whether soft-deleted records should be included.
+        :return: Matching records in deterministic repository order.
+        """
+        ...
 
     async def put_source(
         self,
         project_id: int,
         source_id: int,
-    ) -> ProjectSource: ...
+    ) -> ProjectSource:
+        """Create or update source.
+
+        :param project_id: Identifier of the project.
+        :param source_id: Identifier of the source.
+        :return: Persisted record reflecting the completed operation.
+        """
+        ...
 
     async def remove_source(
         self,
         project_id: int,
         source_id: int,
-    ) -> bool: ...
+    ) -> bool:
+        """Remove source.
+
+        :param project_id: Identifier of the project.
+        :param source_id: Identifier of the source.
+        :return: ``True`` when the requested state change was applied.
+        """
+        ...
 
 
 class OperatorRepository(SoftDeleteRepository[Operator, int], Protocol):
-    """Operator aggregate, including its source links."""
+    """Define persistence operations for operator records."""
 
     async def get_by_nip(
         self,
         nip: str,
         *,
         include_deleted: bool = False,
-    ) -> Operator | None: ...
+    ) -> Operator | None:
+        """Retrieve a record by nip.
+
+        :param nip: Nip value.
+        :param include_deleted: Whether soft-deleted records should be included.
+        :return: Matching record, or ``None`` when no record exists.
+        """
+        ...
 
     async def list_sources(
         self,
         operator_id: int,
         *,
         include_deleted: bool = False,
-    ) -> Sequence[OperatorSource]: ...
+    ) -> Sequence[OperatorSource]:
+        """List sources.
 
-    async def get_main_source(self, operator_id: int) -> Source | None: ...
+        :param operator_id: Identifier of the operator.
+        :param include_deleted: Whether soft-deleted records should be included.
+        :return: Matching records in deterministic repository order.
+        """
+        ...
+
+    async def get_main_source(self, operator_id: int) -> Source | None:
+        """Retrieve main source.
+
+        :param operator_id: Identifier of the operator.
+        :return: Matching record, or ``None`` when no record exists.
+        """
+        ...
 
     async def put_source(
         self,
@@ -130,17 +231,32 @@ class OperatorRepository(SoftDeleteRepository[Operator, int], Protocol):
         source_id: int,
         *,
         is_main: bool = False,
-    ) -> OperatorSource: ...
+    ) -> OperatorSource:
+        """Create or update source.
+
+        :param operator_id: Identifier of the operator.
+        :param source_id: Identifier of the source.
+        :param is_main: Whether the associated source is the operator's primary source.
+        :return: Persisted record reflecting the completed operation.
+        """
+        ...
 
     async def remove_source(
         self,
         operator_id: int,
         source_id: int,
-    ) -> bool: ...
+    ) -> bool:
+        """Remove source.
+
+        :param operator_id: Identifier of the operator.
+        :param source_id: Identifier of the source.
+        :return: ``True`` when the requested state change was applied.
+        """
+        ...
 
 
 class RecruitmentRepository(SoftDeleteRepository[Recruitment, int], Protocol):
-    """Recruitment aggregate, including status history and source links."""
+    """Define persistence operations for recruitment records."""
 
     async def get_by_external_number(
         self,
@@ -148,7 +264,15 @@ class RecruitmentRepository(SoftDeleteRepository[Recruitment, int], Protocol):
         external_number: str,
         *,
         include_deleted: bool = False,
-    ) -> Recruitment | None: ...
+    ) -> Recruitment | None:
+        """Retrieve a record by external number.
+
+        :param project_id: Identifier of the project.
+        :param external_number: External number value.
+        :param include_deleted: Whether soft-deleted records should be included.
+        :return: Matching record, or ``None`` when no record exists.
+        """
+        ...
 
     async def get_by_sequence(
         self,
@@ -157,7 +281,16 @@ class RecruitmentRepository(SoftDeleteRepository[Recruitment, int], Protocol):
         sequence_number: int,
         *,
         include_deleted: bool = False,
-    ) -> Recruitment | None: ...
+    ) -> Recruitment | None:
+        """Retrieve a record by sequence.
+
+        :param project_id: Identifier of the project.
+        :param year: Year value.
+        :param sequence_number: Sequence number value.
+        :param include_deleted: Whether soft-deleted records should be included.
+        :return: Matching record, or ``None`` when no record exists.
+        """
+        ...
 
     async def list_for_project(
         self,
@@ -166,47 +299,96 @@ class RecruitmentRepository(SoftDeleteRepository[Recruitment, int], Protocol):
         status: RecruitmentStatus | None = None,
         limit: int = 100,
         offset: int = 0,
-    ) -> Sequence[Recruitment]: ...
+    ) -> Sequence[Recruitment]:
+        """List records belonging to project.
+
+        :param project_id: Identifier of the project.
+        :param status: Status value.
+        :param limit: Maximum number of records to return.
+        :param offset: Number of matching records to skip.
+        :return: Matching records in deterministic repository order.
+        """
+        ...
 
     async def append_status(
         self,
         transition: RecruitmentStatusHistory,
-    ) -> RecruitmentStatusHistory: ...
+    ) -> RecruitmentStatusHistory:
+        """Append status.
+
+        :param transition: Transition value.
+        :return: Persisted record reflecting the completed operation.
+        """
+        ...
 
     async def list_status_history(
         self,
         recruitment_id: int,
-    ) -> Sequence[RecruitmentStatusHistory]: ...
+    ) -> Sequence[RecruitmentStatusHistory]:
+        """List status history.
+
+        :param recruitment_id: Identifier of the recruitment.
+        :return: Matching records in deterministic repository order.
+        """
+        ...
 
     async def list_sources(
         self,
         recruitment_id: int,
         *,
         include_deleted: bool = False,
-    ) -> Sequence[RecruitmentSource]: ...
+    ) -> Sequence[RecruitmentSource]:
+        """List sources.
+
+        :param recruitment_id: Identifier of the recruitment.
+        :param include_deleted: Whether soft-deleted records should be included.
+        :return: Matching records in deterministic repository order.
+        """
+        ...
 
     async def put_source(
         self,
         recruitment_id: int,
         source_id: int,
-    ) -> RecruitmentSource: ...
+    ) -> RecruitmentSource:
+        """Create or update source.
+
+        :param recruitment_id: Identifier of the recruitment.
+        :param source_id: Identifier of the source.
+        :return: Persisted record reflecting the completed operation.
+        """
+        ...
 
     async def remove_source(
         self,
         recruitment_id: int,
         source_id: int,
-    ) -> bool: ...
+    ) -> bool:
+        """Remove source.
+
+        :param recruitment_id: Identifier of the recruitment.
+        :param source_id: Identifier of the source.
+        :return: ``True`` when the requested state change was applied.
+        """
+        ...
 
 
 class GeographyRepository(SoftDeleteRepository[Geography, int], Protocol):
-    """Hierarchical geography registry."""
+    """Define persistence operations for geography records."""
 
     async def get_by_teryt(
         self,
         teryt_code: str,
         *,
         include_deleted: bool = False,
-    ) -> Geography | None: ...
+    ) -> Geography | None:
+        """Retrieve a record by teryt.
+
+        :param teryt_code: Teryt code value.
+        :param include_deleted: Whether soft-deleted records should be included.
+        :return: Matching record, or ``None`` when no record exists.
+        """
+        ...
 
     async def find(
         self,
@@ -215,7 +397,16 @@ class GeographyRepository(SoftDeleteRepository[Geography, int], Protocol):
         parent_id: int | None,
         *,
         include_deleted: bool = False,
-    ) -> Geography | None: ...
+    ) -> Geography | None:
+        """Find a record matching the supplied attributes.
+
+        :param geography_type: Geography type value.
+        :param name: Human-readable or database type name, depending on context.
+        :param parent_id: Identifier of the parent record, or ``None`` for root records.
+        :param include_deleted: Whether soft-deleted records should be included.
+        :return: Matching record, or ``None`` when no record exists.
+        """
+        ...
 
     async def list_children(
         self,
@@ -223,4 +414,12 @@ class GeographyRepository(SoftDeleteRepository[Geography, int], Protocol):
         *,
         geography_type: GeographyType | None = None,
         include_deleted: bool = False,
-    ) -> Sequence[Geography]: ...
+    ) -> Sequence[Geography]:
+        """List children.
+
+        :param parent_id: Identifier of the parent record, or ``None`` for root records.
+        :param geography_type: Geography type value.
+        :param include_deleted: Whether soft-deleted records should be included.
+        :return: Matching records in deterministic repository order.
+        """
+        ...

@@ -26,6 +26,16 @@ from ..mixins import CreatedAtMixin, SoftDeleteMixin, pg_enum
 
 
 class GeneralizedPattern(SoftDeleteMixin, table=True):
+    """Define a reusable sequential or associative extraction pattern.
+
+    :ivar id: Database primary key.
+    :ivar pattern_type: Pattern type.
+    :ivar pattern_class: Pattern class.
+    :ivar description: Human-readable description.
+    :ivar support: Support.
+    :ivar confidence: Confidence score between zero and one.
+    :ivar lift: Lift.
+    """
     __tablename__ = "generalized_patterns"
     __table_args__ = (
         UniqueConstraint(
@@ -59,6 +69,18 @@ class GeneralizedPattern(SoftDeleteMixin, table=True):
 
 
 class PatternItem(SoftDeleteMixin, table=True):
+    """Represent one typed item in a generalized pattern.
+
+    :ivar id: Database primary key.
+    :ivar pattern_id: Identifier of the related pattern.
+    :ivar position: Position.
+    :ivar role: Role.
+    :ivar item_kind: Item kind.
+    :ivar token_class_id: Identifier of the related token class.
+    :ivar phrase_id: Identifier of the related phrase.
+    :ivar semantic_class_id: Identifier of the related semantic class.
+    :ivar target_field_id: Identifier of the related target field.
+    """
     __tablename__ = "pattern_items"
     __table_args__ = (
         CheckConstraint(
@@ -156,6 +178,15 @@ class PatternItem(SoftDeleteMixin, table=True):
 
 
 class PatternInstance(CreatedAtMixin, table=True):
+    """Record a pattern discovered during an extraction run.
+
+    :ivar id: Database primary key.
+    :ivar pattern_id: Identifier of the related pattern.
+    :ivar extraction_run_id: Identifier of the related extraction run.
+    :ivar confidence: Confidence score between zero and one.
+    :ivar discovered_by: Discovered by.
+    :ivar discovered_at: Timestamp for discovered.
+    """
     __tablename__ = "pattern_instances"
     __table_args__ = (
         CheckConstraint(
@@ -198,6 +229,12 @@ class PatternInstance(CreatedAtMixin, table=True):
 
 
 class PatternInstanceMatch(CreatedAtMixin, table=True):
+    """Associate a pattern instance with a matching element.
+
+    :ivar pattern_instance_id: Identifier of the related pattern instance.
+    :ivar element_id: Identifier of the related element.
+    :ivar matched_position: Matched position.
+    """
     __tablename__ = "pattern_instance_matches"
     __table_args__ = (
         CheckConstraint(

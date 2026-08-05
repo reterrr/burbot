@@ -38,6 +38,16 @@ from ..mixins import (
 
 
 class StoredFile(CreatedAtMixin, table=True):
+    """Describe a payload stored outside the relational database.
+
+    :ivar id: Database primary key.
+    :ivar storage_key: Storage key.
+    :ivar original_name: Original name.
+    :ivar mime_type: Mime type.
+    :ivar size_bytes: Size bytes.
+    :ivar sha256: Sha256.
+    :ivar purged_at: Timestamp for purged.
+    """
     __tablename__ = "stored_files"
     __table_args__ = (
         CheckConstraint(
@@ -71,6 +81,15 @@ class StoredFile(CreatedAtMixin, table=True):
 
 
 class Source(UpdatedAtMixin, table=True):
+    """Represent a monitored web page, document, API, or stored file.
+
+    :ivar id: Database primary key.
+    :ivar url: Canonical URL of the source.
+    :ivar state: State.
+    :ivar source_type: Source type.
+    :ivar file_id: Identifier of the related file.
+    :ivar last_state_change_at: Timestamp for last state change.
+    """
     __tablename__ = "sources"
     __table_args__ = (
         Index("ix_sources_state", "state"),
@@ -109,6 +128,16 @@ class Source(UpdatedAtMixin, table=True):
 
 
 class SourceMetadata(UpdatedAtMixin, table=True):
+    """Store the latest hashes and robots.txt assessment for a source.
+
+    :ivar source_id: Identifier of the related source.
+    :ivar latest_content_hash: Latest content hash.
+    :ivar latest_structure_hash: Latest structure hash.
+    :ivar hashes_updated_at: Timestamp for hashes updated.
+    :ivar robots_txt_checked: Robots txt checked.
+    :ivar robots_txt_allows: Robots txt allows.
+    :ivar robots_txt_checked_at: Timestamp for robots txt checked.
+    """
     __tablename__ = "source_metadata"
 
     source_id: int = Field(
@@ -147,6 +176,16 @@ class SourceMetadata(UpdatedAtMixin, table=True):
 
 
 class CheckSchedule(UpdatedAtMixin, table=True):
+    """Store adaptive polling state for a monitored source.
+
+    :ivar source_id: Identifier of the related source.
+    :ivar interval_seconds: Interval seconds.
+    :ivar last_checked_at: Timestamp for last checked.
+    :ivar next_check_at: Timestamp for next check.
+    :ivar change_frequency_score: Change frequency score.
+    :ivar consecutive_no_change_count: Consecutive no change count.
+    :ivar enabled: Enabled.
+    """
     __tablename__ = "check_schedules"
     __table_args__ = (
         CheckConstraint("interval_seconds > 0", name="interval_seconds_positive"),
@@ -195,6 +234,16 @@ class CheckSchedule(UpdatedAtMixin, table=True):
 
 
 class SourceStateHistory(SQLModel, table=True):
+    """Record an immutable source state transition.
+
+    :ivar id: Database primary key.
+    :ivar source_id: Identifier of the related source.
+    :ivar from_state: From state.
+    :ivar to_state: To state.
+    :ivar changed_at: Timestamp for changed.
+    :ivar reason: Reason.
+    :ivar triggered_by: Triggered by.
+    """
     __tablename__ = "source_state_history"
     __table_args__ = (
         Index(
@@ -238,6 +287,17 @@ class SourceStateHistory(SQLModel, table=True):
 
 
 class SourceWarning(UpdatedAtMixin, table=True):
+    """Represent a warning raised while monitoring or processing a source.
+
+    :ivar id: Database primary key.
+    :ivar source_id: Identifier of the related source.
+    :ivar severity: Severity.
+    :ivar status: Status.
+    :ivar warning_type: Warning type.
+    :ivar description: Human-readable description.
+    :ivar details_json: Structured details data.
+    :ivar resolved_at: Timestamp for resolved.
+    """
     __tablename__ = "source_warnings"
     __table_args__ = (
         Index("ix_source_warnings_source_status", "source_id", "status"),
@@ -284,6 +344,12 @@ class SourceWarning(UpdatedAtMixin, table=True):
 
 
 class OperatorSource(SoftDeleteMixin, table=True):
+    """Associate an operator with one of its monitored sources.
+
+    :ivar operator_id: Identifier of the related operator.
+    :ivar source_id: Identifier of the related source.
+    :ivar is_main: Whether main.
+    """
     __tablename__ = "operator_sources"
     __table_args__ = (
         Index("ix_operator_sources_source_id", "source_id"),
@@ -318,6 +384,11 @@ class OperatorSource(SoftDeleteMixin, table=True):
 
 
 class ProjectSource(SoftDeleteMixin, table=True):
+    """Associate a project with one of its monitored sources.
+
+    :ivar project_id: Identifier of the related project.
+    :ivar source_id: Identifier of the related source.
+    """
     __tablename__ = "project_sources"
     __table_args__ = (Index("ix_project_sources_source_id", "source_id"),)
 
@@ -340,6 +411,11 @@ class ProjectSource(SoftDeleteMixin, table=True):
 
 
 class RecruitmentSource(SoftDeleteMixin, table=True):
+    """Associate a recruitment round with one of its monitored sources.
+
+    :ivar recruitment_id: Identifier of the related recruitment.
+    :ivar source_id: Identifier of the related source.
+    """
     __tablename__ = "recruitment_sources"
     __table_args__ = (Index("ix_recruitment_sources_source_id", "source_id"),)
 
@@ -362,6 +438,20 @@ class RecruitmentSource(SoftDeleteMixin, table=True):
 
 
 class SourceSnapshot(CreatedAtMixin, table=True):
+    """Describe an immutable result of fetching a source.
+
+    :ivar id: Database primary key.
+    :ivar source_id: Identifier of the related source.
+    :ivar file_id: Identifier of the related file.
+    :ivar fetched_at: Timestamp for fetched.
+    :ivar http_status: Http status.
+    :ivar mime_type: Mime type.
+    :ivar content_hash: Content hash.
+    :ivar structure_hash: Structure hash.
+    :ivar parser_version: Parser version.
+    :ivar is_current: Whether this record is the current version.
+    :ivar content_purged_at: Timestamp for content purged.
+    """
     __tablename__ = "source_snapshots"
     __table_args__ = (
         Index("ix_source_snapshots_source_fetched", "source_id", "fetched_at"),
@@ -423,6 +513,16 @@ class SourceSnapshot(CreatedAtMixin, table=True):
 
 
 class ExtractionRun(UpdatedAtMixin, table=True):
+    """Track one domain-level extraction execution for a snapshot.
+
+    :ivar id: Database primary key.
+    :ivar snapshot_id: Identifier of the related snapshot.
+    :ivar status: Status.
+    :ivar extractor_version: Extractor version.
+    :ivar started_at: Timestamp for started.
+    :ivar finished_at: Timestamp for finished.
+    :ivar error_message: Error message.
+    """
     __tablename__ = "extraction_runs"
     __table_args__ = (
         CheckConstraint(
