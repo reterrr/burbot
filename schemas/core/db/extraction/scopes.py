@@ -26,6 +26,21 @@ from ..mixins import CreatedAtMixin, UpdatedAtMixin, pg_enum
 
 
 class SourceScope(UpdatedAtMixin, table=True):
+    """Define a versioned, reusable extraction scope for a source.
+
+    :ivar id: Database primary key.
+    :ivar source_id: Identifier of the related source.
+    :ivar parent_scope_id: Identifier of the related parent scope.
+    :ivar entity_type: Entity type.
+    :ivar name: Human-readable name.
+    :ivar selector_type: Selector type.
+    :ivar selector_string: Selector string.
+    :ivar confidence_score: Confidence score between zero and one.
+    :ivar discovered_by: Discovered by.
+    :ivar version: Version.
+    :ivar valid_from: Timestamp from which this version is valid.
+    :ivar valid_to: Timestamp until which this version is valid, if closed.
+    """
     __tablename__ = "source_scopes"
     __table_args__ = (
         UniqueConstraint(
@@ -101,6 +116,17 @@ class SourceScope(UpdatedAtMixin, table=True):
 
 
 class ScopeInstance(CreatedAtMixin, table=True):
+    """Represent one runtime occurrence of a source scope.
+
+    :ivar id: Database primary key.
+    :ivar scope_id: Identifier of the related scope.
+    :ivar extraction_run_id: Identifier of the related extraction run.
+    :ivar parent_scope_instance_id: Identifier of the related parent scope instance.
+    :ivar root_element_id: Identifier of the related root element.
+    :ivar occurrence_index: Occurrence index.
+    :ivar instance_hash: Instance hash.
+    :ivar confidence: Confidence score between zero and one.
+    """
     __tablename__ = "scope_instances"
     __table_args__ = (
         UniqueConstraint(
@@ -170,6 +196,20 @@ class ScopeInstance(CreatedAtMixin, table=True):
 
 
 class FieldSelector(UpdatedAtMixin, table=True):
+    """Define a versioned selector used to extract a target field.
+
+    :ivar id: Database primary key.
+    :ivar scope_id: Identifier of the related scope.
+    :ivar target_field_id: Identifier of the related target field.
+    :ivar selector_type: Selector type.
+    :ivar selector_string: Selector string.
+    :ivar confidence_score: Confidence score between zero and one.
+    :ivar discovered_by: Discovered by.
+    :ivar derived_from_pattern_instance_id: Identifier of the related derived from pattern instance.
+    :ivar version: Version.
+    :ivar valid_from: Timestamp from which this version is valid.
+    :ivar valid_to: Timestamp until which this version is valid, if closed.
+    """
     __tablename__ = "field_selectors"
     __table_args__ = (
         UniqueConstraint(
@@ -250,6 +290,23 @@ class FieldSelector(UpdatedAtMixin, table=True):
 
 
 class FieldObservation(UpdatedAtMixin, table=True):
+    """Record one observed target-field value and its entity binding.
+
+    :ivar id: Database primary key.
+    :ivar extraction_run_id: Identifier of the related extraction run.
+    :ivar scope_instance_id: Identifier of the related scope instance.
+    :ivar target_field_id: Identifier of the related target field.
+    :ivar concrete_value_id: Identifier of the related concrete value.
+    :ivar project_id: Identifier of the related project.
+    :ivar operator_id: Identifier of the related operator.
+    :ivar recruitment_id: Identifier of the related recruitment.
+    :ivar confidence: Confidence score between zero and one.
+    :ivar status: Status.
+    :ivar supersedes_observation_id: Identifier of the related supersedes observation.
+    :ivar observed_at: Timestamp for observed.
+    :ivar validated_at: Timestamp for validated.
+    :ivar notes: Optional notes supplied by an operator or importer.
+    """
     __tablename__ = "field_observations"
     __table_args__ = (
         CheckConstraint(

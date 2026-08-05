@@ -19,6 +19,17 @@ from ..mixins import CreatedAtMixin, pg_enum
 
 
 class Element(CreatedAtMixin, table=True):
+    """Represent one node extracted from an HTML or PDF source.
+
+    :ivar id: Database primary key.
+    :ivar extraction_run_id: Identifier of the related extraction run.
+    :ivar parent_element_id: Identifier of the related parent element.
+    :ivar child_index: Child index.
+    :ivar depth: Depth.
+    :ivar element_from: Element from.
+    :ivar text_content: Text content.
+    :ivar structural_hash: Structural hash.
+    """
     __tablename__ = "elements"
     __table_args__ = (
         CheckConstraint(
@@ -66,6 +77,15 @@ class Element(CreatedAtMixin, table=True):
 
 
 class ElementHTML(CreatedAtMixin, table=True):
+    """Store HTML-specific details for an extracted element.
+
+    :ivar element_id: Identifier of the related element.
+    :ivar dom_path: Dom path.
+    :ivar absolute_xpath: Absolute xpath.
+    :ivar css_path: Css path.
+    :ivar tag_name: Tag name.
+    :ivar attributes_json: Structured attributes data.
+    """
     __tablename__ = "elements_html"
 
     element_id: int = Field(
@@ -93,6 +113,21 @@ class ElementHTML(CreatedAtMixin, table=True):
 
 
 class ElementPDF(CreatedAtMixin, table=True):
+    """Store PDF-specific location and typography for an extracted element.
+
+    :ivar element_id: Identifier of the related element.
+    :ivar page_number: Page number.
+    :ivar x0: X0.
+    :ivar y0: Y0.
+    :ivar x1: X1.
+    :ivar y1: Y1.
+    :ivar block_number: Block number.
+    :ivar line_number: Line number.
+    :ivar word_number: Word number.
+    :ivar font_name: Font name.
+    :ivar font_size: Font size.
+    :ivar ocr_confidence: Ocr confidence.
+    """
     __tablename__ = "elements_pdf"
     __table_args__ = (
         CheckConstraint("page_number > 0", name="page_number_positive"),
@@ -129,6 +164,14 @@ class ElementPDF(CreatedAtMixin, table=True):
 
 
 class AnchorElementReference(CreatedAtMixin, table=True):
+    """Describe a directional relation between two extracted elements.
+
+    :ivar anchor_element_id: Identifier of the related anchor element.
+    :ivar target_element_id: Identifier of the related target element.
+    :ivar relation_kind: Relation kind.
+    :ivar relative_offset: Relative offset.
+    :ivar confidence: Confidence score between zero and one.
+    """
     __tablename__ = "anchor_element_references"
     __table_args__ = (
         CheckConstraint(
@@ -166,6 +209,19 @@ class AnchorElementReference(CreatedAtMixin, table=True):
 
 
 class ConcreteValue(CreatedAtMixin, table=True):
+    """Represent a literal value discovered inside an extracted element.
+
+    :ivar id: Database primary key.
+    :ivar element_id: Identifier of the related element.
+    :ivar token_class_id: Identifier of the related token class.
+    :ivar raw_value: Raw value.
+    :ivar normalized_value: Normalized value.
+    :ivar char_start: Char start.
+    :ivar char_end: Char end.
+    :ivar value_hash: Value hash.
+    :ivar confidence: Confidence score between zero and one.
+    :ivar discovered_by: Discovered by.
+    """
     __tablename__ = "concrete_values"
     __table_args__ = (
         CheckConstraint(

@@ -30,6 +30,16 @@ from ..mixins import SoftDeleteMixin, pg_enum
 
 
 class Project(SoftDeleteMixin, table=True):
+    """Represent a monitored funding project.
+
+    :ivar id: Database primary key.
+    :ivar type: Type.
+    :ivar name: Human-readable name.
+    :ivar number: Number.
+    :ivar status: Status.
+    :ivar start_date: Start date.
+    :ivar end_date: End date.
+    """
     __tablename__ = "projects"
     __table_args__ = (Index("ix_projects_status", "status"),)
 
@@ -55,6 +65,12 @@ class Project(SoftDeleteMixin, table=True):
 
 
 class Operator(SoftDeleteMixin, table=True):
+    """Represent an organization operating or partnering on a project.
+
+    :ivar id: Database primary key.
+    :ivar name: Human-readable name.
+    :ivar nip: Normalized ten-digit Polish tax identifier.
+    """
     __tablename__ = "operators"
 
     id: int | None = Field(default=None, primary_key=True)
@@ -66,6 +82,12 @@ class Operator(SoftDeleteMixin, table=True):
 
 
 class ProjectOperator(SoftDeleteMixin, table=True):
+    """Associate an operator with a project and record its role.
+
+    :ivar project_id: Identifier of the related project.
+    :ivar operator_id: Identifier of the related operator.
+    :ivar operator_type: Operator type.
+    """
     __tablename__ = "project_operators"
     __table_args__ = (
         Index("ix_project_operators_operator_project", "operator_id", "project_id"),
@@ -93,6 +115,21 @@ class ProjectOperator(SoftDeleteMixin, table=True):
 
 
 class Recruitment(SoftDeleteMixin, table=True):
+    """Represent a recruitment round belonging to a project.
+
+    :ivar id: Database primary key.
+    :ivar project_id: Identifier of the related project.
+    :ivar external_number: External number.
+    :ivar sequence_number: Sequence number.
+    :ivar year: Year.
+    :ivar status: Status.
+    :ivar start_date: Start date.
+    :ivar end_date: End date.
+    :ivar announced_year: Announced year.
+    :ivar announced_quarter: Announced quarter.
+    :ivar closed_status: Closed status.
+    :ivar status_reason: Status reason.
+    """
     __tablename__ = "recruitments"
     __table_args__ = (
         UniqueConstraint(
@@ -150,6 +187,16 @@ class Recruitment(SoftDeleteMixin, table=True):
 
 
 class RecruitmentStatusHistory(SQLModel, table=True):
+    """Record an immutable recruitment status transition.
+
+    :ivar id: Database primary key.
+    :ivar recruitment_id: Identifier of the related recruitment.
+    :ivar from_status: From status.
+    :ivar to_status: To status.
+    :ivar closed_status: Closed status.
+    :ivar reason: Reason.
+    :ivar changed_at: Timestamp for changed.
+    """
     __tablename__ = "recruitment_status_history"
     __table_args__ = (
         Index(
@@ -195,6 +242,14 @@ class RecruitmentStatusHistory(SQLModel, table=True):
 
 
 class Geography(SoftDeleteMixin, table=True):
+    """Represent one node in the hierarchical geography registry.
+
+    :ivar id: Database primary key.
+    :ivar type: Type.
+    :ivar name: Human-readable name.
+    :ivar parent_id: Identifier of the related parent.
+    :ivar teryt_code: Teryt code.
+    """
     __tablename__ = "geographies"
     __table_args__ = (
         Index(
@@ -228,6 +283,12 @@ class Geography(SoftDeleteMixin, table=True):
 
 
 class ProjectGeography(SoftDeleteMixin, table=True):
+    """Associate a project with an included or excluded geographic unit.
+
+    :ivar project_id: Identifier of the related project.
+    :ivar geography_id: Identifier of the related geography.
+    :ivar relation_type: Relation type.
+    """
     __tablename__ = "project_geographies"
     __table_args__ = (Index("ix_project_geographies_geography_id", "geography_id"),)
 

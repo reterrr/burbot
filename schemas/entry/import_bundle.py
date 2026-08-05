@@ -1,3 +1,5 @@
+"""Aggregate schema and cross-reference validation for BUR imports."""
+
 # schemas/entry/import_bundle.py
 
 from pydantic import Field, model_validator
@@ -16,6 +18,19 @@ from source_selector import BurSourceSelectorIn
 
 
 class BurImportBundleIn(BurInputModel):
+    """Validate a complete, internally consistent BUR import bundle.
+
+    :ivar metadata: Metadata describing the import operation.
+    :ivar operators: Operators.
+    :ivar projects: Projects.
+    :ivar project_operators: Project operators.
+    :ivar project_geographies: Project geographies.
+    :ivar sources: Sources.
+    :ivar project_sources: Project sources.
+    :ivar source_sections: Source sections.
+    :ivar source_selectors: Source selectors.
+    :ivar source_expectations: Source expectations.
+    """
     metadata: BurImportMetadataIn
 
     operators: list[BurOperatorIn] = Field(default_factory=list)
@@ -45,6 +60,11 @@ class BurImportBundleIn(BurInputModel):
 
     @model_validator(mode="after")
     def validate_references(self) -> "BurImportBundleIn":
+        """Validate uniqueness and cross-references in the import bundle.
+
+        :raises ValueError: If the supplied data violates schema constraints.
+        :return: Validated model instance.
+        """
         operator_refs = {
             operator.operator_ref
             for operator in self.operators
@@ -165,6 +185,12 @@ class BurImportBundleIn(BurInputModel):
             values: list[str],
             field_name: str,
     ) -> None:
+        """Ensure that a collection of external references is unique.
+
+        :param values: Values to inspect for duplicates.
+        :param field_name: Name of the field being checked.
+        :raises ValueError: If the supplied data violates schema constraints.
+        """
         duplicates = {
             value
             for value in values
@@ -178,6 +204,10 @@ class BurImportBundleIn(BurInputModel):
             )
 
     def _validate_primary_operators(self) -> None:
+        """Ensure that each project has at most one primary operator.
+
+        :raises ValueError: If the supplied data violates schema constraints.
+        """
         from project_operator import ProjectOperatorRole
 
         primary_by_project: dict[str, int] = {}

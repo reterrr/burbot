@@ -1,3 +1,5 @@
+"""Input schema and validation for BUR projects."""
+
 # schemas/entry/project.py
 
 from datetime import date, datetime
@@ -12,6 +14,19 @@ from common import BurInputModel, ExternalRef
 
 
 class BurProjectIn(BurInputModel):
+    """Validate a project supplied by a BUR import.
+
+    :ivar project_ref: Stable external reference to the project.
+    :ivar name: Human-readable name.
+    :ivar main_url: Primary URL of the project.
+    :ivar onboarding_status: Onboarding status.
+    :ivar lifecycle_status: Lifecycle status.
+    :ivar monitoring_enabled: Whether monitoring enabled.
+    :ivar starts_at: Timestamp for starts.
+    :ivar ends_at: Timestamp for ends.
+    :ivar last_verified_at: Timestamp for last verified.
+    :ivar notes: Optional notes supplied by an operator or importer.
+    """
     project_ref: ExternalRef
 
     name: str
@@ -34,6 +49,11 @@ class BurProjectIn(BurInputModel):
 
     @model_validator(mode="after")
     def validate_project_dates(self) -> "BurProjectIn":
+        """Validate that the project date range is chronological.
+
+        :raises ValueError: If the supplied data violates schema constraints.
+        :return: Validated model instance.
+        """
         if (
                 self.starts_at is not None
                 and self.ends_at is not None

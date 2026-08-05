@@ -4,15 +4,17 @@ from enum import StrEnum
 
 
 class DatabaseEnum(StrEnum):
-    """String enum persisted by value in named PostgreSQL enum types."""
+    """Provide the common base for enums persisted by their string values."""
 
 
 class ProjectType(DatabaseEnum):
+    """Enumerate the supported project type values."""
     B2B = "B2B"
     B2C = "B2C"
 
 
 class ProjectStatus(DatabaseEnum):
+    """Enumerate the supported project status values."""
     ACTIVE = "ACTIVE"
     CLOSED = "CLOSED"
     SUSPENDED = "SUSPENDED"
@@ -20,11 +22,13 @@ class ProjectStatus(DatabaseEnum):
 
 
 class OperatorType(DatabaseEnum):
+    """Enumerate the supported operator type values."""
     LEAD = "LEAD"
     PARTNER = "PARTNER"
 
 
 class GeographyType(DatabaseEnum):
+    """Enumerate the supported geography type values."""
     VOIVODSHIP = "VOIVODSHIP"
     SUBREGION = "SUBREGION"
     COUNTY = "COUNTY"
@@ -32,11 +36,13 @@ class GeographyType(DatabaseEnum):
 
 
 class RelationType(DatabaseEnum):
+    """Enumerate the supported relation type values."""
     INCLUDE = "INCLUDE"
     EXCLUDE = "EXCLUDE"
 
 
 class RecruitmentStatus(DatabaseEnum):
+    """Enumerate the supported recruitment status values."""
     ACTIVE = "ACTIVE"
     SUSPENDED = "SUSPENDED"
     ANNOUNCED = "ANNOUNCED"
@@ -44,6 +50,7 @@ class RecruitmentStatus(DatabaseEnum):
 
 
 class ClosedStatus(DatabaseEnum):
+    """Enumerate the supported closed status values."""
     END_DATE_EXCEEDED = "END_DATE_EXCEEDED"
     BUDGET_EXHAUSTED = "BUDGET_EXHAUSTED"
     CANCELLED = "CANCELLED"
@@ -51,12 +58,14 @@ class ClosedStatus(DatabaseEnum):
 
 
 class BusinessEntityType(DatabaseEnum):
+    """Enumerate the supported business entity type values."""
     PROJECT = "PROJECT"
     OPERATOR = "OPERATOR"
     RECRUITMENT = "RECRUITMENT"
 
 
 class SourceState(DatabaseEnum):
+    """Enumerate the supported source state values."""
     ADDING = "ADDING"
     UNDISCOVERED = "UNDISCOVERED"
     DISCOVERING = "DISCOVERING"
@@ -72,11 +81,13 @@ class SourceState(DatabaseEnum):
 
 
 class SourceType(DatabaseEnum):
+    """Enumerate the supported source type values."""
     HTML = "HTML"
     PDF = "PDF"
 
 
 class SourceStateTrigger(DatabaseEnum):
+    """Enumerate the supported source state trigger values."""
     USER = "USER"
     SCHEDULER = "SCHEDULER"
     CRAWLER = "CRAWLER"
@@ -88,6 +99,7 @@ class SourceStateTrigger(DatabaseEnum):
 
 
 class WarningSeverity(DatabaseEnum):
+    """Enumerate the supported warning severity values."""
     INFO = "INFO"
     WARNING = "WARNING"
     ERROR = "ERROR"
@@ -95,12 +107,14 @@ class WarningSeverity(DatabaseEnum):
 
 
 class WarningStatus(DatabaseEnum):
+    """Enumerate the supported warning status values."""
     OPEN = "OPEN"
     RESOLVED = "RESOLVED"
     IGNORED = "IGNORED"
 
 
 class ExtractionRunStatus(DatabaseEnum):
+    """Enumerate the supported extraction run status values."""
     PENDING = "PENDING"
     RUNNING = "RUNNING"
     SUCCEEDED = "SUCCEEDED"
@@ -109,11 +123,13 @@ class ExtractionRunStatus(DatabaseEnum):
 
 
 class ElementFrom(DatabaseEnum):
+    """Enumerate the supported element from values."""
     HTML = "HTML"
     PDF = "PDF"
 
 
 class DiscoveryMethod(DatabaseEnum):
+    """Enumerate the supported discovery method values."""
     MANUAL = "MANUAL"
     REGEX = "REGEX"
     SEQ_PATTERN = "SEQ_PATTERN"
@@ -124,6 +140,7 @@ class DiscoveryMethod(DatabaseEnum):
 
 
 class SelectorType(DatabaseEnum):
+    """Enumerate the supported selector type values."""
     CSS = "CSS"
     XPATH = "XPATH"
     ANCHOR_RELATIVE = "ANCHOR_RELATIVE"
@@ -133,6 +150,7 @@ class SelectorType(DatabaseEnum):
 
 
 class AnchorRelationKind(DatabaseEnum):
+    """Enumerate the supported anchor relation kind values."""
     NEXT_SIBLING = "NEXT_SIBLING"
     PREVIOUS_SIBLING = "PREVIOUS_SIBLING"
     PARENT_OF = "PARENT_OF"
@@ -144,11 +162,13 @@ class AnchorRelationKind(DatabaseEnum):
 
 
 class PatternType(DatabaseEnum):
+    """Enumerate the supported pattern type values."""
     SEQUENTIAL = "SEQUENTIAL"
     ASSOCIATIVE = "ASSOCIATIVE"
 
 
 class ItemKind(DatabaseEnum):
+    """Enumerate the supported item kind values."""
     TOKEN_CLASS = "TOKEN_CLASS"
     PHRASE = "PHRASE"
     SEMANTIC_CLASS = "SEMANTIC_CLASS"
@@ -156,12 +176,14 @@ class ItemKind(DatabaseEnum):
 
 
 class ItemsetRole(DatabaseEnum):
+    """Enumerate the supported itemset role values."""
     ANTECEDENT = "ANTECEDENT"
     CONSEQUENT = "CONSEQUENT"
     NONE = "NONE"
 
 
 class ObservationStatus(DatabaseEnum):
+    """Enumerate the supported observation status values."""
     DETECTED = "DETECTED"
     VALIDATED = "VALIDATED"
     BOUND = "BOUND"
@@ -171,5 +193,6 @@ class ObservationStatus(DatabaseEnum):
 
 
 class ConfirmedBy(DatabaseEnum):
+    """Enumerate the supported confirmed by values."""
     HUMAN = "HUMAN"
     SYSTEM = "SYSTEM"
