@@ -1,4 +1,4 @@
-# schemas/entry/common.py
+# schemas/entry/clear.py
 
 from typing import Annotated
 
