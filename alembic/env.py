@@ -12,6 +12,7 @@ from dotenv import load_dotenv
 from sqlalchemy import pool
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
+from sqlmodel import SQLModel
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -20,10 +21,18 @@ if str(PROJECT_ROOT) not in sys.path:
 
 load_dotenv(PROJECT_ROOT / ".env")
 
-# Import the core registry first: it installs the metadata naming convention
-# before any table is registered. Feature models use the same SQLModel
-# metadata object and must also be imported for Alembic autogeneration.
-from schemas.core.db import metadata  # noqa: E402
+# This migration environment is deliberately scoped to business_driver.
+# Configure metadata before importing its models so generated constraints have
+# deterministic names. Core, extraction and system models are not imported.
+NAMING_CONVENTION = {
+    "ix": "ix_%(table_name)s_%(column_0_label)s",
+    "uq": "uq_%(table_name)s_%(column_0_name)s",
+    "ck": "ck_%(table_name)s_%(constraint_name)s",
+    "fk": "fk_%(table_name)s_%(column_0_name)s_%(referred_table_name)s",
+    "pk": "pk_%(table_name)s",
+}
+SQLModel.metadata.naming_convention = NAMING_CONVENTION
+
 from business_driver.schemas import entities as _business_entities  # noqa: E402,F401
 
 
@@ -32,7 +41,7 @@ config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-target_metadata = metadata
+target_metadata = SQLModel.metadata
 
 
 def get_database_url() -> str:

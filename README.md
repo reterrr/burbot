@@ -1,6 +1,17 @@
 # Burbot
 
-## Database migrations
+## Business database migrations
+
+Alembic is scoped to the `business_driver` layer. Its revisions manage only:
+
+- `business_entities`
+- `business_entity_fields`
+- `business_entity_field_values`
+- `business_entity_relations`
+- `business_entity_revisions`
+
+Core, extraction and system tables are intentionally outside this migration
+environment.
 
 Copy the example environment file and start PostgreSQL:
 

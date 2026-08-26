@@ -1,4 +1,4 @@
-Alembic migration environment for Burbot.
+Alembic migration environment for the Burbot business_driver layer.
 
 The database URL is read from DATABASE_URL. If a .env file exists in the
 repository root, it is loaded automatically.
