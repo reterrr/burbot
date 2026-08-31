@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import BigInteger, CheckConstraint, Column, DateTime, Enum as SAEnum, ForeignKey, Index, String, Text, UniqueConstraint, func
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import JSONB, ExcludeConstraint
 from sqlmodel import Field, SQLModel
 
 from business_driver.schemas.enums import BusinessDefinitionStatus, BusinessRelationCardinality
@@ -84,6 +84,13 @@ class BusinessEntityVersion(SQLModel, table=True):
     __table_args__ = (
         CheckConstraint("valid_to IS NULL OR valid_to > valid_from", name="business_entity_versions_valid_range"),
         CheckConstraint("transaction_to IS NULL OR transaction_to > transaction_from", name="business_entity_versions_transaction_range"),
+        ExcludeConstraint(
+            ("business_entity_id", "="),
+            (func.tstzrange("valid_from", "valid_to", "[)"), "&&"),
+            (func.tstzrange("transaction_from", "transaction_to", "[)"), "&&"),
+            using="gist",
+            name="ex_business_entity_versions_bitemporal_overlap",
+        ),
         Index("ix_business_entity_versions_entity", "business_entity_id"),
         Index("ix_business_entity_versions_revision", "revision_id"),
         Index("ix_business_entity_versions_entity_valid_from", "business_entity_id", "valid_from"),
@@ -132,6 +139,13 @@ class BusinessEntityFieldVersion(SQLModel, table=True):
     __table_args__ = (
         CheckConstraint("valid_to IS NULL OR valid_to > valid_from", name="business_entity_field_versions_valid_range"),
         CheckConstraint("transaction_to IS NULL OR transaction_to > transaction_from", name="business_entity_field_versions_transaction_range"),
+        ExcludeConstraint(
+            ("business_entity_field_id", "="),
+            (func.tstzrange("valid_from", "valid_to", "[)"), "&&"),
+            (func.tstzrange("transaction_from", "transaction_to", "[)"), "&&"),
+            using="gist",
+            name="ex_business_entity_field_versions_bitemporal_overlap",
+        ),
         Index("ix_business_entity_field_versions_field", "business_entity_field_id"),
         Index("ix_business_entity_field_versions_revision", "revision_id"),
         Index("ix_business_entity_field_versions_field_valid_from", "business_entity_field_id", "valid_from"),
@@ -176,6 +190,13 @@ class BusinessEntityRelationVersion(SQLModel, table=True):
     __table_args__ = (
         CheckConstraint("valid_to IS NULL OR valid_to > valid_from", name="business_entity_relation_versions_valid_range"),
         CheckConstraint("transaction_to IS NULL OR transaction_to > transaction_from", name="business_entity_relation_versions_transaction_range"),
+        ExcludeConstraint(
+            ("business_entity_relation_id", "="),
+            (func.tstzrange("valid_from", "valid_to", "[)"), "&&"),
+            (func.tstzrange("transaction_from", "transaction_to", "[)"), "&&"),
+            using="gist",
+            name="ex_business_entity_relation_versions_bitemporal_overlap",
+        ),
         Index("ix_business_entity_relation_versions_relation", "business_entity_relation_id"),
         Index("ix_business_entity_relation_versions_revision", "revision_id"),
         Index("ix_business_entity_relation_versions_from_entity", "from_entity_id"),
@@ -247,6 +268,13 @@ class BusinessObjectFieldValue(SQLModel, table=True):
     __table_args__ = (
         CheckConstraint("valid_to IS NULL OR valid_to > valid_from", name="business_object_field_values_valid_range"),
         CheckConstraint("transaction_to IS NULL OR transaction_to > transaction_from", name="business_object_field_values_transaction_range"),
+        ExcludeConstraint(
+            ("business_object_field_id", "="),
+            (func.tstzrange("valid_from", "valid_to", "[)"), "&&"),
+            (func.tstzrange("transaction_from", "transaction_to", "[)"), "&&"),
+            using="gist",
+            name="ex_business_object_field_values_bitemporal_overlap",
+        ),
         Index("ix_business_object_field_values_object_field", "business_object_field_id"),
         Index("ix_business_object_field_values_object_field_valid_from", "business_object_field_id", "valid_from"),
         Index("ix_business_object_field_values_object_field_transaction_from", "business_object_field_id", "transaction_from"),
