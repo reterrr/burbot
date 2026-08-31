@@ -26,6 +26,14 @@ LEGACY_TABLES = (
 )
 
 
+def _execute_ddl(ddl: str) -> None:
+    """Execute DDL one statement at a time for asyncpg compatibility."""
+    for statement in ddl.split(";"):
+        statement = statement.strip()
+        if statement:
+            op.execute(sa.text(statement))
+
+
 def upgrade() -> None:
     # The pre-v2 BusinessEntity represented a concrete tracked instance, while
     # v2 BusinessEntity represents a logical entity TYPE. Preserve the old
@@ -34,7 +42,7 @@ def upgrade() -> None:
     for table_name in LEGACY_TABLES:
         op.execute(sa.text(f'ALTER TABLE public."{table_name}" SET SCHEMA legacy'))
 
-    op.execute(sa.text("""
+    _execute_ddl("""
         CREATE TYPE business_definition_status AS ENUM
             ('DRAFT', 'ACTIVE', 'DEPRECATED', 'RETIRED');
         CREATE TYPE business_relation_cardinality AS ENUM
@@ -245,11 +253,11 @@ def upgrade() -> None:
             ON business_object_field_values (business_object_field_id, valid_to);
         CREATE INDEX ix_business_object_field_values_object_field_transaction_to
             ON business_object_field_values (business_object_field_id, transaction_to);
-    """))
+    """)
 
 
 def downgrade() -> None:
-    op.execute(sa.text("""
+    _execute_ddl("""
         DROP TABLE business_object_field_values;
         DROP TABLE business_object_fields;
         DROP TABLE business_objects;
@@ -263,7 +271,7 @@ def downgrade() -> None:
         DROP TABLE business_models;
         DROP TYPE business_relation_cardinality;
         DROP TYPE business_definition_status;
-    """))
+    """)
 
     for table_name in reversed(LEGACY_TABLES):
         op.execute(sa.text(f'ALTER TABLE legacy."{table_name}" SET SCHEMA public'))
