@@ -1,3 +1,4 @@
+from business_driver.schemas import meta
 from business_driver.schemas.api import (
     BusinessEntityCreate,
     BusinessEntityCurrentValueRead,
@@ -30,6 +31,7 @@ from business_driver.schemas.enums import (
 )
 
 __all__ = [
+    "meta",
     "BusinessEntity",
     "BusinessEntityCreate",
     "BusinessEntityCurrentValueRead",
