@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import BigInteger, CheckConstraint, Column, DateTime, Enum as SAEnum, ForeignKey, Index, String, Text, UniqueConstraint, func
+from sqlalchemy import BigInteger, CheckConstraint, Column, DateTime, Enum as SAEnum, ForeignKey, Index, String, Text, UniqueConstraint, func, literal_column
 from sqlalchemy.dialects.postgresql import JSONB, ExcludeConstraint
 from sqlmodel import Field, SQLModel
 
@@ -86,8 +86,8 @@ class BusinessEntityVersion(SQLModel, table=True):
         CheckConstraint("transaction_to IS NULL OR transaction_to > transaction_from", name="business_entity_versions_transaction_range"),
         ExcludeConstraint(
             ("business_entity_id", "="),
-            (func.tstzrange("valid_from", "valid_to", "[)"), "&&"),
-            (func.tstzrange("transaction_from", "transaction_to", "[)"), "&&"),
+            (literal_column("tstzrange(valid_from, valid_to, '[)')"), "&&"),
+            (literal_column("tstzrange(transaction_from, transaction_to, '[)')"), "&&"),
             using="gist",
             name="ex_business_entity_versions_bitemporal_overlap",
         ),
@@ -141,8 +141,8 @@ class BusinessEntityFieldVersion(SQLModel, table=True):
         CheckConstraint("transaction_to IS NULL OR transaction_to > transaction_from", name="business_entity_field_versions_transaction_range"),
         ExcludeConstraint(
             ("business_entity_field_id", "="),
-            (func.tstzrange("valid_from", "valid_to", "[)"), "&&"),
-            (func.tstzrange("transaction_from", "transaction_to", "[)"), "&&"),
+            (literal_column("tstzrange(valid_from, valid_to, '[)')"), "&&"),
+            (literal_column("tstzrange(transaction_from, transaction_to, '[)')"), "&&"),
             using="gist",
             name="ex_business_entity_field_versions_bitemporal_overlap",
         ),
@@ -192,8 +192,8 @@ class BusinessEntityRelationVersion(SQLModel, table=True):
         CheckConstraint("transaction_to IS NULL OR transaction_to > transaction_from", name="business_entity_relation_versions_transaction_range"),
         ExcludeConstraint(
             ("business_entity_relation_id", "="),
-            (func.tstzrange("valid_from", "valid_to", "[)"), "&&"),
-            (func.tstzrange("transaction_from", "transaction_to", "[)"), "&&"),
+            (literal_column("tstzrange(valid_from, valid_to, '[)')"), "&&"),
+            (literal_column("tstzrange(transaction_from, transaction_to, '[)')"), "&&"),
             using="gist",
             name="ex_business_entity_relation_versions_bitemporal_overlap",
         ),
@@ -270,8 +270,8 @@ class BusinessObjectFieldValue(SQLModel, table=True):
         CheckConstraint("transaction_to IS NULL OR transaction_to > transaction_from", name="business_object_field_values_transaction_range"),
         ExcludeConstraint(
             ("business_object_field_id", "="),
-            (func.tstzrange("valid_from", "valid_to", "[)"), "&&"),
-            (func.tstzrange("transaction_from", "transaction_to", "[)"), "&&"),
+            (literal_column("tstzrange(valid_from, valid_to, '[)')"), "&&"),
+            (literal_column("tstzrange(transaction_from, transaction_to, '[)')"), "&&"),
             using="gist",
             name="ex_business_object_field_values_bitemporal_overlap",
         ),
