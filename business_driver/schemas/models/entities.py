@@ -32,6 +32,7 @@ class BusinessEntity(SQLModel, table=True):
     """Generic identity of something Burbot tracks as a business entity."""
 
     __tablename__ = "business_entities"
+    __table_args__ = {"schema": "legacy"}
 
     id: int | None = Field(default=None, primary_key=True)
     entity_type: str = Field(
@@ -85,16 +86,17 @@ class BusinessEntityRelation(SQLModel, table=True):
             unique=True,
             postgresql_where=text("valid_to IS NULL"),
         ),
+        {"schema": "legacy"},
     )
 
     id: int | None = Field(default=None, primary_key=True)
 
     from_entity_id: int = Field(
-        foreign_key="business_entities.id",
+        foreign_key="legacy.business_entities.id",
         nullable=False,
     )
     to_entity_id: int = Field(
-        foreign_key="business_entities.id",
+        foreign_key="legacy.business_entities.id",
         nullable=False,
     )
 
@@ -132,10 +134,11 @@ class BusinessEntityRevision(SQLModel, table=True):
     """Groups several accepted field changes into one logical update."""
 
     __tablename__ = "business_entity_revisions"
+    __table_args__ = {"schema": "legacy"}
 
     id: int | None = Field(default=None, primary_key=True)
     business_entity_id: int = Field(
-        foreign_key="business_entities.id",
+        foreign_key="legacy.business_entities.id",
         nullable=False,
         index=True,
     )
@@ -171,11 +174,12 @@ class BusinessEntityField(SQLModel, table=True):
             unique=True,
             postgresql_where=text("deleted_at IS NULL"),
         ),
+        {"schema": "legacy"},
     )
 
     id: int | None = Field(default=None, primary_key=True)
     business_entity_id: int = Field(
-        foreign_key="business_entities.id",
+        foreign_key="legacy.business_entities.id",
         nullable=False,
         index=True,
     )
@@ -259,17 +263,18 @@ class BusinessEntityFieldValue(SQLModel, table=True):
             unique=True,
             postgresql_where=text("valid_to IS NULL"),
         ),
+        {"schema": "legacy"},
     )
 
     id: int | None = Field(default=None, primary_key=True)
     business_entity_field_id: int = Field(
-        foreign_key="business_entity_fields.id",
+        foreign_key="legacy.business_entity_fields.id",
         nullable=False,
         index=True,
     )
     revision_id: int | None = Field(
         default=None,
-        foreign_key="business_entity_revisions.id",
+        foreign_key="legacy.business_entity_revisions.id",
         nullable=True,
     )
 
