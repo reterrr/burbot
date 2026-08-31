@@ -1,4 +1,0 @@
-Alembic migration environment for Burbot.
-
-The database URL is read from DATABASE_URL. If a .env file exists in the
-repository root, it is loaded automatically.

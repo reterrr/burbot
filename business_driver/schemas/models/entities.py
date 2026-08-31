@@ -24,8 +24,7 @@ from business_driver.schemas.enums import (
 
 
 def utc_now() -> datetime:
-    """Return an aware UTC timestamp without depending on the host project."""
-
+    """Return an aware UTC timestamp without depending on the host project."""  
     return datetime.now(timezone.utc)
 
 
