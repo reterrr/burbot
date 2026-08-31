@@ -1,59 +1,10 @@
-from business_driver.schemas import meta
-from business_driver.schemas.api import (
-    BusinessEntityCreate,
-    BusinessEntityCurrentValueRead,
-    BusinessEntityFieldCreate,
-    BusinessEntityFieldRead,
-    BusinessEntityFieldUpdate,
-    BusinessEntityFieldValueRead,
-    BusinessEntityFieldValueSet,
-    BusinessEntityRead,
-    BusinessEntityRelationCreate,
-    BusinessEntityRelationRead,
-    BusinessEntityRevisionRead,
-    BusinessEntityStateField,
-    BusinessEntityStatePatch,
-    BusinessEntityStateRead,
-    BusinessEntityUpdate,
-    RelationDirection,
-)
-from business_driver.schemas.entities import (
-    BusinessEntity,
-    BusinessEntityField,
-    BusinessEntityFieldValue,
-    BusinessEntityRelation,
-    BusinessEntityRevision,
-)
-from business_driver.schemas.enums import (
-    BusinessEntityFieldCardinality,
-    BusinessEntityFieldDataType,
-    ConfirmedBy,
-)
+"""Business schema package.
 
-__all__ = [
-    "meta",
-    "BusinessEntity",
-    "BusinessEntityCreate",
-    "BusinessEntityCurrentValueRead",
-    "BusinessEntityField",
-    "BusinessEntityFieldCardinality",
-    "BusinessEntityFieldCreate",
-    "BusinessEntityFieldDataType",
-    "BusinessEntityFieldRead",
-    "BusinessEntityFieldUpdate",
-    "BusinessEntityFieldValue",
-    "BusinessEntityFieldValueRead",
-    "BusinessEntityFieldValueSet",
-    "BusinessEntityRead",
-    "BusinessEntityRelation",
-    "BusinessEntityRelationCreate",
-    "BusinessEntityRelationRead",
-    "BusinessEntityRevision",
-    "BusinessEntityRevisionRead",
-    "BusinessEntityStateField",
-    "BusinessEntityStatePatch",
-    "BusinessEntityStateRead",
-    "BusinessEntityUpdate",
-    "ConfirmedBy",
-    "RelationDirection",
-]
+The v2 logical meta/data model lives in :mod:`business_driver.schemas.meta`.
+The pre-v2 API models remain available from their explicit modules
+(`schemas.api`, `schemas.entities`, `schemas.enums`) during migration.
+"""
+
+from business_driver.schemas import meta
+
+__all__ = ["meta"]
