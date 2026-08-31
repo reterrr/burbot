@@ -24,7 +24,7 @@ load_dotenv(PROJECT_ROOT / ".env")
 # before any table is registered. Feature models use the same SQLModel
 # metadata object and must also be imported for Alembic autogeneration.
 from schemas.core.db import metadata  # noqa: E402
-from business_driver.schemas import entities as _business_entities  # noqa: E402,F401
+from business_driver.schemas import meta as _business_meta  # noqa: E402,F401
 
 
 config = context.config
