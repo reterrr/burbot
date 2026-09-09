@@ -1,4 +1,4 @@
-"""Source lifecycle contract, shared with legacy imports."""
+"""Enums belonging to Layer 2: Sources / Acquisition."""
 
 from enum import StrEnum
 
@@ -38,3 +38,16 @@ class SourceStateTrigger(StrEnum):
     DISCOVERY_ENGINE = "DISCOVERY_ENGINE"
     POLICY_CHECK = "POLICY_CHECK"
     SYSTEM = "SYSTEM"
+
+
+class WarningSeverity(StrEnum):
+    INFO = "INFO"
+    WARNING = "WARNING"
+    ERROR = "ERROR"
+    CRITICAL = "CRITICAL"
+
+
+class WarningStatus(StrEnum):
+    OPEN = "OPEN"
+    RESOLVED = "RESOLVED"
+    IGNORED = "IGNORED"

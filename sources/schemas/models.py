@@ -1,106 +1,100 @@
-"""Source registry tables; no imports from the business or extraction modules."""
+"""The ten Sources / Acquisition tables from the Layer 2 DBML contract."""
 
 from datetime import datetime
+from typing import Any
 
 from sqlalchemy import (
+    JSON,
     BigInteger,
+    Boolean,
     CheckConstraint,
     Column,
     DateTime,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     Integer,
+    MetaData,
     String,
     Text,
     UniqueConstraint,
     func,
     text,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Field, SQLModel
 
 from sources.schemas.common import CreatedAtMixin, UpdatedAtMixin, pg_enum, utc_now
-from sources.schemas.enums import SourceState, SourceStateTrigger, SourceType
+from sources.schemas.enums import (
+    SourceState,
+    SourceStateTrigger,
+    SourceType,
+    WarningSeverity,
+    WarningStatus,
+)
+
+
+def id_column() -> Column:
+    return Column(
+        BigInteger().with_variant(Integer, "sqlite"), primary_key=True, autoincrement=True
+    )
+
+
+def reference(target: str, *, nullable: bool = False, primary_key: bool = False) -> Column:
+    return Column(
+        BigInteger,
+        ForeignKey(target, ondelete="RESTRICT"),
+        nullable=nullable,
+        primary_key=primary_key,
+    )
+
+
+def timestamp() -> Column:
+    return Column(DateTime(timezone=True), nullable=True)
+
+
+def enabled_column() -> Column:
+    return Column(Boolean, nullable=False, server_default=text("true"))
 
 
 class StoredFile(CreatedAtMixin, table=True):
-    """Describe a payload stored outside the relational database.
-
-    :ivar id: Database primary key.
-    :ivar storage_key: Storage key.
-    :ivar original_name: Original name.
-    :ivar mime_type: Mime type.
-    :ivar size_bytes: Size bytes.
-    :ivar sha256: Sha256.
-    :ivar purged_at: Timestamp for purged.
-    """
-
     __tablename__ = "stored_files"
     __table_args__ = (
+        UniqueConstraint("storage_key", name="uq_stored_files_storage_key"),
         CheckConstraint(
-            "size_bytes IS NULL OR size_bytes >= 0",
-            name="size_bytes_non_negative",
+            "size_bytes IS NULL OR size_bytes >= 0", name="stored_files_size_nonnegative"
         ),
-        Index("ix_stored_files_sha256", "sha256"),
     )
 
-    id: int | None = Field(default=None, primary_key=True)
-    storage_key: str = Field(sa_column=Column(String, nullable=False, unique=True))
-    original_name: str | None = Field(
-        default=None,
-        sa_column=Column(String, nullable=True),
-    )
+    id: int | None = Field(default=None, sa_column=id_column())
+    storage_key: str = Field(sa_column=Column(String, nullable=False))
+    original_name: str | None = Field(default=None, sa_column=Column(String, nullable=True))
     mime_type: str = Field(sa_column=Column(String, nullable=False))
-    size_bytes: int | None = Field(
-        default=None,
-        sa_column=Column(BigInteger, nullable=True),
-    )
-    sha256: str | None = Field(
-        default=None,
-        sa_column=Column(String(64), nullable=True),
-    )
-    purged_at: datetime | None = Field(
-        default=None,
-        sa_column=Column(DateTime(timezone=True), nullable=True),
-    )
+    size_bytes: int | None = Field(default=None, sa_column=Column(BigInteger, nullable=True))
+    sha256: str | None = Field(default=None, sa_column=Column(String(64), nullable=True))
 
 
 class Source(UpdatedAtMixin, table=True):
-    """Register an HTML or PDF URL with an optional stored payload reference.
-
-    :ivar id: Database primary key.
-    :ivar url: Canonical URL of the sources.
-    :ivar state: State.
-    :ivar source_type: Source type.
-    :ivar file_id: Identifier of the related file.
-    :ivar last_state_change_at: Timestamp for last state change.
-    """
+    """An acquisition identity located by URL, stored file, or both."""
 
     __tablename__ = "sources"
     __table_args__ = (
         UniqueConstraint("url", name="uq_sources_url"),
+        CheckConstraint("url IS NOT NULL OR file_id IS NOT NULL", name="sources_locator_required"),
         Index("ix_sources_state", "state"),
-        Index("ix_sources_source_type", "source_type"),
+        Index("ix_sources_type", "type"),
     )
 
-    id: int | None = Field(default=None, primary_key=True)
-    url: str = Field(sa_column=Column(Text, nullable=False))
+    id: int | None = Field(default=None, sa_column=id_column())
+    type: SourceType = Field(sa_column=Column(pg_enum(SourceType, "source_type"), nullable=False))
+    url: str | None = Field(default=None, sa_column=Column(Text, nullable=True))
+    file_id: int | None = Field(default=None, sa_column=reference("stored_files.id", nullable=True))
     state: SourceState = Field(
         default=SourceState.UNDISCOVERED,
         sa_column=Column(
             pg_enum(SourceState, "source_state"),
             nullable=False,
             server_default=text("'UNDISCOVERED'"),
-        ),
-    )
-    source_type: SourceType = Field(
-        sa_column=Column(pg_enum(SourceType, "source_type"), nullable=False)
-    )
-    file_id: int | None = Field(
-        default=None,
-        sa_column=Column(
-            Integer,
-            ForeignKey("stored_files.id", ondelete="RESTRICT"),
-            nullable=True,
         ),
     )
     last_state_change_at: datetime = Field(
@@ -113,48 +107,49 @@ class Source(UpdatedAtMixin, table=True):
     )
 
 
-class SourceStateHistory(SQLModel, table=True):
-    """Record an immutable sources state transition.
+class SourceMetadata(UpdatedAtMixin, table=True):
+    __tablename__ = "source_metadata"
 
-    :ivar id: Database primary key.
-    :ivar source_id: Identifier of the related sources.
-    :ivar from_state: From state.
-    :ivar to_state: To state.
-    :ivar changed_at: Timestamp for changed.
-    :ivar reason: Reason.
-    :ivar triggered_by: Triggered by.
-    """
+    source_id: int = Field(sa_column=reference("sources.id", primary_key=True))
+    latest_content_hash: str | None = Field(
+        default=None, sa_column=Column(String(64), nullable=True)
+    )
+    latest_structure_hash: str | None = Field(
+        default=None, sa_column=Column(String(64), nullable=True)
+    )
+    hashes_updated_at: datetime | None = Field(default=None, sa_column=timestamp())
 
-    __tablename__ = "source_state_history"
+
+class SourceCheckSchedule(UpdatedAtMixin, table=True):
+    """One fetch cadence per source, shared by all of its tracked fields."""
+
+    __tablename__ = "source_check_schedules"
     __table_args__ = (
-        Index(
-            "ix_source_state_history_source_changed",
-            "source_id",
-            "changed_at",
-        ),
+        CheckConstraint("interval_seconds > 0", name="source_check_schedules_interval_positive"),
     )
 
-    id: int | None = Field(default=None, primary_key=True)
-    source_id: int = Field(
-        sa_column=Column(
-            Integer,
-            ForeignKey("sources.id", ondelete="RESTRICT"),
-            nullable=False,
-        )
-    )
+    source_id: int = Field(sa_column=reference("sources.id", primary_key=True))
+    interval_seconds: int = Field(sa_column=Column(Integer, nullable=False))
+    last_checked_at: datetime | None = Field(default=None, sa_column=timestamp())
+    next_check_at: datetime | None = Field(default=None, sa_column=timestamp())
+    enabled: bool = Field(default=True, sa_column=enabled_column())
+
+
+class SourceStateHistory(SQLModel, table=True):
+    __tablename__ = "source_state_history"
+    __table_args__ = (Index("ix_source_state_history_source_changed", "source_id", "changed_at"),)
+
+    id: int | None = Field(default=None, sa_column=id_column())
+    source_id: int = Field(sa_column=reference("sources.id"))
     from_state: SourceState | None = Field(
         default=None,
-        sa_column=Column(pg_enum(SourceState, "source_state"), nullable=True),
+        sa_column=Column(
+            pg_enum(SourceState, "source_state"),
+            nullable=True,
+        ),
     )
     to_state: SourceState = Field(
         sa_column=Column(pg_enum(SourceState, "source_state"), nullable=False)
-    )
-    changed_at: datetime = Field(
-        sa_column=Column(
-            DateTime(timezone=True),
-            nullable=False,
-            server_default=func.now(),
-        )
     )
     reason: str | None = Field(default=None, sa_column=Column(Text, nullable=True))
     triggered_by: SourceStateTrigger = Field(
@@ -165,3 +160,165 @@ class SourceStateHistory(SQLModel, table=True):
             server_default=text("'SYSTEM'"),
         ),
     )
+    changed_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
+
+
+class SourceWarning(UpdatedAtMixin, table=True):
+    __tablename__ = "source_warnings"
+    __table_args__ = (
+        Index("ix_source_warnings_source_status", "source_id", "status"),
+        Index("ix_source_warnings_severity_status", "severity", "status"),
+    )
+
+    id: int | None = Field(default=None, sa_column=id_column())
+    source_id: int = Field(sa_column=reference("sources.id"))
+    severity: WarningSeverity = Field(
+        default=WarningSeverity.WARNING,
+        sa_column=Column(
+            pg_enum(WarningSeverity, "warning_severity"),
+            nullable=False,
+            server_default=text("'WARNING'"),
+        ),
+    )
+    status: WarningStatus = Field(
+        default=WarningStatus.OPEN,
+        sa_column=Column(
+            pg_enum(WarningStatus, "warning_status"),
+            nullable=False,
+            server_default=text("'OPEN'"),
+        ),
+    )
+    warning_type: str | None = Field(default=None, sa_column=Column(String, nullable=True))
+    description: str = Field(sa_column=Column(Text, nullable=False))
+    details_json: dict[str, Any] | None = Field(
+        default=None,
+        sa_column=Column(
+            JSONB().with_variant(JSON(), "sqlite"),
+            nullable=True,
+        ),
+    )
+    resolved_at: datetime | None = Field(default=None, sa_column=timestamp())
+
+
+class SourceBusinessEntity(CreatedAtMixin, table=True):
+    """Context only: a source may contain many objects of this entity type."""
+
+    __tablename__ = "source_business_entities"
+    __table_args__ = (Index("ix_source_business_entities_entity", "business_entity_id"),)
+
+    source_id: int = Field(sa_column=reference("sources.id", primary_key=True))
+    business_entity_id: int = Field(sa_column=reference("business_entities.id", primary_key=True))
+
+
+class SourceBusinessObject(CreatedAtMixin, table=True):
+    __tablename__ = "source_business_objects"
+    __table_args__ = (Index("ix_source_business_objects_object", "business_object_id"),)
+
+    source_id: int = Field(sa_column=reference("sources.id", primary_key=True))
+    business_object_id: int = Field(sa_column=reference("business_objects.id", primary_key=True))
+
+
+class SourceFieldTracking(UpdatedAtMixin, table=True):
+    """Source + logical field; does not yet identify a concrete business object."""
+
+    __tablename__ = "source_field_trackings"
+    __table_args__ = (
+        UniqueConstraint(
+            "source_id", "business_entity_field_id", name="uq_source_field_trackings_field"
+        ),
+        Index("ix_source_field_trackings_field", "business_entity_field_id"),
+        CheckConstraint(
+            "desired_refresh_seconds IS NULL OR desired_refresh_seconds > 0",
+            name="source_field_trackings_refresh_positive",
+        ),
+    )
+
+    id: int | None = Field(default=None, sa_column=id_column())
+    source_id: int = Field(sa_column=reference("sources.id"))
+    business_entity_field_id: int = Field(sa_column=reference("business_entity_fields.id"))
+    tracking_enabled: bool = Field(default=True, sa_column=enabled_column())
+    desired_refresh_seconds: int | None = Field(
+        default=None, sa_column=Column(Integer, nullable=True)
+    )
+
+
+class SourceObjectFieldTracking(UpdatedAtMixin, table=True):
+    """A durable source + object + field binding; baseline is evidence, not canonical data."""
+
+    __tablename__ = "source_object_field_trackings"
+    __table_args__ = (
+        UniqueConstraint(
+            "source_field_tracking_id",
+            "business_object_field_id",
+            name="uq_source_object_field_trackings_field",
+        ),
+        Index("ix_source_object_field_trackings_object_field", "business_object_field_id"),
+        Index("ix_source_object_field_trackings_enabled", "tracking_enabled"),
+    )
+
+    id: int | None = Field(default=None, sa_column=id_column())
+    source_field_tracking_id: int = Field(sa_column=reference("source_field_trackings.id"))
+    business_object_field_id: int = Field(sa_column=reference("business_object_fields.id"))
+    tracking_enabled: bool = Field(default=True, sa_column=enabled_column())
+    # Layer 3 owns the target table. register_evidence_references attaches the
+    # two physical FKs when that model is present in the application's metadata.
+    last_observation_id: int | None = Field(
+        default=None,
+        sa_column=Column(
+            BigInteger,
+            nullable=True,
+            info={"references": "field_observations.id"},
+        ),
+    )
+    baseline_observation_id: int | None = Field(
+        default=None,
+        sa_column=Column(
+            BigInteger,
+            nullable=True,
+            info={"references": "field_observations.id"},
+        ),
+    )
+    last_checked_at: datetime | None = Field(default=None, sa_column=timestamp())
+    last_changed_at: datetime | None = Field(default=None, sa_column=timestamp())
+
+
+SOURCE_TABLES = (
+    StoredFile.__table__,
+    Source.__table__,
+    SourceMetadata.__table__,
+    SourceCheckSchedule.__table__,
+    SourceStateHistory.__table__,
+    SourceWarning.__table__,
+    SourceBusinessEntity.__table__,
+    SourceBusinessObject.__table__,
+    SourceFieldTracking.__table__,
+    SourceObjectFieldTracking.__table__,
+)
+
+
+def register_evidence_references(metadata: MetaData = SQLModel.metadata) -> bool:
+    """Complete the Layer 2/3 cycle after Layer 3's real model has been imported.
+
+    No placeholder evidence table is registered and no DDL is executed here.
+    Call after loading all model modules, before Alembic autogeneration.
+    """
+    evidence = metadata.tables.get("field_observations")
+    if evidence is None or not {
+        "id",
+        "source_field_tracking_id",
+        "source_object_field_tracking_id",
+    }.issubset(evidence.c.keys()):
+        return False
+    tracking = metadata.tables["source_object_field_trackings"]
+    for column_name in ("last_observation_id", "baseline_observation_id"):
+        if not tracking.c[column_name].foreign_keys:
+            tracking.append_constraint(
+                ForeignKeyConstraint(
+                    [column_name],
+                    ["field_observations.id"],
+                    ondelete="RESTRICT",
+                    use_alter=True,
+                    name=f"fk_source_object_field_trackings_{column_name}",
+                )
+            )
+    return True

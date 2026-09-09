@@ -14,5 +14,14 @@ class SourceConflict(SourceError):
     pass
 
 
-class InvalidSourceFile(SourceError):
+class SourceResourceNotFound(SourceError):
+    def __init__(self, resource: str, identifier: int) -> None:
+        super().__init__(f"{resource} {identifier} not found")
+
+
+class SourceValidationError(SourceError):
+    pass
+
+
+class InvalidSourceFile(SourceValidationError):
     pass

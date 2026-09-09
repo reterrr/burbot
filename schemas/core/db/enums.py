@@ -2,16 +2,6 @@
 
 from enum import StrEnum
 
-from sources.schemas.enums import (
-    SourceState as SourceState,
-)
-from sources.schemas.enums import (
-    SourceStateTrigger as SourceStateTrigger,
-)
-from sources.schemas.enums import (
-    SourceType as SourceType,
-)
-
 
 class DatabaseEnum(StrEnum):
     """Provide the common base for enums persisted by their string values."""
@@ -74,6 +64,40 @@ class BusinessEntityType(DatabaseEnum):
     PROJECT = "PROJECT"
     OPERATOR = "OPERATOR"
     RECRUITMENT = "RECRUITMENT"
+
+
+class SourceState(DatabaseEnum):
+    """Enumerate the supported sources state values."""
+    ADDING = "ADDING"
+    UNDISCOVERED = "UNDISCOVERED"
+    DISCOVERING = "DISCOVERING"
+    VALIDATING = "VALIDATING"
+    ACTIVE = "ACTIVE"
+    DEGRADED = "DEGRADED"
+    REDISCOVERING = "REDISCOVERING"
+    NEEDS_REVIEW = "NEEDS_REVIEW"
+    FAILED = "FAILED"
+    SUSPENDED = "SUSPENDED"
+    ARCHIVED = "ARCHIVED"
+    BLOCKED_BY_POLICY = "BLOCKED_BY_POLICY"
+
+
+class SourceType(DatabaseEnum):
+    """Enumerate the supported sources type values."""
+    HTML = "HTML"
+    PDF = "PDF"
+
+
+class SourceStateTrigger(DatabaseEnum):
+    """Enumerate the supported sources state trigger values."""
+    USER = "USER"
+    SCHEDULER = "SCHEDULER"
+    CRAWLER = "CRAWLER"
+    PARSER = "PARSER"
+    VALIDATOR = "VALIDATOR"
+    DISCOVERY_ENGINE = "DISCOVERY_ENGINE"
+    POLICY_CHECK = "POLICY_CHECK"
+    SYSTEM = "SYSTEM"
 
 
 class WarningSeverity(DatabaseEnum):
