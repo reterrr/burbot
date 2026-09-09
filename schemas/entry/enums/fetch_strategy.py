@@ -1,4 +1,4 @@
-"""Strategies available when fetching an imported source."""
+"""Strategies available when fetching an imported sources."""
 
 # enums/fetch_strategy.py
 

@@ -9,7 +9,7 @@ from common import BurInputModel, ExternalRef
 
 
 class SourceSectionType(StrEnum):
-    """Enumerate the supported source section type values."""
+    """Enumerate the supported sources section type values."""
     SINGLE_CONTENT = "single_content"
     ITEM_LIST = "item_list"
     DOCUMENT_LIST = "document_list"
@@ -20,10 +20,10 @@ class SourceSectionType(StrEnum):
 
 
 class BurSourceSectionIn(BurInputModel):
-    """Validate one logical section of a BUR source.
+    """Validate one logical section of a BUR sources.
 
     :ivar section_ref: Stable external reference to the section.
-    :ivar project_source_ref: Stable external reference to the project source.
+    :ivar project_source_ref: Stable external reference to the project sources.
     :ivar name: Human-readable name.
     :ivar section_type: Section type.
     :ivar mapping_status: Mapping status.

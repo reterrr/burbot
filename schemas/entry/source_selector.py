@@ -1,4 +1,4 @@
-"""Input schemas for selectors applied to BUR source sections."""
+"""Input schemas for selectors applied to BUR sources sections."""
 
 # schemas/entry/source_selector.py
 
@@ -32,7 +32,7 @@ class SelectorPurpose(StrEnum):
 
 
 class BurSourceSelectorIn(BurInputModel):
-    """Validate one selector attached to a BUR source section.
+    """Validate one selector attached to a BUR sources section.
 
     :ivar selector_ref: Stable external reference to the selector.
     :ivar section_ref: Stable external reference to the section.

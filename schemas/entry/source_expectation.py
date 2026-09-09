@@ -1,4 +1,4 @@
-"""Input schema describing information expected from a BUR source."""
+"""Input schema describing information expected from a BUR sources."""
 
 # schemas/entry/source_expectation.py
 
@@ -7,10 +7,10 @@ from common import BurInputModel, ExternalRef
 
 
 class BurSourceExpectationIn(BurInputModel):
-    """Validate an expected-information declaration for a source.
+    """Validate an expected-information declaration for a sources.
 
     :ivar expectation_ref: Stable external reference to the expectation.
-    :ivar project_source_ref: Stable external reference to the project source.
+    :ivar project_source_ref: Stable external reference to the project sources.
     :ivar section_ref: Stable external reference to the section.
     :ivar information_type: Information type.
     :ivar required: Required.

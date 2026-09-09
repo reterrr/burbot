@@ -10,11 +10,11 @@ from common import BurInputModel, ExternalRef
 
 
 class BurProjectSourceIn(BurInputModel):
-    """Validate an association between a BUR project and source.
+    """Validate an association between a BUR project and sources.
 
-    :ivar project_source_ref: Stable external reference to the project source.
+    :ivar project_source_ref: Stable external reference to the project sources.
     :ivar project_ref: Stable external reference to the project.
-    :ivar source_ref: Stable external reference to the source.
+    :ivar source_ref: Stable external reference to the sources.
     :ivar source_type: Source type.
     :ivar mapping_status: Mapping status.
     :ivar monitoring_enabled: Whether monitoring enabled.

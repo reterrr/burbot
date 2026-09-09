@@ -1,4 +1,4 @@
-"""Expected information categories used by source import schemas."""
+"""Expected information categories used by sources import schemas."""
 
 # enums/expected_information.py
 

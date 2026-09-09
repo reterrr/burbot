@@ -164,10 +164,10 @@ class ProjectRepository(SoftDeleteRepository[Project, int], Protocol):
         project_id: int,
         source_id: int,
     ) -> ProjectSource:
-        """Create or update source.
+        """Create or update sources.
 
         :param project_id: Identifier of the project.
-        :param source_id: Identifier of the source.
+        :param source_id: Identifier of the sources.
         :return: Persisted record reflecting the completed operation.
         """
         ...
@@ -177,10 +177,10 @@ class ProjectRepository(SoftDeleteRepository[Project, int], Protocol):
         project_id: int,
         source_id: int,
     ) -> bool:
-        """Remove source.
+        """Remove sources.
 
         :param project_id: Identifier of the project.
-        :param source_id: Identifier of the source.
+        :param source_id: Identifier of the sources.
         :return: ``True`` when the requested state change was applied.
         """
         ...
@@ -218,7 +218,7 @@ class OperatorRepository(SoftDeleteRepository[Operator, int], Protocol):
         ...
 
     async def get_main_source(self, operator_id: int) -> Source | None:
-        """Retrieve main source.
+        """Retrieve main sources.
 
         :param operator_id: Identifier of the operator.
         :return: Matching record, or ``None`` when no record exists.
@@ -232,11 +232,11 @@ class OperatorRepository(SoftDeleteRepository[Operator, int], Protocol):
         *,
         is_main: bool = False,
     ) -> OperatorSource:
-        """Create or update source.
+        """Create or update sources.
 
         :param operator_id: Identifier of the operator.
-        :param source_id: Identifier of the source.
-        :param is_main: Whether the associated source is the operator's primary source.
+        :param source_id: Identifier of the sources.
+        :param is_main: Whether the associated sources is the operator's primary sources.
         :return: Persisted record reflecting the completed operation.
         """
         ...
@@ -246,10 +246,10 @@ class OperatorRepository(SoftDeleteRepository[Operator, int], Protocol):
         operator_id: int,
         source_id: int,
     ) -> bool:
-        """Remove source.
+        """Remove sources.
 
         :param operator_id: Identifier of the operator.
-        :param source_id: Identifier of the source.
+        :param source_id: Identifier of the sources.
         :return: ``True`` when the requested state change was applied.
         """
         ...
@@ -351,10 +351,10 @@ class RecruitmentRepository(SoftDeleteRepository[Recruitment, int], Protocol):
         recruitment_id: int,
         source_id: int,
     ) -> RecruitmentSource:
-        """Create or update source.
+        """Create or update sources.
 
         :param recruitment_id: Identifier of the recruitment.
-        :param source_id: Identifier of the source.
+        :param source_id: Identifier of the sources.
         :return: Persisted record reflecting the completed operation.
         """
         ...
@@ -364,10 +364,10 @@ class RecruitmentRepository(SoftDeleteRepository[Recruitment, int], Protocol):
         recruitment_id: int,
         source_id: int,
     ) -> bool:
-        """Remove source.
+        """Remove sources.
 
         :param recruitment_id: Identifier of the recruitment.
-        :param source_id: Identifier of the source.
+        :param source_id: Identifier of the sources.
         :return: ``True`` when the requested state change was applied.
         """
         ...

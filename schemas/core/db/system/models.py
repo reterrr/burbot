@@ -84,7 +84,7 @@ class Source(UpdatedAtMixin, table=True):
     """Represent a monitored web page, document, API, or stored file.
 
     :ivar id: Database primary key.
-    :ivar url: Canonical URL of the source.
+    :ivar url: Canonical URL of the sources.
     :ivar state: State.
     :ivar source_type: Source type.
     :ivar file_id: Identifier of the related file.
@@ -128,9 +128,9 @@ class Source(UpdatedAtMixin, table=True):
 
 
 class SourceMetadata(UpdatedAtMixin, table=True):
-    """Store the latest hashes and robots.txt assessment for a source.
+    """Store the latest hashes and robots.txt assessment for a sources.
 
-    :ivar source_id: Identifier of the related source.
+    :ivar source_id: Identifier of the related sources.
     :ivar latest_content_hash: Latest content hash.
     :ivar latest_structure_hash: Latest structure hash.
     :ivar hashes_updated_at: Timestamp for hashes updated.
@@ -176,9 +176,9 @@ class SourceMetadata(UpdatedAtMixin, table=True):
 
 
 class CheckSchedule(UpdatedAtMixin, table=True):
-    """Store adaptive polling state for a monitored source.
+    """Store adaptive polling state for a monitored sources.
 
-    :ivar source_id: Identifier of the related source.
+    :ivar source_id: Identifier of the related sources.
     :ivar interval_seconds: Interval seconds.
     :ivar last_checked_at: Timestamp for last checked.
     :ivar next_check_at: Timestamp for next check.
@@ -234,10 +234,10 @@ class CheckSchedule(UpdatedAtMixin, table=True):
 
 
 class SourceStateHistory(SQLModel, table=True):
-    """Record an immutable source state transition.
+    """Record an immutable sources state transition.
 
     :ivar id: Database primary key.
-    :ivar source_id: Identifier of the related source.
+    :ivar source_id: Identifier of the related sources.
     :ivar from_state: From state.
     :ivar to_state: To state.
     :ivar changed_at: Timestamp for changed.
@@ -287,10 +287,10 @@ class SourceStateHistory(SQLModel, table=True):
 
 
 class SourceWarning(UpdatedAtMixin, table=True):
-    """Represent a warning raised while monitoring or processing a source.
+    """Represent a warning raised while monitoring or processing a sources.
 
     :ivar id: Database primary key.
-    :ivar source_id: Identifier of the related source.
+    :ivar source_id: Identifier of the related sources.
     :ivar severity: Severity.
     :ivar status: Status.
     :ivar warning_type: Warning type.
@@ -347,7 +347,7 @@ class OperatorSource(SoftDeleteMixin, table=True):
     """Associate an operator with one of its monitored sources.
 
     :ivar operator_id: Identifier of the related operator.
-    :ivar source_id: Identifier of the related source.
+    :ivar source_id: Identifier of the related sources.
     :ivar is_main: Whether main.
     """
     __tablename__ = "operator_sources"
@@ -387,7 +387,7 @@ class ProjectSource(SoftDeleteMixin, table=True):
     """Associate a project with one of its monitored sources.
 
     :ivar project_id: Identifier of the related project.
-    :ivar source_id: Identifier of the related source.
+    :ivar source_id: Identifier of the related sources.
     """
     __tablename__ = "project_sources"
     __table_args__ = (Index("ix_project_sources_source_id", "source_id"),)
@@ -414,7 +414,7 @@ class RecruitmentSource(SoftDeleteMixin, table=True):
     """Associate a recruitment round with one of its monitored sources.
 
     :ivar recruitment_id: Identifier of the related recruitment.
-    :ivar source_id: Identifier of the related source.
+    :ivar source_id: Identifier of the related sources.
     """
     __tablename__ = "recruitment_sources"
     __table_args__ = (Index("ix_recruitment_sources_source_id", "source_id"),)
@@ -438,10 +438,10 @@ class RecruitmentSource(SoftDeleteMixin, table=True):
 
 
 class SourceSnapshot(CreatedAtMixin, table=True):
-    """Describe an immutable result of fetching a source.
+    """Describe an immutable result of fetching a sources.
 
     :ivar id: Database primary key.
-    :ivar source_id: Identifier of the related source.
+    :ivar source_id: Identifier of the related sources.
     :ivar file_id: Identifier of the related file.
     :ivar fetched_at: Timestamp for fetched.
     :ivar http_status: Http status.

@@ -54,7 +54,7 @@ class StoredFileRepository(ReadRepository[StoredFile, int], Protocol):
 
 
 class SourceRepository(CurrentStateRepository[Source, int], Protocol):
-    """Define persistence operations for source records."""
+    """Define persistence operations for sources records."""
 
     async def get_by_url(self, url: str) -> Source | None:
         """Retrieve a record by url.
@@ -97,7 +97,7 @@ class SourceRepository(CurrentStateRepository[Source, int], Protocol):
     ) -> Sequence[SourceStateHistory]:
         """List state history.
 
-        :param source_id: Identifier of the source.
+        :param source_id: Identifier of the sources.
         :return: Matching records in deterministic repository order.
         """
         ...
@@ -105,7 +105,7 @@ class SourceRepository(CurrentStateRepository[Source, int], Protocol):
     async def get_metadata(self, source_id: int) -> SourceMetadata | None:
         """Retrieve metadata.
 
-        :param source_id: Identifier of the source.
+        :param source_id: Identifier of the sources.
         :return: Matching record, or ``None`` when no record exists.
         """
         ...
@@ -121,7 +121,7 @@ class SourceRepository(CurrentStateRepository[Source, int], Protocol):
     async def get_schedule(self, source_id: int) -> CheckSchedule | None:
         """Retrieve schedule.
 
-        :param source_id: Identifier of the source.
+        :param source_id: Identifier of the sources.
         :return: Matching record, or ``None`` when no record exists.
         """
         ...
@@ -162,7 +162,7 @@ class SourceRepository(CurrentStateRepository[Source, int], Protocol):
     ) -> Sequence[SourceWarning]:
         """List warnings.
 
-        :param source_id: Identifier of the source.
+        :param source_id: Identifier of the sources.
         :param status: Status value.
         :return: Matching records in deterministic repository order.
         """
@@ -178,7 +178,7 @@ class SourceRepository(CurrentStateRepository[Source, int], Protocol):
 
 
 class SourceSnapshotRepository(ReadRepository[SourceSnapshot, int], Protocol):
-    """Define persistence operations for source snapshot records."""
+    """Define persistence operations for sources snapshot records."""
 
     async def append(
         self,
@@ -212,9 +212,9 @@ class SourceSnapshotRepository(ReadRepository[SourceSnapshot, int], Protocol):
         limit: int = 100,
         offset: int = 0,
     ) -> Sequence[SourceSnapshot]:
-        """List records belonging to source.
+        """List records belonging to sources.
 
-        :param source_id: Identifier of the source.
+        :param source_id: Identifier of the sources.
         :param limit: Maximum number of records to return.
         :param offset: Number of matching records to skip.
         :return: Matching records in deterministic repository order.
@@ -224,7 +224,7 @@ class SourceSnapshotRepository(ReadRepository[SourceSnapshot, int], Protocol):
     async def get_current(self, source_id: int) -> SourceSnapshot | None:
         """Retrieve current.
 
-        :param source_id: Identifier of the source.
+        :param source_id: Identifier of the sources.
         :return: Matching record, or ``None`` when no record exists.
         """
         ...
@@ -236,7 +236,7 @@ class SourceSnapshotRepository(ReadRepository[SourceSnapshot, int], Protocol):
     ) -> SourceSnapshot:
         """Set current.
 
-        :param source_id: Identifier of the source.
+        :param source_id: Identifier of the sources.
         :param snapshot_id: Identifier of the snapshot.
         :return: Result of the operation.
         """
