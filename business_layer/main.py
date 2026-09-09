@@ -6,7 +6,8 @@ from collections.abc import AsyncIterator
 from fastapi import FastAPI
 
 from business_layer.api.routes import router as business_router
-from business_layer.api.database import engine
+from shared.database import engine
+from sources.api.routes import router as sources_router
 
 
 @asynccontextmanager
@@ -19,7 +20,7 @@ async def lifespan(
 
 
 app = FastAPI(
-    title="Burbot Business Driver",
+    title="Burbot API",
     version="0.1.0",
     lifespan=lifespan,
 )
@@ -28,6 +29,8 @@ app.include_router(
     business_router,
     prefix="/api/v1",
 )
+
+app.include_router(sources_router, prefix="/api/v1")
 
 
 @app.get(

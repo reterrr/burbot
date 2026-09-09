@@ -8,9 +8,9 @@ from fastapi import (
     APIRouter,
     Depends,
     HTTPException,
+    Response,
     status, Query,
 )
-from h11 import Response
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.exc import IntegrityError
 

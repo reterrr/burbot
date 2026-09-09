@@ -9,19 +9,27 @@ description = "PostgreSQL SQLModel persistence layer for Burbot"
 requires-python = ">=3.13,<3.15"
 dependencies = [
   "alembic>=1.13,<2",
+  "asyncpg>=0.30,<1",
+  "fastapi>=0.115,<1",
+  "pydantic>=2.9,<3",
+  "python-dotenv>=1,<2",
   "psycopg[binary]>=3.2,<4",
   "sqlalchemy>=2.0,<3",
   "sqlmodel>=0.0.22,<1",
+  "uvicorn>=0.30,<1",
 ]
 
 [project.optional-dependencies]
 dev = [
+  "aiosqlite>=0.20,<1",
+  "httpx>=0.27,<1",
   "pytest>=8,<10",
+  "pytest-asyncio>=0.24,<2",
   "ruff>=0.9,<1",
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["schemas"]
+packages = ["schemas", "business_layer", "shared", "sources"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
