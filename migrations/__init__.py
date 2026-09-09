@@ -1,5 +1,5 @@
-from migrations.load_models import _load_business_models
+from migrations.load_models import load_models
 
 __all__ = [
-    "_load_business_models",
+    "load_models",
 ]

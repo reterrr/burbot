@@ -13,7 +13,7 @@ services:
       temporal:
         condition: service_started
       db:
-        condition: service_started
+        condition: service_healthy
     command:
       - python
       - -m
@@ -42,6 +42,20 @@ services:
     restart: unless-stopped
     networks:
       - burbot
+#    healthcheck:
+#      test: [
+#        "CMD",
+#        "temporal",
+#        "operator",
+#        "cluster",
+#        "health",
+#        "--adress",
+#        "localhost:7233"
+#      ]
+#      interval: 5s
+#      timeout: 5s
+#      retries: 10
+#      start_period: 15s
 
   db:
     image: postgres:18.0
@@ -56,6 +70,12 @@ services:
       - postgres-data:/var/lib/postgresql
     networks:
       - burbot
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}" ]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
 
 volumes:
   temporal-data:

@@ -7,7 +7,7 @@ def _load_sources_models() -> None:
 
 
 def _load_tasks_models() -> None:
-    from sources.schemas import models as _tasks_models  # noqa
+    from tasks.schemas import models as _tasks_models  # noqa
 
 
 def load_models() -> None:
@@ -15,5 +15,5 @@ def load_models() -> None:
     _load_sources_models()
     _load_tasks_models()
 
-    # Import Layer 3 here when implemented, before completing its reference cycle.
-    # register_evidence_references()
+# Import Layer 3 here when implemented, before completing its reference cycle.
+# register_evidence_references()

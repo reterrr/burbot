@@ -1,8 +1,8 @@
 """empty message
 
-Revision ID: 7f479e3befc3
+Revision ID: c67ac5d0c446
 Revises: 
-Create Date: 2026-09-07 15:06:01.344004
+Create Date: 2026-09-09 18:35:08.667964
 
 """
 from typing import Sequence, Union
@@ -13,7 +13,7 @@ import sqlmodel
 from sqlalchemy.dialects import postgresql
 
 # revision identifiers, used by Alembic.
-revision: str = '7f479e3befc3'
+revision: str = 'c67ac5d0c446'
 down_revision: Union[str, Sequence[str], None] = None
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
@@ -35,6 +35,35 @@ def upgrade() -> None:
     sa.PrimaryKeyConstraint('id'),
     sa.UniqueConstraint('key', name='uq_business_models_key')
     )
+    op.create_table('stored_files',
+    sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
+    sa.Column('id', sa.BigInteger().with_variant(sa.Integer(), 'sqlite'), autoincrement=True, nullable=False),
+    sa.Column('storage_key', sa.String(), nullable=False),
+    sa.Column('original_name', sa.String(), nullable=True),
+    sa.Column('mime_type', sa.String(), nullable=False),
+    sa.Column('size_bytes', sa.BigInteger(), nullable=True),
+    sa.Column('sha256', sa.String(length=64), nullable=True),
+    sa.CheckConstraint('size_bytes IS NULL OR size_bytes >= 0', name='stored_files_size_nonnegative'),
+    sa.PrimaryKeyConstraint('id'),
+    sa.UniqueConstraint('storage_key', name='uq_stored_files_storage_key')
+    )
+    op.create_table('workflows',
+    sa.Column('id', sa.BigInteger(), autoincrement=True, nullable=False),
+    sa.Column('key', sa.String(length=150), nullable=False),
+    sa.Column('source_id', sa.BigInteger(), nullable=False),
+    sa.Column('source_snapshot_id', sa.BigInteger(), nullable=False),
+    sa.Column('previous_workflow_id', sa.BigInteger(), nullable=True),
+    sa.Column('status', sa.Enum('active', 'completed', 'superseded', 'failed', 'cancelled', name='workflow_status'), server_default='active', nullable=False),
+    sa.Column('metadata_json', postgresql.JSONB(astext_type=sa.Text()), nullable=True),
+    sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
+    sa.Column('completed_at', sa.DateTime(timezone=True), nullable=True),
+    sa.Column('superseded_at', sa.DateTime(timezone=True), nullable=True),
+    sa.ForeignKeyConstraint(['previous_workflow_id'], ['workflows.id'], ondelete='SET NULL'),
+    sa.PrimaryKeyConstraint('id')
+    )
+    op.create_index('ix_workflows_snapshot', 'workflows', ['source_snapshot_id'], unique=False)
+    op.create_index('ix_workflows_source', 'workflows', ['source_id'], unique=False)
+    op.create_index('uq_workflows_active_source', 'workflows', ['source_id'], unique=True, postgresql_where=sa.text("status = 'active'"))
     op.create_table('business_entities',
     sa.Column('id', sa.BigInteger(), autoincrement=True, nullable=False),
     sa.Column('business_model_id', sa.BigInteger(), nullable=False),
@@ -65,6 +94,39 @@ def upgrade() -> None:
     )
     op.create_index('ix_business_model_revisions_model', 'business_model_revisions', ['business_model_id'], unique=False)
     op.create_index('ix_business_model_revisions_model_created', 'business_model_revisions', ['business_model_id', 'created_at'], unique=False)
+    op.create_table('sources',
+    sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
+    sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
+    sa.Column('id', sa.BigInteger().with_variant(sa.Integer(), 'sqlite'), autoincrement=True, nullable=False),
+    sa.Column('type', sa.Enum('HTML', 'PDF', name='source_type'), nullable=False),
+    sa.Column('url', sa.Text(), nullable=True),
+    sa.Column('file_id', sa.BigInteger(), nullable=True),
+    sa.Column('state', sa.Enum('ADDING', 'UNDISCOVERED', 'DISCOVERING', 'VALIDATING', 'ACTIVE', 'DEGRADED', 'REDISCOVERING', 'NEEDS_REVIEW', 'FAILED', 'SUSPENDED', 'ARCHIVED', 'BLOCKED_BY_POLICY', name='source_state'), server_default=sa.text("'UNDISCOVERED'"), nullable=False),
+    sa.Column('last_state_change_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
+    sa.CheckConstraint('url IS NOT NULL OR file_id IS NOT NULL', name='sources_locator_required'),
+    sa.ForeignKeyConstraint(['file_id'], ['stored_files.id'], ondelete='RESTRICT'),
+    sa.PrimaryKeyConstraint('id'),
+    sa.UniqueConstraint('url', name='uq_sources_url')
+    )
+    op.create_index('ix_sources_state', 'sources', ['state'], unique=False)
+    op.create_index('ix_sources_type', 'sources', ['type'], unique=False)
+    op.create_table('tasks',
+    sa.Column('id', sa.BigInteger(), autoincrement=True, nullable=False),
+    sa.Column('workflow_id', sa.BigInteger(), nullable=False),
+    sa.Column('type', sa.Enum('discover_source', 'review_source_change', 'resolve_observation', 'review_business_object', name='task_type'), nullable=False),
+    sa.Column('reason', sa.Enum('source_registered', 'source_changed', 'value_changed', 'value_missing', 'value_conflict', 'possible_new_object', 'object_missing', 'extraction_failed', 'manual', name='task_reason'), nullable=True),
+    sa.Column('status', sa.Enum('pending', 'in_progress', 'completed', 'failed', 'cancelled', name='task_status'), server_default='pending', nullable=False),
+    sa.Column('title', sa.String(length=255), nullable=True),
+    sa.Column('description', sa.Text(), nullable=True),
+    sa.Column('metadata_json', postgresql.JSONB(astext_type=sa.Text()), nullable=True),
+    sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
+    sa.Column('started_at', sa.DateTime(timezone=True), nullable=True),
+    sa.Column('completed_at', sa.DateTime(timezone=True), nullable=True),
+    sa.ForeignKeyConstraint(['workflow_id'], ['workflows.id'], ondelete='CASCADE'),
+    sa.PrimaryKeyConstraint('id')
+    )
+    op.create_index('ix_tasks_status', 'tasks', ['status'], unique=False)
+    op.create_index('ix_tasks_workflow_status', 'tasks', ['workflow_id', 'status'], unique=False)
     op.create_table('business_entity_fields',
     sa.Column('id', sa.BigInteger(), autoincrement=True, nullable=False),
     sa.Column('business_entity_id', sa.BigInteger(), nullable=False),
@@ -110,6 +172,70 @@ def upgrade() -> None:
     sa.PrimaryKeyConstraint('id')
     )
     op.create_index('ix_business_objects_entity', 'business_objects', ['business_entity_id'], unique=False)
+    op.create_table('source_check_schedules',
+    sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
+    sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
+    sa.Column('source_id', sa.BigInteger(), nullable=False),
+    sa.Column('interval_seconds', sa.Integer(), nullable=False),
+    sa.Column('last_checked_at', sa.DateTime(timezone=True), nullable=True),
+    sa.Column('next_check_at', sa.DateTime(timezone=True), nullable=True),
+    sa.Column('enabled', sa.Boolean(), server_default=sa.text('true'), nullable=False),
+    sa.CheckConstraint('interval_seconds > 0', name='source_check_schedules_interval_positive'),
+    sa.ForeignKeyConstraint(['source_id'], ['sources.id'], ondelete='RESTRICT'),
+    sa.PrimaryKeyConstraint('source_id')
+    )
+    op.create_table('source_metadata',
+    sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
+    sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
+    sa.Column('source_id', sa.BigInteger(), nullable=False),
+    sa.Column('latest_content_hash', sa.String(length=64), nullable=True),
+    sa.Column('latest_structure_hash', sa.String(length=64), nullable=True),
+    sa.Column('hashes_updated_at', sa.DateTime(timezone=True), nullable=True),
+    sa.ForeignKeyConstraint(['source_id'], ['sources.id'], ondelete='RESTRICT'),
+    sa.PrimaryKeyConstraint('source_id')
+    )
+    op.create_table('source_state_history',
+    sa.Column('id', sa.BigInteger().with_variant(sa.Integer(), 'sqlite'), autoincrement=True, nullable=False),
+    sa.Column('source_id', sa.BigInteger(), nullable=False),
+    sa.Column('from_state', sa.Enum('ADDING', 'UNDISCOVERED', 'DISCOVERING', 'VALIDATING', 'ACTIVE', 'DEGRADED', 'REDISCOVERING', 'NEEDS_REVIEW', 'FAILED', 'SUSPENDED', 'ARCHIVED', 'BLOCKED_BY_POLICY', name='source_state'), nullable=True),
+    sa.Column('to_state', sa.Enum('ADDING', 'UNDISCOVERED', 'DISCOVERING', 'VALIDATING', 'ACTIVE', 'DEGRADED', 'REDISCOVERING', 'NEEDS_REVIEW', 'FAILED', 'SUSPENDED', 'ARCHIVED', 'BLOCKED_BY_POLICY', name='source_state'), nullable=False),
+    sa.Column('reason', sa.Text(), nullable=True),
+    sa.Column('triggered_by', sa.Enum('USER', 'SCHEDULER', 'CRAWLER', 'PARSER', 'VALIDATOR', 'DISCOVERY_ENGINE', 'POLICY_CHECK', 'SYSTEM', name='source_state_trigger'), server_default=sa.text("'SYSTEM'"), nullable=False),
+    sa.Column('changed_at', sa.DateTime(timezone=True), nullable=False),
+    sa.ForeignKeyConstraint(['source_id'], ['sources.id'], ondelete='RESTRICT'),
+    sa.PrimaryKeyConstraint('id')
+    )
+    op.create_index('ix_source_state_history_source_changed', 'source_state_history', ['source_id', 'changed_at'], unique=False)
+    op.create_table('source_warnings',
+    sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
+    sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
+    sa.Column('id', sa.BigInteger().with_variant(sa.Integer(), 'sqlite'), autoincrement=True, nullable=False),
+    sa.Column('source_id', sa.BigInteger(), nullable=False),
+    sa.Column('severity', sa.Enum('INFO', 'WARNING', 'ERROR', 'CRITICAL', name='warning_severity'), server_default=sa.text("'WARNING'"), nullable=False),
+    sa.Column('status', sa.Enum('OPEN', 'RESOLVED', 'IGNORED', name='warning_status'), server_default=sa.text("'OPEN'"), nullable=False),
+    sa.Column('warning_type', sa.String(), nullable=True),
+    sa.Column('description', sa.Text(), nullable=False),
+    sa.Column('details_json', postgresql.JSONB(astext_type=sa.Text()).with_variant(sa.JSON(), 'sqlite'), nullable=True),
+    sa.Column('resolved_at', sa.DateTime(timezone=True), nullable=True),
+    sa.ForeignKeyConstraint(['source_id'], ['sources.id'], ondelete='RESTRICT'),
+    sa.PrimaryKeyConstraint('id')
+    )
+    op.create_index('ix_source_warnings_severity_status', 'source_warnings', ['severity', 'status'], unique=False)
+    op.create_index('ix_source_warnings_source_status', 'source_warnings', ['source_id', 'status'], unique=False)
+    op.create_table('task_references',
+    sa.Column('id', sa.BigInteger(), autoincrement=True, nullable=False),
+    sa.Column('task_id', sa.BigInteger(), nullable=False),
+    sa.Column('role', sa.Enum('target', 'context', 'caused_by', name='task_reference_role'), nullable=False),
+    sa.Column('reference_type', sa.Enum('source', 'source_snapshot', 'extraction_run', 'observation', 'business_entity', 'business_object', 'business_field', name='task_reference_type'), nullable=False),
+    sa.Column('reference_id', sa.BigInteger(), nullable=False),
+    sa.Column('metadata_json', postgresql.JSONB(astext_type=sa.Text()), nullable=True),
+    sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
+    sa.ForeignKeyConstraint(['task_id'], ['tasks.id'], ondelete='CASCADE'),
+    sa.PrimaryKeyConstraint('id'),
+    sa.UniqueConstraint('task_id', 'role', 'reference_type', 'reference_id', name='uq_task_reference')
+    )
+    op.create_index('ix_task_references_target', 'task_references', ['reference_type', 'reference_id'], unique=False)
+    op.create_index('ix_task_references_task', 'task_references', ['task_id'], unique=False)
     op.create_table('business_entity_field_versions',
     sa.Column('id', sa.BigInteger(), autoincrement=True, nullable=False),
     sa.Column('business_entity_field_id', sa.BigInteger(), nullable=False),
@@ -189,6 +315,30 @@ def upgrade() -> None:
     )
     op.create_index('ix_business_object_fields_entity_field', 'business_object_fields', ['business_entity_field_id'], unique=False)
     op.create_index('ix_business_object_fields_object', 'business_object_fields', ['business_object_id'], unique=False)
+    op.create_table('source_business_objects',
+    sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
+    sa.Column('source_id', sa.BigInteger(), nullable=False),
+    sa.Column('business_object_id', sa.BigInteger(), nullable=False),
+    sa.ForeignKeyConstraint(['business_object_id'], ['business_objects.id'], ondelete='RESTRICT'),
+    sa.ForeignKeyConstraint(['source_id'], ['sources.id'], ondelete='RESTRICT'),
+    sa.PrimaryKeyConstraint('source_id', 'business_object_id')
+    )
+    op.create_index('ix_source_business_objects_object', 'source_business_objects', ['business_object_id'], unique=False)
+    op.create_table('source_field_trackings',
+    sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
+    sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
+    sa.Column('id', sa.BigInteger().with_variant(sa.Integer(), 'sqlite'), autoincrement=True, nullable=False),
+    sa.Column('source_id', sa.BigInteger(), nullable=False),
+    sa.Column('business_entity_field_id', sa.BigInteger(), nullable=False),
+    sa.Column('tracking_enabled', sa.Boolean(), server_default=sa.text('true'), nullable=False),
+    sa.Column('desired_refresh_seconds', sa.Integer(), nullable=True),
+    sa.CheckConstraint('desired_refresh_seconds IS NULL OR desired_refresh_seconds > 0', name='source_field_trackings_refresh_positive'),
+    sa.ForeignKeyConstraint(['business_entity_field_id'], ['business_entity_fields.id'], ondelete='RESTRICT'),
+    sa.ForeignKeyConstraint(['source_id'], ['sources.id'], ondelete='RESTRICT'),
+    sa.PrimaryKeyConstraint('id'),
+    sa.UniqueConstraint('source_id', 'business_entity_field_id', name='uq_source_field_trackings_field')
+    )
+    op.create_index('ix_source_field_trackings_field', 'source_field_trackings', ['business_entity_field_id'], unique=False)
     op.create_table('business_object_field_values',
     sa.Column('id', sa.BigInteger(), autoincrement=True, nullable=False),
     sa.Column('business_object_field_id', sa.BigInteger(), nullable=False),
@@ -209,6 +359,24 @@ def upgrade() -> None:
     op.create_index('ix_business_object_field_values_field_transaction_to', 'business_object_field_values', ['business_object_field_id', 'transaction_to'], unique=False)
     op.create_index('ix_business_object_field_values_field_valid_from', 'business_object_field_values', ['business_object_field_id', 'valid_from'], unique=False)
     op.create_index('ix_business_object_field_values_field_valid_to', 'business_object_field_values', ['business_object_field_id', 'valid_to'], unique=False)
+    op.create_table('source_object_field_trackings',
+    sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
+    sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
+    sa.Column('id', sa.BigInteger().with_variant(sa.Integer(), 'sqlite'), autoincrement=True, nullable=False),
+    sa.Column('source_field_tracking_id', sa.BigInteger(), nullable=False),
+    sa.Column('business_object_field_id', sa.BigInteger(), nullable=False),
+    sa.Column('tracking_enabled', sa.Boolean(), server_default=sa.text('true'), nullable=False),
+    sa.Column('last_observation_id', sa.BigInteger(), nullable=True),
+    sa.Column('baseline_observation_id', sa.BigInteger(), nullable=True),
+    sa.Column('last_checked_at', sa.DateTime(timezone=True), nullable=True),
+    sa.Column('last_changed_at', sa.DateTime(timezone=True), nullable=True),
+    sa.ForeignKeyConstraint(['business_object_field_id'], ['business_object_fields.id'], ondelete='RESTRICT'),
+    sa.ForeignKeyConstraint(['source_field_tracking_id'], ['source_field_trackings.id'], ondelete='RESTRICT'),
+    sa.PrimaryKeyConstraint('id'),
+    sa.UniqueConstraint('source_field_tracking_id', 'business_object_field_id', name='uq_source_object_field_trackings_field')
+    )
+    op.create_index('ix_source_object_field_trackings_enabled', 'source_object_field_trackings', ['tracking_enabled'], unique=False)
+    op.create_index('ix_source_object_field_trackings_object_field', 'source_object_field_trackings', ['business_object_field_id'], unique=False)
     # ### end Alembic commands ###
 
 
@@ -216,12 +384,19 @@ def upgrade() -> None:
 def downgrade() -> None:
     """Downgrade schema."""
     # ### commands auto generated by Alembic - please adjust! ###
+    op.drop_index('ix_source_object_field_trackings_object_field', table_name='source_object_field_trackings')
+    op.drop_index('ix_source_object_field_trackings_enabled', table_name='source_object_field_trackings')
+    op.drop_table('source_object_field_trackings')
     op.drop_index('ix_business_object_field_values_field_valid_to', table_name='business_object_field_values')
     op.drop_index('ix_business_object_field_values_field_valid_from', table_name='business_object_field_values')
     op.drop_index('ix_business_object_field_values_field_transaction_to', table_name='business_object_field_values')
     op.drop_index('ix_business_object_field_values_field_transaction_from', table_name='business_object_field_values')
     op.drop_index('ix_business_object_field_values_field', table_name='business_object_field_values')
     op.drop_table('business_object_field_values')
+    op.drop_index('ix_source_field_trackings_field', table_name='source_field_trackings')
+    op.drop_table('source_field_trackings')
+    op.drop_index('ix_source_business_objects_object', table_name='source_business_objects')
+    op.drop_table('source_business_objects')
     op.drop_index('ix_business_object_fields_object', table_name='business_object_fields')
     op.drop_index('ix_business_object_fields_entity_field', table_name='business_object_fields')
     op.drop_table('business_object_fields')
@@ -243,6 +418,16 @@ def downgrade() -> None:
     op.drop_index('ix_business_entity_field_versions_field_transaction_from', table_name='business_entity_field_versions')
     op.drop_index('ix_business_entity_field_versions_field', table_name='business_entity_field_versions')
     op.drop_table('business_entity_field_versions')
+    op.drop_index('ix_task_references_task', table_name='task_references')
+    op.drop_index('ix_task_references_target', table_name='task_references')
+    op.drop_table('task_references')
+    op.drop_index('ix_source_warnings_source_status', table_name='source_warnings')
+    op.drop_index('ix_source_warnings_severity_status', table_name='source_warnings')
+    op.drop_table('source_warnings')
+    op.drop_index('ix_source_state_history_source_changed', table_name='source_state_history')
+    op.drop_table('source_state_history')
+    op.drop_table('source_metadata')
+    op.drop_table('source_check_schedules')
     op.drop_index('ix_business_objects_entity', table_name='business_objects')
     op.drop_table('business_objects')
     op.drop_index('ix_business_entity_versions_revision', table_name='business_entity_versions')
@@ -254,6 +439,12 @@ def downgrade() -> None:
     op.drop_table('business_entity_versions')
     op.drop_index('ix_business_entity_fields_entity', table_name='business_entity_fields')
     op.drop_table('business_entity_fields')
+    op.drop_index('ix_tasks_workflow_status', table_name='tasks')
+    op.drop_index('ix_tasks_status', table_name='tasks')
+    op.drop_table('tasks')
+    op.drop_index('ix_sources_type', table_name='sources')
+    op.drop_index('ix_sources_state', table_name='sources')
+    op.drop_table('sources')
     op.drop_index('ix_business_model_revisions_model_created', table_name='business_model_revisions')
     op.drop_index('ix_business_model_revisions_model', table_name='business_model_revisions')
     op.drop_table('business_model_revisions')
@@ -261,5 +452,10 @@ def downgrade() -> None:
     op.drop_table('business_entity_relations')
     op.drop_index('ix_business_entities_model', table_name='business_entities')
     op.drop_table('business_entities')
+    op.drop_index('uq_workflows_active_source', table_name='workflows', postgresql_where=sa.text("status = 'active'"))
+    op.drop_index('ix_workflows_source', table_name='workflows')
+    op.drop_index('ix_workflows_snapshot', table_name='workflows')
+    op.drop_table('workflows')
+    op.drop_table('stored_files')
     op.drop_table('business_models')
     # ### end Alembic commands ###
