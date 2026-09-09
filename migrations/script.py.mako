@@ -21,7 +21,9 @@ depends_on: Union[str, Sequence[str], None] = ${repr(depends_on)}
 
 def upgrade() -> None:
     """Upgrade schema."""
+    op.execute("CREATE EXTENSION IF NOT EXISTS btree_gist")
     ${upgrades if upgrades else "pass"}
+
 
 
 def downgrade() -> None:

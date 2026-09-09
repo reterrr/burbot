@@ -12,7 +12,7 @@ from pydantic import (
     model_validator,
 )
 
-from business_driver.schemas.enums import (
+from business_layer.schemas.enums import (
     BusinessEntityFieldCardinality,
     BusinessEntityFieldDataType,
     ConfirmedBy,

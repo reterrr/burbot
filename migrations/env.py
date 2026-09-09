@@ -11,7 +11,7 @@ from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 from sqlmodel import SQLModel
 
-from business_driver.migrations.load_models import _load_models
+from migrations.load_models import _load_business_models
 
 config = context.config
 
@@ -21,11 +21,11 @@ if config.config_file_name is not None:
 # Import all SQLModel table classes so they register themselves
 # in SQLModel.metadata.
 dotenv.load_dotenv()
-_load_models()
+_load_business_models()
 
 target_metadata = SQLModel.metadata
 
-config.set_main_option("sqlalchemy.url", os.environ["DATABASE_URL"])
+config.set_main_option("sqlalchemy.url", os.environ["HOST_DATABASE_URL"])
 
 
 def run_migrations_offline() -> None:
