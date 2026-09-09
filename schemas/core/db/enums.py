@@ -59,13 +59,15 @@ class ClosedStatus(DatabaseEnum):
 
 class BusinessEntityType(DatabaseEnum):
     """Enumerate the supported business entity type values."""
+    FUNDING_RULE = "FUNDING_RULE"
+    GEOGRAPHY = "GEOGRAPHY"
     PROJECT = "PROJECT"
     OPERATOR = "OPERATOR"
     RECRUITMENT = "RECRUITMENT"
 
 
 class SourceState(DatabaseEnum):
-    """Enumerate the supported source state values."""
+    """Enumerate the supported sources state values."""
     ADDING = "ADDING"
     UNDISCOVERED = "UNDISCOVERED"
     DISCOVERING = "DISCOVERING"
@@ -81,13 +83,13 @@ class SourceState(DatabaseEnum):
 
 
 class SourceType(DatabaseEnum):
-    """Enumerate the supported source type values."""
+    """Enumerate the supported sources type values."""
     HTML = "HTML"
     PDF = "PDF"
 
 
 class SourceStateTrigger(DatabaseEnum):
-    """Enumerate the supported source state trigger values."""
+    """Enumerate the supported sources state trigger values."""
     USER = "USER"
     SCHEDULER = "SCHEDULER"
     CRAWLER = "CRAWLER"
@@ -196,3 +198,8 @@ class ConfirmedBy(DatabaseEnum):
     """Enumerate the supported confirmed by values."""
     HUMAN = "HUMAN"
     SYSTEM = "SYSTEM"
+
+
+class GeographyCodeSystem(DatabaseEnum):
+    TERC = "TERC"
+    NUTS = "NUTS"

@@ -24,7 +24,7 @@ from ..enums import (
     ProjectStatus,
     ProjectType,
     RecruitmentStatus,
-    RelationType,
+    RelationType, GeographyCodeSystem,
 )
 from ..mixins import SoftDeleteMixin, pg_enum
 
@@ -242,32 +242,79 @@ class RecruitmentStatusHistory(SQLModel, table=True):
 
 
 class Geography(SoftDeleteMixin, table=True):
-    """Represent one node in the hierarchical geography registry.
+    """Represent an administrative or statistical geographic unit.
 
     :ivar id: Database primary key.
-    :ivar type: Type.
-    :ivar name: Human-readable name.
-    :ivar parent_id: Identifier of the related parent.
-    :ivar teryt_code: Teryt code.
+    :ivar type: Geographic unit type.
+    :ivar name: Official unit name.
+    :ivar code_system: Official classification containing the code.
+    :ivar official_code: Official TERC or NUTS identifier.
+    :ivar parent_id: Administrative TERC parent, if applicable.
     """
+
     __tablename__ = "geographies"
     __table_args__ = (
-        Index(
-            "uq_geographies_type_name_parent",
+        UniqueConstraint(
+            "code_system",
+            "official_code",
+            name="uq_geographies_code_system_code",
+        ),
+        UniqueConstraint(
             "type",
             "name",
             "parent_id",
-            unique=True,
-            postgresql_nulls_not_distinct=True,
+            name="uq_geographies_type_name_parent",
+        ),
+        CheckConstraint(
+            "("
+            "type = 'SUBREGION' "
+            "AND code_system = 'NUTS' "
+            "AND official_code ~ '^PL[A-Z0-9]{3}$'"
+            ") OR ("
+            "type = 'VOIVODSHIP' "
+            "AND code_system = 'TERC' "
+            "AND official_code ~ '^[0-9]{2}$'"
+            ") OR ("
+            "type = 'COUNTY' "
+            "AND code_system = 'TERC' "
+            "AND official_code ~ '^[0-9]{4}$'"
+            ") OR ("
+            "type = 'COMMUNE' "
+            "AND code_system = 'TERC' "
+            "AND official_code ~ '^[0-9]{7}$'"
+            ")",
+            name="geography_code_matches_type",
         ),
         Index("ix_geographies_parent_id", "parent_id"),
     )
 
     id: int | None = Field(default=None, primary_key=True)
+
     type: GeographyType = Field(
-        sa_column=Column(pg_enum(GeographyType, "geography_type"), nullable=False)
+        sa_column=Column(
+            pg_enum(GeographyType, "geography_type"),
+            nullable=False,
+        )
     )
-    name: str = Field(sa_column=Column(String, nullable=False))
+
+    name: str = Field(
+        sa_column=Column(String, nullable=False)
+    )
+
+    code_system: GeographyCodeSystem = Field(
+        sa_column=Column(
+            pg_enum(
+                GeographyCodeSystem,
+                "geography_code_system",
+            ),
+            nullable=False,
+        )
+    )
+
+    official_code: str = Field(
+        sa_column=Column(String(7), nullable=False)
+    )
+
     parent_id: int | None = Field(
         default=None,
         sa_column=Column(
@@ -276,11 +323,6 @@ class Geography(SoftDeleteMixin, table=True):
             nullable=True,
         ),
     )
-    teryt_code: str | None = Field(
-        default=None,
-        sa_column=Column(String, nullable=True, unique=True),
-    )
-
 
 class ProjectGeography(SoftDeleteMixin, table=True):
     """Associate a project with an included or excluded geographic unit.

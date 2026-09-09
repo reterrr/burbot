@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from enum import Enum
+from enum import StrEnum
 
-class Wojewodztwo(Enum):
+
+class Wojewodztwo(StrEnum):
     DOLNOSLASKIE = "dolnośląskie"
     KUJAWSKO_POMORSKIE = "kujawsko-pomorskie"
     LUBELSKIE = "lubelskie"
@@ -21,7 +22,7 @@ class Wojewodztwo(Enum):
     ZACHODNIOPOMORSKIE = "zachodniopomorskie"
 
 
-class Podregion(Enum):
+class Podregion(StrEnum):
     # Dolnośląskie
     JELENIOGORSKI = "jeleniogórski"
     LEGNICKO_GLOGOWSKI = "legnicko-głogowski"
@@ -128,7 +129,7 @@ class Podregion(Enum):
     SZCZECINSKI = "szczeciński"
 
 
-class Powiat(str, Enum):
+class Powiat(str, StrEnum):
     """Wszystkie powiaty i miasta na prawach powiatu w Polsce.
 
     ``value`` jest unikalnym kluczem tekstowym.
@@ -573,7 +574,7 @@ class Powiat(str, Enum):
     ZACHODNIOPOMORSKIE_MIASTO_SWINOUJSCIE = ('Świnoujście', 'zachodniopomorskie', True)
 
 
-"""Enum wszystkich gmin w Polsce według rejestru TERYT (TERC).
+"""StrEnum wszystkich gmin w Polsce według rejestru TERYT (TERC).
 
 Stan danych: 1 stycznia 2026 r.
 Liczba jednostek: 2 479 gmin (302 miejskie, 1 453 wiejskie,
@@ -586,13 +587,13 @@ a R = rodzaj jednostki.
 """
 
 
-class GminaType(str, Enum):
+class GminaType(str, StrEnum):
     MIEJSKA = "gmina miejska"
     WIEJSKA = "gmina wiejska"
     MIEJSKO_WIEJSKA = "gmina miejsko-wiejska"
 
 
-class Gmina(Enum):
+class Gmina(StrEnum):
     """Gmina wraz z kodem TERYT i przynależnością administracyjną."""
 
     # Dolnośląskie
@@ -5308,3 +5309,5 @@ class Gmina(Enum):
 
     def __str__(self) -> str:
         return self.label
+
+
