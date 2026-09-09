@@ -1,4 +1,28 @@
 services:
+  business:
+    container_name: business
+    build:
+      context: .
+      dockerfile: business.Dockerfile
+    ports:
+      - "8000:8000"
+      - "5678:5678"
+    networks:
+      - burbot
+    depends_on:
+      temporal:
+        condition: service_started
+      db-business:
+        condition: service_started
+    command:
+      - python
+      - -m
+      - debugpy
+      - --listen
+      - 0.0.0.0:5678
+      - -m
+      - business_layer.main
+
   temporal:
     image: temporalio/temporal
     container_name: burbot-temporal
@@ -16,6 +40,9 @@ services:
     volumes:
       - temporal-data:/data
     restart: unless-stopped
+    networks:
+      - burbot
+
 
 
   db-business:
@@ -29,6 +56,14 @@ services:
       - "${POSTGRES_PORT}:5432"
     volumes:
       - postgres-data:/var/lib/postgresql
+    networks:
+      - burbot
+
 volumes:
   temporal-data:
   postgres-data:
+
+networks:
+  burbot:
+    external: true
+    name: burbot
