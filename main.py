@@ -1,38 +1,28 @@
-from pathlib import Path
-from pprint import pprint
+import uvicorn
+from fastapi import FastAPI
 
-from entry.adapters.excel import ExcelWorkbookReader
-from entry.process.excel_clear import ExcelValidateAndClean
-from entry.process.sheet_contract_config import WORKBOOK_INTAKE_CONTRACT
+from business_layer.api.routes import router as business_router
+from sources.api.routes import router as source_router
+from tasks.api.routes import router as task_router
 
-reader = ExcelWorkbookReader()
-cleaner = ExcelValidateAndClean(
-    WORKBOOK_INTAKE_CONTRACT
+api = FastAPI(prefix="/api/v1")
+
+api.include_router(
+    business_router
 )
 
-raw_batches = reader.iter_batches(
-    Path("import.xlsx")
+api.include_router(
+    source_router
 )
 
-cleaned_batches = cleaner.clean(raw_batches)
+api.include_router(
+    task_router
+)
 
-for batch in cleaned_batches:
-    print()
-    print("=" * 80)
-    print(f"Arkusz: {batch.sheet.value}")
-    print(f"Partia: {batch.batch_number}")
-    print(f"Liczba rekordów: {batch.size}")
-    print(
-        "Wiersze Excela: "
-        f"{batch.first_row_number}–"
-        f"{batch.last_row_number}"
-    )
-    print("=" * 80)
 
-    for record in batch:
-        print(f"\nWiersz {record.row_number}:")
-        pprint(
-            record.data,
-            sort_dicts=False,
-            width=120,
-        )
+async def main():
+    uvicorn.run(api, host="0.0.0.0", port=8000)
+
+
+if __name__ == "__main__":
+    main()

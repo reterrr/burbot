@@ -200,16 +200,6 @@ class SourceWarning(UpdatedAtMixin, table=True):
     resolved_at: datetime | None = Field(default=None, sa_column=timestamp())
 
 
-class SourceBusinessEntity(CreatedAtMixin, table=True):
-    """Context only: a source may contain many objects of this entity type."""
-
-    __tablename__ = "source_business_entities"
-    __table_args__ = (Index("ix_source_business_entities_entity", "business_entity_id"),)
-
-    source_id: int = Field(sa_column=reference("sources.id", primary_key=True))
-    business_entity_id: int = Field(sa_column=reference("business_entities.id", primary_key=True))
-
-
 class SourceBusinessObject(CreatedAtMixin, table=True):
     __tablename__ = "source_business_objects"
     __table_args__ = (Index("ix_source_business_objects_object", "business_object_id"),)
@@ -289,7 +279,6 @@ SOURCE_TABLES = (
     SourceCheckSchedule.__table__,
     SourceStateHistory.__table__,
     SourceWarning.__table__,
-    SourceBusinessEntity.__table__,
     SourceBusinessObject.__table__,
     SourceFieldTracking.__table__,
     SourceObjectFieldTracking.__table__,

@@ -1,9 +1,9 @@
 services:
-  business:
-    container_name: business
+  bot:
+    container_name: bot
     build:
       context: .
-      dockerfile: business.Dockerfile
+      dockerfile: Dockerfile
     ports:
       - "8000:8000"
       - "5678:5678"
@@ -12,7 +12,7 @@ services:
     depends_on:
       temporal:
         condition: service_started
-      db-business:
+      db:
         condition: service_started
     command:
       - python
@@ -43,11 +43,9 @@ services:
     networks:
       - burbot
 
-
-
-  db-business:
+  db:
     image: postgres:18.0
-    container_name: burbot-db-business
+    container_name: db
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}

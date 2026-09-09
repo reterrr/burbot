@@ -9,7 +9,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import SQLModel, col
 
 from business_layer.schemas.models import (
-    BusinessEntity,
     BusinessEntityField,
     BusinessObject,
     BusinessObjectField,
@@ -26,7 +25,6 @@ from sources.schemas.common import utc_now
 from sources.schemas.enums import SourceState, SourceStateTrigger, SourceType, WarningStatus
 from sources.schemas.models import (
     Source,
-    SourceBusinessEntity,
     SourceBusinessObject,
     SourceCheckSchedule,
     SourceFieldTracking,
@@ -56,13 +54,13 @@ def _unique_conflict(error: IntegrityError) -> str | None:
         return messages[constraint]
     if getattr(original, "sqlite_errorcode", None) == 2067:
         for column, name in (
-            ("sources.url", "uq_sources_url"),
-            ("stored_files.storage_key", "uq_stored_files_storage_key"),
-            ("source_field_trackings.source_id", "uq_source_field_trackings_field"),
-            (
-                "source_object_field_trackings.source_field_tracking_id",
-                "uq_source_object_field_trackings_field",
-            ),
+                ("sources.url", "uq_sources_url"),
+                ("stored_files.storage_key", "uq_stored_files_storage_key"),
+                ("source_field_trackings.source_id", "uq_source_field_trackings_field"),
+                (
+                        "source_object_field_trackings.source_field_tracking_id",
+                        "uq_source_object_field_trackings_field",
+                ),
         ):
             if column in str(original):
                 return messages[name]
@@ -211,7 +209,7 @@ class SourcesService:
         return await self._page(statement, dto.SourceResponse, request)
 
     async def update_source(
-        self, source_id: int, request: dto.SourceUpdateRequest
+            self, source_id: int, request: dto.SourceUpdateRequest
     ) -> dto.SourceResponse:
         async with self._transaction():
             source = await self._writable_source(source_id)
@@ -243,11 +241,11 @@ class SourcesService:
         return result
 
     async def _change_state(
-        self,
-        source: Source,
-        state: SourceState,
-        reason: str | None,
-        triggered_by: SourceStateTrigger,
+            self,
+            source: Source,
+            state: SourceState,
+            reason: str | None,
+            triggered_by: SourceStateTrigger,
     ) -> None:
         if not can_transition(source.state, state):
             raise SourceConflict(f"Cannot transition from {source.state} to {state}")
@@ -293,7 +291,7 @@ class SourcesService:
             )
 
     async def change_state(
-        self, source_id: int, request: dto.SourceStateChangeRequest
+            self, source_id: int, request: dto.SourceStateChangeRequest
     ) -> dto.SourceResponse:
         async with self._transaction():
             source = await self._get(source_id, for_update=True)
@@ -313,7 +311,7 @@ class SourcesService:
             )
 
     async def get_state_history(
-        self, source_id: int, request: dto.Pagination
+            self, source_id: int, request: dto.Pagination
     ) -> dto.SourceStateHistoryListResponse:
         await self._get(source_id)
         return await self._page(
@@ -334,7 +332,7 @@ class SourcesService:
         return dto.SourceMetadataResponse.model_validate(metadata)
 
     async def set_metadata(
-        self, source_id: int, request: dto.SourceMetadataWrite
+            self, source_id: int, request: dto.SourceMetadataWrite
     ) -> dto.SourceMetadataResponse:
         async with self._transaction():
             await self._writable_source(source_id)
@@ -358,7 +356,7 @@ class SourcesService:
         return dto.SourceCheckScheduleResponse.model_validate(row)
 
     async def set_schedule(
-        self, source_id: int, request: dto.SourceCheckScheduleWrite
+            self, source_id: int, request: dto.SourceCheckScheduleWrite
     ) -> dto.SourceCheckScheduleResponse:
         async with self._transaction():
             await self._writable_source(source_id)
@@ -373,7 +371,7 @@ class SourcesService:
         return result
 
     async def add_warning(
-        self, source_id: int, request: dto.SourceWarningCreate
+            self, source_id: int, request: dto.SourceWarningCreate
     ) -> dto.SourceWarningResponse:
         async with self._transaction():
             await self._writable_source(source_id)
@@ -384,7 +382,7 @@ class SourcesService:
         return result
 
     async def list_warnings(
-        self, source_id: int, request: dto.SourceWarningListRequest
+            self, source_id: int, request: dto.SourceWarningListRequest
     ) -> dto.Page[dto.SourceWarningResponse]:
         await self._get(source_id)
         statement = select(SourceWarning).where(col(SourceWarning.source_id) == source_id)
@@ -397,7 +395,7 @@ class SourcesService:
         )
 
     async def update_warning(
-        self, source_id: int, warning_id: int, request: dto.SourceWarningUpdate
+            self, source_id: int, warning_id: int, request: dto.SourceWarningUpdate
     ) -> dto.SourceWarningResponse:
         async with self._transaction():
             await self._get(source_id, for_update=True)
@@ -418,37 +416,6 @@ class SourcesService:
             result = await self._save(row, dto.SourceWarningResponse)
         return result
 
-    async def link_entity(self, source_id: int, entity_id: int) -> dto.SourceBusinessEntityResponse:
-        async with self._transaction():
-            await self._writable_source(source_id)
-            await self._business_identity(BusinessEntity, entity_id)
-            row = await self._session.get(SourceBusinessEntity, (source_id, entity_id))
-            if row is None:
-                row = SourceBusinessEntity(source_id=source_id, business_entity_id=entity_id)
-            result = await self._save(row, dto.SourceBusinessEntityResponse)
-        return result
-
-    async def unlink_entity(self, source_id: int, entity_id: int) -> None:
-        async with self._transaction():
-            await self._writable_source(source_id)
-            row = await self._session.get(SourceBusinessEntity, (source_id, entity_id))
-            if row is not None:
-                await self._session.delete(row)
-
-    async def list_entities(
-        self, source_id: int, query: dto.Pagination
-    ) -> dto.Page[dto.SourceBusinessEntityResponse]:
-        await self._get(source_id)
-        return await self._page(
-            select(SourceBusinessEntity)
-            .where(
-                col(SourceBusinessEntity.source_id) == source_id,
-            )
-            .order_by(col(SourceBusinessEntity.business_entity_id)),
-            dto.SourceBusinessEntityResponse,
-            query,
-        )
-
     async def link_object(self, source_id: int, object_id: int) -> dto.SourceBusinessObjectResponse:
         async with self._transaction():
             await self._writable_source(source_id)
@@ -467,7 +434,7 @@ class SourcesService:
                 await self._session.delete(row)
 
     async def list_objects(
-        self, source_id: int, query: dto.Pagination
+            self, source_id: int, query: dto.Pagination
     ) -> dto.Page[dto.SourceBusinessObjectResponse]:
         await self._get(source_id)
         return await self._page(
@@ -494,7 +461,7 @@ class SourcesService:
         return row
 
     async def create_field_tracking(
-        self, source_id: int, request: dto.SourceFieldTrackingCreate
+            self, source_id: int, request: dto.SourceFieldTrackingCreate
     ) -> dto.SourceFieldTrackingResponse:
         async with self._transaction():
             await self._writable_source(source_id)
@@ -506,7 +473,7 @@ class SourcesService:
         return result
 
     async def list_field_trackings(
-        self, source_id: int, query: dto.Pagination
+            self, source_id: int, query: dto.Pagination
     ) -> dto.Page[dto.SourceFieldTrackingResponse]:
         await self._get(source_id)
         return await self._page(
@@ -520,7 +487,7 @@ class SourcesService:
         )
 
     async def get_field_tracking(
-        self, source_id: int, tracking_id: int
+            self, source_id: int, tracking_id: int
     ) -> dto.SourceFieldTrackingResponse:
         await self._get(source_id)
         return dto.SourceFieldTrackingResponse.model_validate(
@@ -528,7 +495,7 @@ class SourcesService:
         )
 
     async def update_field_tracking(
-        self, source_id: int, tracking_id: int, request: dto.SourceFieldTrackingUpdate
+            self, source_id: int, tracking_id: int, request: dto.SourceFieldTrackingUpdate
     ) -> dto.SourceFieldTrackingResponse:
         async with self._transaction():
             await self._writable_source(source_id)
@@ -540,7 +507,7 @@ class SourcesService:
         return result
 
     async def _object_tracking(
-        self, source_id: int, tracking_id: int, object_tracking_id: int
+            self, source_id: int, tracking_id: int, object_tracking_id: int
     ) -> SourceObjectFieldTracking:
         await self._field_tracking(source_id, tracking_id)
         row = await self._session.scalar(
@@ -556,7 +523,7 @@ class SourcesService:
         return row
 
     async def create_object_field_tracking(
-        self, source_id: int, tracking_id: int, request: dto.SourceObjectFieldTrackingCreate
+            self, source_id: int, tracking_id: int, request: dto.SourceObjectFieldTrackingCreate
     ) -> dto.SourceObjectFieldTrackingResponse:
         async with self._transaction():
             await self._writable_source(source_id)
@@ -586,7 +553,7 @@ class SourcesService:
         return result
 
     async def list_object_field_trackings(
-        self, source_id: int, tracking_id: int, query: dto.Pagination
+            self, source_id: int, tracking_id: int, query: dto.Pagination
     ) -> dto.Page[dto.SourceObjectFieldTrackingResponse]:
         await self._get(source_id)
         await self._field_tracking(source_id, tracking_id)
@@ -601,7 +568,7 @@ class SourcesService:
         )
 
     async def get_object_field_tracking(
-        self, source_id: int, tracking_id: int, object_tracking_id: int
+            self, source_id: int, tracking_id: int, object_tracking_id: int
     ) -> dto.SourceObjectFieldTrackingResponse:
         await self._get(source_id)
         return dto.SourceObjectFieldTrackingResponse.model_validate(
@@ -609,7 +576,7 @@ class SourcesService:
         )
 
     async def _validate_observation(
-        self, observation_id: int, tracking: SourceObjectFieldTracking
+            self, observation_id: int, tracking: SourceObjectFieldTracking
     ) -> None:
         evidence = SQLModel.metadata.tables.get("field_observations")
         required = {"id", "source_field_tracking_id", "source_object_field_tracking_id"}
@@ -628,20 +595,20 @@ class SourcesService:
             )
         ).one_or_none()
         if (
-            observation is None
-            or observation.source_object_field_tracking_id != tracking.id
-            or (observation.source_field_tracking_id != tracking.source_field_tracking_id)
+                observation is None
+                or observation.source_object_field_tracking_id != tracking.id
+                or (observation.source_field_tracking_id != tracking.source_field_tracking_id)
         ):
             raise SourceValidationError(
                 "Observation must belong to this exact source/object/field tracking"
             )
 
     async def update_object_field_tracking(
-        self,
-        source_id: int,
-        tracking_id: int,
-        object_tracking_id: int,
-        request: dto.SourceObjectFieldTrackingUpdate,
+            self,
+            source_id: int,
+            tracking_id: int,
+            object_tracking_id: int,
+            request: dto.SourceObjectFieldTrackingUpdate,
     ) -> dto.SourceObjectFieldTrackingResponse:
         async with self._transaction():
             await self._writable_source(source_id)
