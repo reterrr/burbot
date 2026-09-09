@@ -39,11 +39,12 @@ from .base import (
 
 class TokenClassRepository(SoftDeleteRepository[TokenClass, int], Protocol):
     """Define persistence operations for token class records."""
+
     async def get_by_name(
-        self,
-        name: str,
-        *,
-        include_deleted: bool = False,
+            self,
+            name: str,
+            *,
+            include_deleted: bool = False,
     ) -> TokenClass | None:
         """Retrieve a record by name.
 
@@ -56,12 +57,13 @@ class TokenClassRepository(SoftDeleteRepository[TokenClass, int], Protocol):
 
 class TargetFieldRepository(SoftDeleteRepository[TargetField, int], Protocol):
     """Define persistence operations for target field records."""
+
     async def get_by_name(
-        self,
-        entity_type: BusinessEntityType,
-        name: str,
-        *,
-        include_deleted: bool = False,
+            self,
+            entity_type: BusinessEntityType,
+            name: str,
+            *,
+            include_deleted: bool = False,
     ) -> TargetField | None:
         """Retrieve a record by name.
 
@@ -73,11 +75,11 @@ class TargetFieldRepository(SoftDeleteRepository[TargetField, int], Protocol):
         ...
 
     async def list_for_entity(
-        self,
-        entity_type: BusinessEntityType,
-        *,
-        required_only: bool = False,
-        include_deleted: bool = False,
+            self,
+            entity_type: BusinessEntityType,
+            *,
+            required_only: bool = False,
+            include_deleted: bool = False,
     ) -> Sequence[TargetField]:
         """List records belonging to entity.
 
@@ -117,8 +119,8 @@ class ElementRepository(ReadRepository[Element, int], Protocol):
         ...
 
     async def append_anchor(
-        self,
-        reference: AnchorElementReference,
+            self,
+            reference: AnchorElementReference,
     ) -> AnchorElementReference:
         """Append anchor.
 
@@ -152,11 +154,11 @@ class ElementRepository(ReadRepository[Element, int], Protocol):
         ...
 
     async def list_for_run(
-        self,
-        extraction_run_id: int,
-        *,
-        limit: int = 1000,
-        offset: int = 0,
+            self,
+            extraction_run_id: int,
+            *,
+            limit: int = 1000,
+            offset: int = 0,
     ) -> Sequence[Element]:
         """List records belonging to run.
 
@@ -176,8 +178,8 @@ class ElementRepository(ReadRepository[Element, int], Protocol):
         ...
 
     async def list_values(
-        self,
-        element_id: int,
+            self,
+            element_id: int,
     ) -> Sequence[ConcreteValue]:
         """List values.
 
@@ -215,27 +217,27 @@ class ScopeRepository(Protocol):
         ...
 
     async def get_active_scope(
-        self,
-        source_id: int,
-        name: str,
+            self,
+            source_id: int,
+            name: str,
     ) -> SourceScope | None:
         """Retrieve active scope.
 
-        :param source_id: Identifier of the source.
+        :param source_id: Identifier of the sources.
         :param name: Human-readable or database type name, depending on context.
         :return: Matching record, or ``None`` when no record exists.
         """
         ...
 
     async def list_scopes(
-        self,
-        source_id: int,
-        *,
-        active_only: bool = True,
+            self,
+            source_id: int,
+            *,
+            active_only: bool = True,
     ) -> Sequence[SourceScope]:
         """List scopes.
 
-        :param source_id: Identifier of the source.
+        :param source_id: Identifier of the sources.
         :param active_only: Active only value.
         :return: Matching records in deterministic repository order.
         """
@@ -250,8 +252,8 @@ class ScopeRepository(Protocol):
         ...
 
     async def add_selector_version(
-        self,
-        selector: FieldSelector,
+            self,
+            selector: FieldSelector,
     ) -> FieldSelector:
         """Add selector version.
 
@@ -261,8 +263,8 @@ class ScopeRepository(Protocol):
         ...
 
     async def close_selector_version(
-        self,
-        selector_id: int,
+            self,
+            selector_id: int,
     ) -> FieldSelector | None:
         """Close selector version.
 
@@ -272,9 +274,9 @@ class ScopeRepository(Protocol):
         ...
 
     async def get_active_selector(
-        self,
-        scope_id: int,
-        target_field_id: int,
+            self,
+            scope_id: int,
+            target_field_id: int,
     ) -> FieldSelector | None:
         """Retrieve active selector.
 
@@ -285,10 +287,10 @@ class ScopeRepository(Protocol):
         ...
 
     async def list_selectors(
-        self,
-        scope_id: int,
-        *,
-        active_only: bool = True,
+            self,
+            scope_id: int,
+            *,
+            active_only: bool = True,
     ) -> Sequence[FieldSelector]:
         """List selectors.
 
@@ -304,11 +306,12 @@ class ScopeInstanceRepository(
     Protocol,
 ):
     """Define persistence operations for scope instance records."""
+
     async def list_for_run(
-        self,
-        extraction_run_id: int,
-        *,
-        scope_id: int | None = None,
+            self,
+            extraction_run_id: int,
+            *,
+            scope_id: int | None = None,
     ) -> Sequence[ScopeInstance]:
         """List records belonging to run.
 
@@ -319,8 +322,8 @@ class ScopeInstanceRepository(
         ...
 
     async def list_children(
-        self,
-        parent_scope_instance_id: int,
+            self,
+            parent_scope_instance_id: int,
     ) -> Sequence[ScopeInstance]:
         """List children.
 
@@ -335,13 +338,14 @@ class FieldObservationRepository(
     Protocol,
 ):
     """Define persistence operations for field observation records."""
+
     async def list_for_run(
-        self,
-        extraction_run_id: int,
-        *,
-        status: ObservationStatus | None = None,
-        limit: int = 1000,
-        offset: int = 0,
+            self,
+            extraction_run_id: int,
+            *,
+            status: ObservationStatus | None = None,
+            limit: int = 1000,
+            offset: int = 0,
     ) -> Sequence[FieldObservation]:
         """List records belonging to run.
 
@@ -354,8 +358,8 @@ class FieldObservationRepository(
         ...
 
     async def list_for_scope_instance(
-        self,
-        scope_instance_id: int,
+            self,
+            scope_instance_id: int,
     ) -> Sequence[FieldObservation]:
         """List records belonging to scope instance.
 
@@ -365,11 +369,11 @@ class FieldObservationRepository(
         ...
 
     async def list_for_entity(
-        self,
-        entity_type: BusinessEntityType,
-        entity_id: int,
-        *,
-        status: ObservationStatus | None = None,
+            self,
+            entity_type: BusinessEntityType,
+            entity_id: int,
+            *,
+            status: ObservationStatus | None = None,
     ) -> Sequence[FieldObservation]:
         """List records belonging to entity.
 
@@ -383,11 +387,12 @@ class FieldObservationRepository(
 
 class PhraseRepository(SoftDeleteRepository[Phrase, int], Protocol):
     """Define persistence operations for phrase records."""
+
     async def get_by_phrase(
-        self,
-        phrase: str,
-        *,
-        include_deleted: bool = False,
+            self,
+            phrase: str,
+            *,
+            include_deleted: bool = False,
     ) -> Phrase | None:
         """Retrieve a record by phrase.
 
@@ -403,11 +408,12 @@ class SemanticClassRepository(
     Protocol,
 ):
     """Define persistence operations for semantic class records."""
+
     async def get_by_name(
-        self,
-        name: str,
-        *,
-        include_deleted: bool = False,
+            self,
+            name: str,
+            *,
+            include_deleted: bool = False,
     ) -> SemanticClass | None:
         """Retrieve a record by name.
 
@@ -423,11 +429,12 @@ class PhraseClassificationRepository(
     Protocol,
 ):
     """Define persistence operations for phrase classification records."""
+
     async def list_for_phrase(
-        self,
-        phrase_id: int,
-        *,
-        include_deleted: bool = False,
+            self,
+            phrase_id: int,
+            *,
+            include_deleted: bool = False,
     ) -> Sequence[PhraseClassification]:
         """List records belonging to phrase.
 
@@ -438,10 +445,10 @@ class PhraseClassificationRepository(
         ...
 
     async def list_for_semantic_class(
-        self,
-        semantic_class_id: int,
-        *,
-        include_deleted: bool = False,
+            self,
+            semantic_class_id: int,
+            *,
+            include_deleted: bool = False,
     ) -> Sequence[PhraseClassification]:
         """List records belonging to semantic class.
 
@@ -474,115 +481,53 @@ class PatternRepository(
         """
         ...
 
+    async def list_for_target_field(
+        self,
+        target_field_id: int,
+        *,
+        include_deleted: bool = False,
+    ) -> Sequence[GeneralizedPattern]:
+        """List patterns associated with a target field.
+
+        A pattern is associated with a target field through an appropriate
+        ``PatternItem`` record.
+
+        :param target_field_id: Identifier of the target field.
+        :param include_deleted: Whether soft-deleted records should be included.
+        :return: Matching patterns in deterministic repository order.
+        """
+        ...
+
     async def list_items(
         self,
         pattern_id: int,
         *,
         include_deleted: bool = False,
     ) -> Sequence[PatternItem]:
-        """List items.
+        """List items belonging to a pattern.
 
         :param pattern_id: Identifier of the pattern.
         :param include_deleted: Whether soft-deleted records should be included.
-        :return: Matching records in deterministic repository order.
+        :return: Matching items in deterministic repository order.
         """
         ...
-
-    async def add_item(self, item: PatternItem) -> PatternItem:
-        """Add item.
-
-        :param item: Item value.
-        :return: Persisted record reflecting the completed operation.
-        """
-        ...
-
-    async def save_item(self, item: PatternItem) -> PatternItem:
-        """Persist changes to an existing record.
-
-        :param item: Item value.
-        :return: Persisted record reflecting the completed operation.
-        """
-        ...
-
-    async def soft_delete_item(self, item_id: int) -> bool:
-        """Soft-delete a record without removing its stored data.
-
-        :param item_id: Identifier of the item.
-        :return: ``True`` when the requested state change was applied.
-        """
-        ...
-
-    async def restore_item(self, item_id: int) -> PatternItem | None:
-        """Restore a soft-deleted record.
-
-        :param item_id: Identifier of the item.
-        :return: Persisted record reflecting the completed operation.
-        """
-        ...
-
-    async def append_instance(
-        self,
-        instance: PatternInstance,
-    ) -> PatternInstance:
-        """Append instance.
-
-        :param instance: Instance value.
-        :return: Persisted record reflecting the completed operation.
-        """
-        ...
-
-    async def append_match(
-        self,
-        match: PatternInstanceMatch,
-    ) -> PatternInstanceMatch:
-        """Append match.
-
-        :param match: Match value.
-        :return: Persisted record reflecting the completed operation.
-        """
-        ...
-
-    async def list_instances(
-        self,
-        pattern_id: int,
-        *,
-        extraction_run_id: int | None = None,
-    ) -> Sequence[PatternInstance]:
-        """List instances.
-
-        :param pattern_id: Identifier of the pattern.
-        :param extraction_run_id: Identifier of the extraction run.
-        :return: Matching records in deterministic repository order.
-        """
-        ...
-
-    async def list_matches(
-        self,
-        pattern_instance_id: int,
-    ) -> Sequence[PatternInstanceMatch]:
-        """List matches.
-
-        :param pattern_instance_id: Identifier of the pattern instance.
-        :return: Matching records in deterministic repository order.
-        """
-        ...
-
 
 class GroundTruthRepository(
     SoftDeleteRepository[GroundTruth, int],
     Protocol,
 ):
     """Define persistence operations for ground truth records."""
-    async def list_for_source(
-        self,
-        source_id: int,
-        *,
-        target_field_id: int | None = None,
-        include_deleted: bool = False,
-    ) -> Sequence[GroundTruth]:
-        """List records belonging to source.
 
-        :param source_id: Identifier of the source.
+    async def list_for_source(
+            self,
+            source_id: int,
+            *,
+            target_field_id: int | None = None,
+            include_deleted: bool = False,
+    ) -> Sequence[GroundTruth]:
+        """List records belonging to sources.
+
+        :param source_id: Identifier of the sources.
         :param target_field_id: Identifier of the target field.
         :param include_deleted: Whether soft-deleted records should be included.
         :return: Matching records in deterministic repository order.
@@ -590,11 +535,11 @@ class GroundTruthRepository(
         ...
 
     async def list_for_entity(
-        self,
-        entity_type: BusinessEntityType,
-        entity_id: int,
-        *,
-        include_deleted: bool = False,
+            self,
+            entity_type: BusinessEntityType,
+            entity_id: int,
+            *,
+            include_deleted: bool = False,
     ) -> Sequence[GroundTruth]:
         """List records belonging to entity.
 

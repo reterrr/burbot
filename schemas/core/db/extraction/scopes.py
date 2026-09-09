@@ -26,10 +26,10 @@ from ..mixins import CreatedAtMixin, UpdatedAtMixin, pg_enum
 
 
 class SourceScope(UpdatedAtMixin, table=True):
-    """Define a versioned, reusable extraction scope for a source.
+    """Define a versioned, reusable extraction scope for a sources.
 
     :ivar id: Database primary key.
-    :ivar source_id: Identifier of the related source.
+    :ivar source_id: Identifier of the related sources.
     :ivar parent_scope_id: Identifier of the related parent scope.
     :ivar entity_type: Entity type.
     :ivar name: Human-readable name.
@@ -116,7 +116,7 @@ class SourceScope(UpdatedAtMixin, table=True):
 
 
 class ScopeInstance(CreatedAtMixin, table=True):
-    """Represent one runtime occurrence of a source scope.
+    """Represent one runtime occurrence of a sources scope.
 
     :ivar id: Database primary key.
     :ivar scope_id: Identifier of the related scope.

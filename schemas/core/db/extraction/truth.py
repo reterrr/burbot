@@ -21,7 +21,7 @@ class GroundTruth(SoftDeleteMixin, table=True):
     """Store a human- or system-confirmed label for later validation.
 
     :ivar id: Database primary key.
-    :ivar source_id: Identifier of the related source.
+    :ivar source_id: Identifier of the related sources.
     :ivar target_field_id: Identifier of the related target field.
     :ivar project_id: Identifier of the related project.
     :ivar operator_id: Identifier of the related operator.

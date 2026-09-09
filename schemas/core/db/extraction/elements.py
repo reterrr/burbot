@@ -19,7 +19,7 @@ from ..mixins import CreatedAtMixin, pg_enum
 
 
 class Element(CreatedAtMixin, table=True):
-    """Represent one node extracted from an HTML or PDF source.
+    """Represent one node extracted from an HTML or PDF sources.
 
     :ivar id: Database primary key.
     :ivar extraction_run_id: Identifier of the related extraction run.

@@ -13,6 +13,7 @@ from sqlalchemy import (
 )
 from sqlmodel import Field
 
+from services.extraction.bs4_html_iter import TokenClassType
 from ..enums import BusinessEntityType
 from ..mixins import SoftDeleteMixin, pg_enum
 
@@ -29,7 +30,7 @@ class TokenClass(SoftDeleteMixin, table=True):
     __tablename__ = "token_classes"
 
     id: int | None = Field(default=None, primary_key=True)
-    name: str = Field(sa_column=Column(String, nullable=False, unique=True))
+    type: TokenClassType = Field(sa_column=Column(TokenClassType, nullable=False, unique=True))
     validation_regex: str | None = Field(
         default=None,
         sa_column=Column(Text, nullable=True),
