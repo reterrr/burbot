@@ -11,7 +11,7 @@ from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 from sqlmodel import SQLModel
 
-from migrations.load_models import _load_business_models
+from migrations.load_models import load_models
 
 config = context.config
 
@@ -21,7 +21,7 @@ if config.config_file_name is not None:
 # Import all SQLModel table classes so they register themselves
 # in SQLModel.metadata.
 dotenv.load_dotenv()
-_load_business_models()
+load_models()
 
 target_metadata = SQLModel.metadata
 
