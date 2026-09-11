@@ -1,163 +1,206 @@
-# Layer 2 — Sources / Acquisition
+# Sources / Acquisition — Layer 2
 
-The `sources` module implements Layer 2 from the supplied generic Burbot DBML.
-It runs inside the existing FastAPI application and shares its PostgreSQL database.
-`SourcesService` executes SQLAlchemy queries directly through `AsyncSession`.
+`SourcesService` executes SQLAlchemy queries directly through its `AsyncSession`.
+The main user-facing tracking resource is a **source + concrete business object
+field**. Clients supply `source_id` and `business_object_field_id`; the service
+resolves the entity field and creates supporting records in the same transaction.
 
-## Tables
+## Public API
 
-| Model | Table | Purpose |
-| --- | --- | --- |
-| StoredFile | `stored_files` | Describe externally stored bytes |
-| Source | `sources` | HTML/PDF acquisition identity with URL, file reference, or both |
-| SourceMetadata | `source_metadata` | Latest content/structure hashes |
-| SourceCheckSchedule | `source_check_schedules` | One configured fetch cadence per source |
-| SourceStateHistory | `source_state_history` | Lifecycle history |
-| SourceWarning | `source_warnings` | Source warnings and their resolution |
-| SourceBusinessEntity | `source_business_entities` | Contextual association with an entity type |
-| SourceBusinessObject | `source_business_objects` | Association with a known concrete object |
-| SourceFieldTracking | `source_field_trackings` | Source + logical entity field |
-| SourceObjectFieldTracking | `source_object_field_trackings` | Source + exact business object field |
-
-Column names follow the DBML, including `sources.type` and nullable `sources.url`.
-Identifiers and their references use PostgreSQL `bigint`. Runtime hashes are stored
-in `source_metadata`; source registration does not contain fetch status or extraction
-results. The active models are independent of the old `schemas.core.db` registry.
-
-## Schema setup
-
-No handwritten migration is included. The model loader imports the active business
-and Sources models so Alembic can discover the changes. Use Python 3.13 or 3.14,
-configure `.env` from `.env.example`, and connect to your development database:
-
-```bash
-python -m pip install -e '.[dev]'
-mkdir -p migrations/versions
-python -m alembic revision --autogenerate --version-path migrations/versions -m "sources layer"
-```
-
-After reviewing the generated revision, apply it and run the existing application:
-
-```bash
-python -m alembic upgrade head
-python -m business_layer.main
-```
-
-`HOST_DATABASE_URL` is the async PostgreSQL URL Alembic uses. `DCKR_DATABASE_URL`
-is the async PostgreSQL URL reachable from the application; set it to the host URL
-when running the application outside Docker. Swagger UI is at `/docs`, with the live
-schema at `/openapi.json`. No schema changes run automatically on application startup.
-
-## API
-
-All paths below are relative to `/api/v1/sources`. Lists return `items`, `total`,
-`offset`, and `limit`; the default and maximum limit are 100. Source listing supports
-`type`, `state`, and normalized `url` filters. Warning listing supports `status` and
-`severity` filters.
+Paths below are relative to `/sources`. The root `main.api` mounts this router
+there; `business_layer.main.app` mounts it under `/api/v1/sources`.
+Lists return `items`, `total`, `offset`, and `limit` (default/maximum 100).
 
 | Methods | Path | Operation |
 | --- | --- | --- |
-| POST | `/stored-files` | Register a stored-file descriptor |
-| GET | `/stored-files/{file_id}` | Read the descriptor |
 | POST, GET | Collection root | Register/list sources |
 | GET, PATCH, DELETE | `/{source_id}` | Read/correct/archive a source |
-| PUT | `/{source_id}/state` | Compare expected state and transition |
-| GET | `/{source_id}/state-history` | Read chronological history |
-| GET, PUT | `/{source_id}/metadata` | Read/replace latest hash metadata |
+| POST | `/stored-files` | Register an externally stored file descriptor |
+| GET | `/stored-files/{file_id}` | Read the descriptor |
+| PUT | `/{source_id}/state` | Transition using `expected_state` |
+| GET | `/{source_id}/state-history` | Read lifecycle history |
+| GET, PUT | `/{source_id}/metadata` | Read/replace source hashes |
 | GET, PUT | `/{source_id}/check-schedule` | Read/replace source cadence |
 | POST, GET | `/{source_id}/warnings` | Add/list warnings |
 | PATCH | `/{source_id}/warnings/{warning_id}` | Resolve, ignore, or reopen a warning |
-| GET | `/{source_id}/business-entities` | List contextual entity links |
-| PUT, DELETE | `/{source_id}/business-entities/{entity_id}` | Link/unlink an entity type |
-| GET | `/{source_id}/business-objects` | List concrete object links |
-| PUT, DELETE | `/{source_id}/business-objects/{object_id}` | Link/unlink a known object |
-| POST, GET | `/{source_id}/field-trackings` | Create/list field tracking contracts |
-| GET, PATCH | `/{source_id}/field-trackings/{tracking_id}` | Read/configure a field tracking |
-| POST, GET | `/{source_id}/field-trackings/{tracking_id}/object-field-trackings` | Bind/list concrete object fields |
-| GET, PATCH | `/{source_id}/field-trackings/{tracking_id}/object-field-trackings/{object_tracking_id}` | Read/configure a concrete binding |
+| POST, GET | `/{source_id}/object-field-trackings` | Create a binding / list current versions |
+| GET, PATCH, DELETE | `/{source_id}/object-field-trackings/{tracking_id}` | Read, append a changed version, or disable |
+| GET | `/{source_id}/object-field-trackings/{tracking_id}/versions` | List all versions, oldest first |
+| GET | `/{source_id}/object-field-trackings/{tracking_id}/versions/{version}` | Read one historical version |
 
-Use `tracking_enabled: false` to stop tracking while retaining its identity and
-provenance. Disabling a field tracking makes its child bindings effectively inactive;
-workers must check both the parent and child flags. Context links are independent
-of tracking contracts. Linking an entity never implies that the source represents
-one concrete object. Repeated PUT/DELETE link operations are idempotent.
+`SourceFieldTracking` and `SourceBusinessObject` are internal records. Their former
+CRUD endpoints and DTOs are removed from the public API and OpenAPI, including
+nested routes requiring a source field tracking ID. Obsolete entity-link routes
+are removed as well. Object field responses never expose `source_field_tracking_id`.
 
-Registration creates an `UNDISCOVERED` source, an empty metadata row, and its initial
-history entry in one transaction. It does not fetch, discover, create a task, start
-Temporal, or start polling. A schedule stores configuration only; a future scheduler
-uses source cadence and field-level demand to decide what to execute.
+### Create and manage a binding
 
-### Register a URL
+POST `/sources/7/object-field-trackings`:
 
 ```json
-{"type": "HTML", "url": "https://example.com/funding"}
+{
+  "business_object_field_id": 50,
+  "desired_refresh_seconds": 300
+}
 ```
 
-URLs use HTTP(S); host casing, default ports and fragments are normalized. Query
-parameters, path case, and non-root trailing slashes are preserved. Duplicate URLs
-return `409`. Credential-bearing URLs and URLs exceeding 2048 UTF-8 bytes are rejected.
+The response includes a stable UUID `id`, a numeric `version_id`, `version: 1`,
+`source_id`, `business_object_field_id`, configuration, observation pointers,
+timestamps, `valid_from`, `valid_to`, and `is_current`. `tracking_enabled` defaults
+to true. A second POST for the same source/object field returns `409`, including
+when the existing binding is disabled; use its UUID to re-enable it.
 
-### Register a file-backed source
-
-First register the descriptor after storing the bytes:
+PATCH `/sources/7/object-field-trackings/<id>`:
 
 ```json
-{"storage_key": "documents/rules.pdf", "mime_type": "application/pdf", "size_bytes": 12345}
+{
+  "expected_version": 1,
+  "tracking_enabled": false,
+  "change_reason": "Paused by the operator"
+}
 ```
 
-Then POST the source with the returned file ID:
+The response retains `id`, gets a new `version_id`, and reports `version: 2`.
+`expected_version` is required. A stale value returns `409`, including for otherwise
+identical updates. An unchanged configuration with a matching version returns the
+existing snapshot. Reasons alone do not create a new version.
 
-```json
-{"type": "PDF", "file_id": 1}
-```
+`DELETE .../<id>?expected_version=2` is a soft disable and returns the resulting
+snapshot (`200`). Repeating it with the current version is a no-op. Re-enable using
+PATCH with `tracking_enabled: true`. No public operation deletes tracking history.
+The source and business object field of a binding cannot be reassigned through PATCH.
 
-The source URL may be null. At least one of `url` or `file_id` must be present.
-A supplied file reference must exist and its MIME type must match the source type.
-The descriptor endpoint does not upload bytes. A source's initial locator/type can
-be corrected before its first lifecycle transition; PATCH cannot remove both locators.
+Current listing supports `business_object_id`, `business_object_field_id`, and
+`tracking_enabled` filters. Disabled bindings are included unless filtered out.
+History has separate pagination, so an older version never inflates current counts.
 
-## Lifecycle and consistency
+GET `.../<id>?at=2026-09-11T12:00:00Z` reads the version effective at that instant.
+Times must include an offset. The intervals are `[valid_from, valid_to)`; at a
+transition boundary the successor is returned. A time before the first known
+version returns `404`. `is_current` indicates whether that stored version is the
+current head now, even when queried through the historical endpoint.
+
+## Version storage and consistency
+
+`source_object_field_trackings` uses SCD Type 2 in the existing table:
+
+| Column | Meaning |
+| --- | --- |
+| `id` | Bigint primary key of one snapshot; exposed as `version_id` |
+| `tracking_id` | UUID shared by all snapshots of a binding; exposed as `id` |
+| `version` | Increasing integer starting at 1 |
+| `valid_from`, `valid_to` | Snapshot lifetime; null `valid_to` marks the current version |
+| `change_reason` | Optional explanation for this version |
+| `tracking_enabled`, `desired_refresh_seconds` | Configuration of this snapshot |
+| Observation references and check/change times | Acquisition state captured by this snapshot |
+
+Each actual configuration or internal observation update inserts a complete new
+snapshot. Only `valid_to` changes on the previous row; its payload, original bigint
+ID, `created_at`, and `updated_at` remain unchanged. Closing and inserting commit
+atomically. A failure rolls the closure back too. This is single-axis temporal
+versioning, not a separate event log or bitemporal model.
+
+All binding mutations lock the source row first. Concurrent changes using the same
+`expected_version` produce one winner and a `409` for the stale writer. Partial
+unique indexes allow one current row per binding UUID and one per source field /
+business object field pair, including disabled rows. Another unique constraint
+protects `(tracking_id, version)`. The service creates contiguous positive periods;
+DB checks also reject nonpositive versions and invalid period lengths. Writes
+through this service preserve snapshots; direct SQL writers must obey the same
+contract (no immutability trigger is installed).
+
+Archiving a source appends disabled versions for all its enabled current bindings
+and disables the source schedule and internal field demand in the same transaction.
+Already disabled bindings do not acquire a redundant version. Repeated archival is
+harmless. Current and historical reads remain available after archival.
+
+## Internal associations and acquisition
+
+`SourceFieldTracking` is automatically reused for the source + entity field.
+`SourceBusinessObject` is automatically reused for the source + object. Creating a
+binding validates that the object belongs to the entity defining its field. Failed
+creation rolls back newly created supporting links as well. Links remain available
+as provenance when a binding is disabled or its source is archived.
+
+The internal field tracking aggregates enabled **current** object field versions:
+`tracking_enabled` is true when any is enabled, and `desired_refresh_seconds` is the
+minimum explicit demand among those enabled versions. Null demand means no explicit
+request. The fetch cadence remains in `SourceCheckSchedule`; configuration changes
+do not start polling, fetching, Temporal, or tasks, or change canonical business data.
+
+Worker code uses `SourcesService.record_tracking_observation(...)` with
+`TrackingObservationUpdate` from `sources.schemas.internal`. It requires
+`expected_version` and appends a snapshot just like configuration updates. It has no
+HTTP route. Public PATCH rejects observation IDs, worker timestamps, temporal fields,
+and internal association IDs.
+
+`last_observation_id` and `baseline_observation_id` refer to Layer 3 evidence.
+Updating only `last_checked_at` does not advance a baseline or `last_changed_at`.
+The worker explicitly supplies `last_changed_at` after comparing observed values.
+Disabled bindings and archived sources reject new worker updates.
+
+Layer 3 observations retain their bigint `source_object_field_tracking_id`, which
+identifies the exact snapshot used during acquisition. Do not replace it with the
+public UUID. An observation from an earlier snapshot can be carried forward only
+within the same binding UUID, source field, and business object field. Versioning
+never reassigns existing observations to a different row. A worker/task can retain
+`version_id` for provenance and use the stable UUID plus `expected_version` for writes.
+
+Until the real Layer 3 `field_observations` model is registered, setting a non-null
+observation pointer raises `409`. No placeholder evidence tables are registered.
+Import Layer 3 models and call `register_evidence_references()` after all model imports
+when integrating that layer. It attaches the two physical observation foreign keys
+to metadata without executing DDL. Other Sources foreign keys are declared normally.
+
+## Source registration and lifecycle
+
+Register a URL with `{"type": "HTML", "url": "https://example.com/funding"}`.
+HTTP(S) host casing, default ports, and fragments are normalized. Queries, path
+case, and non-root trailing slashes are retained. Duplicate URLs return `409`.
+Credential-bearing URLs and URLs over 2048 UTF-8 bytes are rejected.
+
+For file-backed sources, register the descriptor after storing the bytes, then
+POST `{"type": "PDF", "file_id": 1}`. At least one of URL/file is required; the
+file must exist and have a matching MIME type. The descriptor API does not upload
+bytes. Registration creates an `UNDISCOVERED` source, metadata, and initial state
+history together. The locator/type can change only before the first state transition.
 
 The normal lifecycle is `UNDISCOVERED → DISCOVERING → VALIDATING → ACTIVE`.
-Additional allowed transitions are defined in `sources/services/lifecycle.py`.
-State updates require `expected_state`; stale expectations and invalid transitions
-return `409`. State, timestamps, and history commit together under a source row lock.
-Repeated archive operations are harmless. Archival is terminal, retains all source
-records, and disables its schedule and both levels of tracking. Existing warnings
-can still be resolved after archival.
+Additional transitions are in `sources/services/lifecycle.py`. `expected_state`
+protects state changes. Archival is terminal; warnings can still be resolved.
+`triggered_by` is domain metadata, not an authenticated user identity. The router
+keeps the application's existing access model.
 
-`triggered_by` records the supplied domain trigger and is not an authenticated user
-identity. The router uses the same access model as the existing application.
+## Schema setup and existing data
 
-All mutations have one service-owned transaction. Use a session scoped to one
-request or orchestration activity, without unrelated pending writes. Cross-module
-references are validated with direct queries against the existing business models.
+No Alembic revision is written or changed by this implementation. Use the existing
+model loader and generate the revision against your development PostgreSQL database:
 
-## Tracking and the Layer 3 boundary
+```bash
+python -m alembic revision --autogenerate -m "version source object field tracking"
+# Review the generated revision before applying it.
+python -m alembic upgrade head
+```
 
-When creating a concrete binding, the service checks that the BusinessObjectField
-uses the same BusinessEntityField as the parent SourceFieldTracking, and that its
-object belongs to that field's entity. Nested endpoints also verify source and
-tracking ownership.
+The existing table, all its columns, bigint IDs, payloads, and foreign-key targets
+are retained. The added non-null columns have database defaults: a fresh UUID per
+existing row, `version = 1`, and `valid_from = now()`. Existing rows therefore become
+initial snapshots when the generated schema change is applied; no historical state
+before that conversion is reconstructed. Their original timestamps are preserved.
+The old unconditional source-field/object-field uniqueness constraint must be
+replaced by the current-row partial index in the generated revision.
 
-`last_observation_id` and `baseline_observation_id` reference evidence from Layer 3.
-Neither is a canonical BusinessObjectFieldValue. Updating `last_checked_at` does not
-change `last_changed_at` or the baseline. The acquisition caller explicitly sets
-`last_changed_at` after comparing the newly observed source value with its baseline.
-This service never writes canonical business values or reconciles observations.
+The new per-object refresh demand initially defaults to null; existing source
+schedules are unchanged. Legacy field-level demand remains in the internal table
+until recalculated from current object field settings on their next configuration
+change. Set desired demand on concrete bindings through the new API.
 
-Layer 3's generic `FieldObservation` model is not implemented in this change.
-Until that real model is registered, non-null observation pointer updates return
-`409`; the nullable bigint columns remain available. Their two physical foreign-key
-constraints are deliberately deferred rather than creating a placeholder evidence
-table. All other Layer 2 foreign keys are declared normally.
-
-When implementing Layer 3, import its models in `migrations/load_models.py` before
-`register_evidence_references()`. That function attaches the two named foreign keys
-to metadata, using `use_alter` for the Layer 2/3 cycle. The next Alembic autogeneration
-will include them. The function only configures metadata; it executes no DDL.
-Once Layer 3 is available, the service verifies that each observation belongs to
-both the exact SourceObjectFieldTracking and its parent SourceFieldTracking.
+For PostgreSQL's Alembic autogeneration, review check constraints as well: Alembic's
+autogenerate support for their changes is limited. The required definitions are on
+`SourceObjectFieldTracking.__table_args__`. No schema changes run at application
+startup. `HOST_DATABASE_URL` is used by Alembic, and `DCKR_DATABASE_URL` by the API.
+Use Python 3.13 or 3.14 as declared by the project. The checked-in `openapi.json`
+comes from the root `main.api`; the live schema is always available at `/openapi.json`.
 
 ## Verification
 
@@ -165,17 +208,17 @@ both the exact SourceObjectFieldTracking and its parent SourceFieldTracking.
 python -m pytest tests/test_sources.py -q
 ```
 
-Tests cover API validation, file-backed registration, transactions, metadata,
-scheduling configuration, warnings, context links, cross-source/object tracking
-invariants, evidence ownership, and archival. SQLite runs use the real Layer 2
-models plus the business identity tables, with PostgreSQL types compiled for SQLite.
+Tests cover public contracts, automatic association reuse, object/source ownership,
+historical payload preservation, temporal boundaries, stale writes, no-ops, soft
+disable/re-enable, transaction rollback, archive behavior, and historical evidence
+ownership, along with source registration, metadata, schedules, and warnings.
 
-For native PostgreSQL enum/locking behavior, use a dedicated test database:
+For PostgreSQL locking and concurrency checks, use a dedicated test database:
 
 ```bash
 SOURCES_TEST_DATABASE_URL=postgresql+asyncpg://user:password@localhost/burbot_test \
   python -m pytest tests/test_sources.py -q
 ```
 
-The fixture creates and drops a unique schema per test. It uses model metadata,
-not migration revisions. The PostgreSQL concurrency test is skipped without that URL.
+Tests create/drop an isolated schema per case. Without that URL, the two PostgreSQL
+concurrency tests are skipped and the other tests use SQLite with the real models.

@@ -2,6 +2,7 @@
 
 from datetime import datetime
 from typing import Annotated, Any, Generic, Self, TypeVar
+from uuid import UUID
 
 from pydantic import (
     AfterValidator,
@@ -218,60 +219,55 @@ class SourceWarningResponse(ResponseModel):
     updated_at: datetime
 
 
-class SourceBusinessEntityResponse(ResponseModel):
-    source_id: int
-    business_entity_id: int
-    created_at: datetime
-
-
-class SourceBusinessObjectResponse(ResponseModel):
-    source_id: int
-    business_object_id: int
-    created_at: datetime
-
-
-class SourceFieldTrackingCreate(RequestModel):
-    business_entity_field_id: Identifier
-    tracking_enabled: bool = True
-    desired_refresh_seconds: int | None = Field(default=None, gt=0, le=2147483647)
-
-
-class SourceFieldTrackingUpdate(PatchRequest):
-    tracking_enabled: bool | None = None
-    desired_refresh_seconds: int | None = Field(default=None, gt=0, le=2147483647)
-
-
-class SourceFieldTrackingResponse(ResponseModel):
-    id: int
-    source_id: int
-    business_entity_field_id: int
-    tracking_enabled: bool
-    desired_refresh_seconds: int | None
-    created_at: datetime
-    updated_at: datetime
-
-
 class SourceObjectFieldTrackingCreate(RequestModel):
     business_object_field_id: Identifier
     tracking_enabled: bool = True
+    desired_refresh_seconds: int | None = Field(default=None, gt=0, le=2147483647)
+    change_reason: NonBlank | None = None
 
 
-class SourceObjectFieldTrackingUpdate(PatchRequest):
+class TrackingVersionUpdate(RequestModel):
+    expected_version: int = Field(gt=0, le=2147483647)
+    change_reason: NonBlank | None = None
+
+    @model_validator(mode="after")
+    def payload_required(self) -> Self:
+        if not self.model_fields_set - {"expected_version", "change_reason"}:
+            raise ValueError("At least one tracking field must be provided")
+        return self
+
+
+class SourceObjectFieldTrackingUpdate(TrackingVersionUpdate):
     tracking_enabled: bool | None = None
-    last_observation_id: Identifier | None = None
-    baseline_observation_id: Identifier | None = None
-    last_checked_at: AwareDatetime | None = None
-    last_changed_at: AwareDatetime | None = None
+    desired_refresh_seconds: int | None = Field(default=None, gt=0, le=2147483647)
+
+    @model_validator(mode="after")
+    def enabled_not_null(self) -> Self:
+        if "tracking_enabled" in self.model_fields_set and self.tracking_enabled is None:
+            raise ValueError("tracking_enabled cannot be null")
+        return self
+
+
+class SourceObjectFieldTrackingListRequest(Pagination):
+    business_object_id: Identifier | None = None
+    business_object_field_id: Identifier | None = None
+    tracking_enabled: bool | None = None
 
 
 class SourceObjectFieldTrackingResponse(ResponseModel):
-    id: int
-    source_field_tracking_id: int
+    id: UUID
+    version_id: int
+    version: int
+    source_id: int
     business_object_field_id: int
     tracking_enabled: bool
+    desired_refresh_seconds: int | None
     last_observation_id: int | None
     baseline_observation_id: int | None
     last_checked_at: datetime | None
     last_changed_at: datetime | None
+    valid_from: datetime
+    valid_to: datetime | None
+    is_current: bool
+    change_reason: str | None
     created_at: datetime
-    updated_at: datetime

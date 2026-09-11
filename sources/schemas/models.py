@@ -1,7 +1,8 @@
-"""The ten Sources / Acquisition tables from the Layer 2 DBML contract."""
+"""Sources / Acquisition identities and versioned object field tracking."""
 
 from datetime import datetime
 from typing import Any
+from uuid import UUID, uuid4
 
 from sqlalchemy import (
     JSON,
@@ -18,6 +19,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    Uuid,
     func,
     text,
 )
@@ -201,6 +203,8 @@ class SourceWarning(UpdatedAtMixin, table=True):
 
 
 class SourceBusinessObject(CreatedAtMixin, table=True):
+    """Internal provenance link, created when a concrete object field is tracked."""
+
     __tablename__ = "source_business_objects"
     __table_args__ = (Index("ix_source_business_objects_object", "business_object_id"),)
 
@@ -209,7 +213,7 @@ class SourceBusinessObject(CreatedAtMixin, table=True):
 
 
 class SourceFieldTracking(UpdatedAtMixin, table=True):
-    """Source + logical field; does not yet identify a concrete business object."""
+    """Internal source + entity field grouping with aggregated current demand."""
 
     __tablename__ = "source_field_trackings"
     __table_args__ = (
@@ -232,24 +236,71 @@ class SourceFieldTracking(UpdatedAtMixin, table=True):
     )
 
 
-class SourceObjectFieldTracking(UpdatedAtMixin, table=True):
-    """A durable source + object + field binding; baseline is evidence, not canonical data."""
+class SourceObjectFieldTracking(CreatedAtMixin, table=True):
+    """One SCD Type 2 snapshot of a source + object field binding.
+
+    ``tracking_id`` identifies the binding across versions; ``id`` identifies
+    this exact snapshot and remains the target of Layer 3 evidence references.
+    After insertion, the service only updates ``valid_to`` to close a version.
+    """
 
     __tablename__ = "source_object_field_trackings"
     __table_args__ = (
-        UniqueConstraint(
+        Index(
+            "uq_source_object_field_trackings_current_field",
             "source_field_tracking_id",
             "business_object_field_id",
-            name="uq_source_object_field_trackings_field",
+            unique=True,
+            postgresql_where=text("valid_to IS NULL"),
+            sqlite_where=text("valid_to IS NULL"),
+        ),
+        UniqueConstraint("tracking_id", "version", name="uq_source_object_field_trackings_version"),
+        Index(
+            "uq_source_object_field_trackings_current",
+            "tracking_id",
+            unique=True,
+            postgresql_where=text("valid_to IS NULL"),
+            sqlite_where=text("valid_to IS NULL"),
+        ),
+        CheckConstraint("version > 0", name="source_object_field_trackings_version_positive"),
+        CheckConstraint(
+            "valid_to IS NULL OR valid_to > valid_from",
+            name="source_object_field_trackings_valid_period",
+        ),
+        CheckConstraint(
+            "desired_refresh_seconds IS NULL OR desired_refresh_seconds > 0",
+            name="source_object_field_trackings_refresh_positive",
         ),
         Index("ix_source_object_field_trackings_object_field", "business_object_field_id"),
         Index("ix_source_object_field_trackings_enabled", "tracking_enabled"),
     )
 
     id: int | None = Field(default=None, sa_column=id_column())
+    tracking_id: UUID = Field(
+        default_factory=uuid4,
+        sa_column=Column(Uuid, nullable=False, server_default=func.gen_random_uuid()),
+    )
+    version: int = Field(
+        default=1, sa_column=Column(Integer, nullable=False, server_default=text("1"))
+    )
+    valid_from: datetime = Field(
+        default_factory=utc_now,
+        sa_column=Column(DateTime(timezone=True), nullable=False, server_default=func.now()),
+    )
+    valid_to: datetime | None = Field(default=None, sa_column=timestamp())
+    change_reason: str | None = Field(default=None, sa_column=Column(Text, nullable=True))
+    # Retain the existing column/data, but no onupdate: closing a version must
+    # not alter the timestamp or payload of that snapshot.
+    updated_at: datetime = Field(
+        default_factory=utc_now,
+        sa_column=Column(DateTime(timezone=True), nullable=False, server_default=func.now()),
+    )
     source_field_tracking_id: int = Field(sa_column=reference("source_field_trackings.id"))
     business_object_field_id: int = Field(sa_column=reference("business_object_fields.id"))
     tracking_enabled: bool = Field(default=True, sa_column=enabled_column())
+    desired_refresh_seconds: int | None = Field(
+        default=None, sa_column=Column(Integer, nullable=True)
+    )
     # Layer 3 owns the target table. register_evidence_references attaches the
     # two physical FKs when that model is present in the application's metadata.
     last_observation_id: int | None = Field(

@@ -1,5 +1,7 @@
 """Domain errors translated to HTTP errors at the API boundary."""
 
+from uuid import UUID
+
 
 class SourceError(Exception):
     pass
@@ -15,7 +17,7 @@ class SourceConflict(SourceError):
 
 
 class SourceResourceNotFound(SourceError):
-    def __init__(self, resource: str, identifier: int) -> None:
+    def __init__(self, resource: str, identifier: int | UUID) -> None:
         super().__init__(f"{resource} {identifier} not found")
 
 

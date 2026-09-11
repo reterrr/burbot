@@ -2,9 +2,11 @@
 
 ## Sources / Acquisition — Layer 2
 
-The existing API serves Layer 2 at `/api/v1/sources`, using the same database as the
-business layer. It includes source and file registration, metadata, schedules,
-warnings, business links, and tracking of entity fields and concrete object fields.
+The root API serves Layer 2 at `/sources`, using the same database as the business
+layer. It includes source/file registration, metadata, schedules, warnings, and
+versioned tracking of concrete business object fields. Clients manage these bindings
+directly; entity-field tracking and source/object links are internal and automatic.
+Changes append SCD Type 2 snapshots, with history and optimistic version checks.
 `SourcesService` uses `AsyncSession` directly. See [Sources service](docs/sources.md)
 for the contract, API, Layer 3 observation boundary and verification commands.
 
@@ -14,7 +16,7 @@ Copy the example environment file and start PostgreSQL:
 
 ```bash
 cp .env.example .env
-docker compose up -d db-business
+docker compose up -d db
 ```
 
 Install dependencies and generate revisions with Alembic from the registered models:
