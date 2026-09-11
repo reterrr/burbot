@@ -2,8 +2,10 @@
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime, timedelta
+from uuid import UUID
 
-from sqlalchemy import func, select, update
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import SQLModel, col
@@ -23,6 +25,7 @@ from sources.exceptions import (
 from sources.schemas import api as dto
 from sources.schemas.common import utc_now
 from sources.schemas.enums import SourceState, SourceStateTrigger, SourceType, WarningStatus
+from sources.schemas.internal import TrackingObservationUpdate
 from sources.schemas.models import (
     Source,
     SourceBusinessObject,
@@ -46,21 +49,27 @@ def _unique_conflict(error: IntegrityError) -> str | None:
         "sources_url_key": "A source with this URL already exists",
         "uq_stored_files_storage_key": "This storage key is already registered",
         "uq_source_field_trackings_field": "This source already tracks that entity field",
-        "uq_source_object_field_trackings_field": (
-            "This source field already tracks that object field"
+        "uq_source_object_field_trackings_current_field": (
+            "This source already tracks that object field; update the existing binding"
         ),
+        "uq_source_object_field_trackings_current": "Tracking was changed concurrently",
+        "uq_source_object_field_trackings_version": "Tracking was changed concurrently",
     }
     if constraint in messages:
         return messages[constraint]
     if getattr(original, "sqlite_errorcode", None) == 2067:
         for column, name in (
-                ("sources.url", "uq_sources_url"),
-                ("stored_files.storage_key", "uq_stored_files_storage_key"),
-                ("source_field_trackings.source_id", "uq_source_field_trackings_field"),
-                (
-                        "source_object_field_trackings.source_field_tracking_id",
-                        "uq_source_object_field_trackings_field",
-                ),
+            ("sources.url", "uq_sources_url"),
+            ("stored_files.storage_key", "uq_stored_files_storage_key"),
+            ("source_field_trackings.source_id", "uq_source_field_trackings_field"),
+            (
+                "source_object_field_trackings.tracking_id",
+                "uq_source_object_field_trackings_version",
+            ),
+            (
+                "source_object_field_trackings.source_field_tracking_id",
+                "uq_source_object_field_trackings_current_field",
+            ),
         ):
             if column in str(original):
                 return messages[name]
@@ -209,7 +218,7 @@ class SourcesService:
         return await self._page(statement, dto.SourceResponse, request)
 
     async def update_source(
-            self, source_id: int, request: dto.SourceUpdateRequest
+        self, source_id: int, request: dto.SourceUpdateRequest
     ) -> dto.SourceResponse:
         async with self._transaction():
             source = await self._writable_source(source_id)
@@ -241,11 +250,11 @@ class SourcesService:
         return result
 
     async def _change_state(
-            self,
-            source: Source,
-            state: SourceState,
-            reason: str | None,
-            triggered_by: SourceStateTrigger,
+        self,
+        source: Source,
+        state: SourceState,
+        reason: str | None,
+        triggered_by: SourceStateTrigger,
     ) -> None:
         if not can_transition(source.state, state):
             raise SourceConflict(f"Cannot transition from {source.state} to {state}")
@@ -272,26 +281,28 @@ class SourcesService:
                 )
                 .values(enabled=False, updated_at=now)
             )
-            tracking_ids = select(SourceFieldTracking.id).where(
-                col(SourceFieldTracking.source_id) == source.id
-            )
-            await self._session.execute(
-                update(SourceObjectFieldTracking)
-                .where(
-                    col(SourceObjectFieldTracking.source_field_tracking_id).in_(tracking_ids),
+            current = list(
+                await self._session.scalars(
+                    self._tracking_statement(source.id)
+                    .where(
+                        col(SourceObjectFieldTracking.valid_to).is_(None),
+                        col(SourceObjectFieldTracking.tracking_enabled).is_(True),
+                    )
+                    .execution_options(populate_existing=True)
                 )
-                .values(tracking_enabled=False, updated_at=now)
             )
+            for row in current:
+                await self._append_tracking_version(
+                    row, {"tracking_enabled": False}, "Source archived"
+                )
             await self._session.execute(
                 update(SourceFieldTracking)
-                .where(
-                    col(SourceFieldTracking.source_id) == source.id,
-                )
-                .values(tracking_enabled=False, updated_at=now)
+                .where(col(SourceFieldTracking.source_id) == source.id)
+                .values(tracking_enabled=False, desired_refresh_seconds=None, updated_at=now)
             )
 
     async def change_state(
-            self, source_id: int, request: dto.SourceStateChangeRequest
+        self, source_id: int, request: dto.SourceStateChangeRequest
     ) -> dto.SourceResponse:
         async with self._transaction():
             source = await self._get(source_id, for_update=True)
@@ -311,7 +322,7 @@ class SourcesService:
             )
 
     async def get_state_history(
-            self, source_id: int, request: dto.Pagination
+        self, source_id: int, request: dto.Pagination
     ) -> dto.SourceStateHistoryListResponse:
         await self._get(source_id)
         return await self._page(
@@ -332,7 +343,7 @@ class SourcesService:
         return dto.SourceMetadataResponse.model_validate(metadata)
 
     async def set_metadata(
-            self, source_id: int, request: dto.SourceMetadataWrite
+        self, source_id: int, request: dto.SourceMetadataWrite
     ) -> dto.SourceMetadataResponse:
         async with self._transaction():
             await self._writable_source(source_id)
@@ -356,7 +367,7 @@ class SourcesService:
         return dto.SourceCheckScheduleResponse.model_validate(row)
 
     async def set_schedule(
-            self, source_id: int, request: dto.SourceCheckScheduleWrite
+        self, source_id: int, request: dto.SourceCheckScheduleWrite
     ) -> dto.SourceCheckScheduleResponse:
         async with self._transaction():
             await self._writable_source(source_id)
@@ -371,7 +382,7 @@ class SourcesService:
         return result
 
     async def add_warning(
-            self, source_id: int, request: dto.SourceWarningCreate
+        self, source_id: int, request: dto.SourceWarningCreate
     ) -> dto.SourceWarningResponse:
         async with self._transaction():
             await self._writable_source(source_id)
@@ -382,7 +393,7 @@ class SourcesService:
         return result
 
     async def list_warnings(
-            self, source_id: int, request: dto.SourceWarningListRequest
+        self, source_id: int, request: dto.SourceWarningListRequest
     ) -> dto.Page[dto.SourceWarningResponse]:
         await self._get(source_id)
         statement = select(SourceWarning).where(col(SourceWarning.source_id) == source_id)
@@ -395,7 +406,7 @@ class SourcesService:
         )
 
     async def update_warning(
-            self, source_id: int, warning_id: int, request: dto.SourceWarningUpdate
+        self, source_id: int, warning_id: int, request: dto.SourceWarningUpdate
     ) -> dto.SourceWarningResponse:
         async with self._transaction():
             await self._get(source_id, for_update=True)
@@ -416,167 +427,270 @@ class SourcesService:
             result = await self._save(row, dto.SourceWarningResponse)
         return result
 
-    async def link_object(self, source_id: int, object_id: int) -> dto.SourceBusinessObjectResponse:
-        async with self._transaction():
-            await self._writable_source(source_id)
-            await self._business_identity(BusinessObject, object_id)
-            row = await self._session.get(SourceBusinessObject, (source_id, object_id))
-            if row is None:
-                row = SourceBusinessObject(source_id=source_id, business_object_id=object_id)
-            result = await self._save(row, dto.SourceBusinessObjectResponse)
-        return result
-
-    async def unlink_object(self, source_id: int, object_id: int) -> None:
-        async with self._transaction():
-            await self._writable_source(source_id)
-            row = await self._session.get(SourceBusinessObject, (source_id, object_id))
-            if row is not None:
-                await self._session.delete(row)
-
-    async def list_objects(
-            self, source_id: int, query: dto.Pagination
-    ) -> dto.Page[dto.SourceBusinessObjectResponse]:
-        await self._get(source_id)
-        return await self._page(
-            select(SourceBusinessObject)
-            .where(
-                col(SourceBusinessObject.source_id) == source_id,
+    def _tracking_statement(self, source_id: int):
+        return (
+            select(SourceObjectFieldTracking)
+            .join(
+                SourceFieldTracking,
+                col(SourceObjectFieldTracking.source_field_tracking_id)
+                == col(SourceFieldTracking.id),
             )
-            .order_by(col(SourceBusinessObject.business_object_id)),
-            dto.SourceBusinessObjectResponse,
-            query,
+            .where(col(SourceFieldTracking.source_id) == source_id)
         )
 
-    async def _field_tracking(self, source_id: int, tracking_id: int) -> SourceFieldTracking:
-        row = await self._session.scalar(
-            select(SourceFieldTracking)
-            .where(
-                col(SourceFieldTracking.id) == tracking_id,
-                col(SourceFieldTracking.source_id) == source_id,
-            )
-            .execution_options(populate_existing=True)
+    @staticmethod
+    def _utc(value: datetime) -> datetime:
+        # SQLite does not preserve tzinfo; PostgreSQL timestamptz does.
+        return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+
+    def _tracking_response(
+        self, source_id: int, row: SourceObjectFieldTracking
+    ) -> dto.SourceObjectFieldTrackingResponse:
+        values = row.model_dump(
+            exclude={"id", "tracking_id", "source_field_tracking_id", "updated_at"}
         )
-        if row is None:
-            raise SourceResourceNotFound("SourceFieldTracking", tracking_id)
-        return row
-
-    async def create_field_tracking(
-            self, source_id: int, request: dto.SourceFieldTrackingCreate
-    ) -> dto.SourceFieldTrackingResponse:
-        async with self._transaction():
-            await self._writable_source(source_id)
-            await self._business_identity(BusinessEntityField, request.business_entity_field_id)
-            result = await self._save(
-                SourceFieldTracking(source_id=source_id, **request.model_dump()),
-                dto.SourceFieldTrackingResponse,
-            )
-        return result
-
-    async def list_field_trackings(
-            self, source_id: int, query: dto.Pagination
-    ) -> dto.Page[dto.SourceFieldTrackingResponse]:
-        await self._get(source_id)
-        return await self._page(
-            select(SourceFieldTracking)
-            .where(
-                col(SourceFieldTracking.source_id) == source_id,
-            )
-            .order_by(col(SourceFieldTracking.id)),
-            dto.SourceFieldTrackingResponse,
-            query,
+        for key, value in values.items():
+            if isinstance(value, datetime):
+                values[key] = self._utc(value)
+        return dto.SourceObjectFieldTrackingResponse(
+            id=row.tracking_id,
+            version_id=row.id,
+            source_id=source_id,
+            is_current=row.valid_to is None,
+            **values,
         )
 
-    async def get_field_tracking(
-            self, source_id: int, tracking_id: int
-    ) -> dto.SourceFieldTrackingResponse:
-        await self._get(source_id)
-        return dto.SourceFieldTrackingResponse.model_validate(
-            await self._field_tracking(source_id, tracking_id)
+    async def _tracking_page(
+        self, source_id: int, statement, query: dto.Pagination
+    ) -> dto.Page[dto.SourceObjectFieldTrackingResponse]:
+        total = await self._session.scalar(
+            select(func.count()).select_from(statement.order_by(None).subquery())
         )
-
-    async def update_field_tracking(
-            self, source_id: int, tracking_id: int, request: dto.SourceFieldTrackingUpdate
-    ) -> dto.SourceFieldTrackingResponse:
-        async with self._transaction():
-            await self._writable_source(source_id)
-            row = await self._field_tracking(source_id, tracking_id)
-            for key, value in request.model_dump(exclude_unset=True).items():
-                setattr(row, key, value)
-            row.updated_at = utc_now()
-            result = await self._save(row, dto.SourceFieldTrackingResponse)
-        return result
+        rows = await self._session.scalars(statement.offset(query.offset).limit(query.limit))
+        return dto.Page(
+            items=[self._tracking_response(source_id, row) for row in rows],
+            total=total or 0,
+            offset=query.offset,
+            limit=query.limit,
+        )
 
     async def _object_tracking(
-            self, source_id: int, tracking_id: int, object_tracking_id: int
+        self,
+        source_id: int,
+        tracking_id: UUID,
+        *,
+        at: datetime | None = None,
+        version: int | None = None,
     ) -> SourceObjectFieldTracking:
-        await self._field_tracking(source_id, tracking_id)
-        row = await self._session.scalar(
-            select(SourceObjectFieldTracking)
-            .where(
-                col(SourceObjectFieldTracking.id) == object_tracking_id,
-                col(SourceObjectFieldTracking.source_field_tracking_id) == tracking_id,
-            )
-            .execution_options(populate_existing=True)
+        statement = self._tracking_statement(source_id).where(
+            col(SourceObjectFieldTracking.tracking_id) == tracking_id
         )
+        if version is not None:
+            statement = statement.where(col(SourceObjectFieldTracking.version) == version)
+        elif at is not None:
+            statement = statement.where(
+                col(SourceObjectFieldTracking.valid_from) <= at,
+                or_(
+                    col(SourceObjectFieldTracking.valid_to).is_(None),
+                    col(SourceObjectFieldTracking.valid_to) > at,
+                ),
+            )
+        else:
+            statement = statement.where(col(SourceObjectFieldTracking.valid_to).is_(None))
+        row = await self._session.scalar(statement.execution_options(populate_existing=True))
         if row is None:
-            raise SourceResourceNotFound("SourceObjectFieldTracking", object_tracking_id)
+            raise SourceResourceNotFound("SourceObjectFieldTracking", tracking_id)
         return row
 
+    async def _ensure_tracking_context(
+        self, source_id: int, object_field_id: int
+    ) -> SourceFieldTracking:
+        slot = await self._business_identity(BusinessObjectField, object_field_id)
+        field = await self._business_identity(BusinessEntityField, slot.business_entity_field_id)
+        obj = await self._business_identity(BusinessObject, slot.business_object_id)
+        if obj.business_entity_id != field.business_entity_id:
+            raise SourceValidationError(
+                "Object does not belong to the entity that defines this field"
+            )
+        parent = await self._session.scalar(
+            select(SourceFieldTracking).where(
+                col(SourceFieldTracking.source_id) == source_id,
+                col(SourceFieldTracking.business_entity_field_id) == field.id,
+            )
+        )
+        if parent is None:
+            parent = SourceFieldTracking(source_id=source_id, business_entity_field_id=field.id)
+            self._session.add(parent)
+        link = await self._session.get(SourceBusinessObject, (source_id, obj.id))
+        if link is None:
+            self._session.add(SourceBusinessObject(source_id=source_id, business_object_id=obj.id))
+        await self._session.flush()
+        return parent
+
+    async def _refresh_field_demand(self, parent_id: int) -> None:
+        """Maintain an internal aggregate of enabled current object field versions."""
+        count, interval = (
+            await self._session.execute(
+                select(func.count(), func.min(SourceObjectFieldTracking.desired_refresh_seconds))
+                .select_from(SourceObjectFieldTracking)
+                .where(
+                    col(SourceObjectFieldTracking.source_field_tracking_id) == parent_id,
+                    col(SourceObjectFieldTracking.valid_to).is_(None),
+                    col(SourceObjectFieldTracking.tracking_enabled).is_(True),
+                )
+            )
+        ).one()
+        await self._session.execute(
+            update(SourceFieldTracking)
+            .where(col(SourceFieldTracking.id) == parent_id)
+            .values(
+                tracking_enabled=count > 0, desired_refresh_seconds=interval, updated_at=utc_now()
+            )
+        )
+
     async def create_object_field_tracking(
-            self, source_id: int, tracking_id: int, request: dto.SourceObjectFieldTrackingCreate
+        self, source_id: int, request: dto.SourceObjectFieldTrackingCreate
     ) -> dto.SourceObjectFieldTrackingResponse:
         async with self._transaction():
+            # Every mutation of a source's bindings takes this same lock, including
+            # archive, so duplicate creation and version rollover are serialized.
             await self._writable_source(source_id)
-            parent = await self._field_tracking(source_id, tracking_id)
-            slot = await self._business_identity(
-                BusinessObjectField, request.business_object_field_id
+            parent = await self._ensure_tracking_context(
+                source_id, request.business_object_field_id
             )
-            if slot.business_entity_field_id != parent.business_entity_field_id:
-                raise SourceValidationError(
-                    "Object field must use the same entity field as its source tracking"
-                )
-            field = await self._business_identity(
-                BusinessEntityField, slot.business_entity_field_id
+            now = utc_now()
+            row = SourceObjectFieldTracking(
+                source_field_tracking_id=parent.id,
+                **request.model_dump(),
+                version=1,
+                created_at=now,
+                updated_at=now,
+                valid_from=now,
             )
-            obj = await self._business_identity(BusinessObject, slot.business_object_id)
-            if obj.business_entity_id != field.business_entity_id:
-                raise SourceValidationError(
-                    "Object does not belong to the entity that defines this field"
-                )
-            result = await self._save(
-                SourceObjectFieldTracking(
-                    source_field_tracking_id=tracking_id,
-                    **request.model_dump(),
-                ),
-                dto.SourceObjectFieldTrackingResponse,
-            )
+            self._session.add(row)
+            await self._session.flush()
+            await self._refresh_field_demand(parent.id)
+            result = self._tracking_response(source_id, row)
         return result
 
     async def list_object_field_trackings(
-            self, source_id: int, tracking_id: int, query: dto.Pagination
+        self, source_id: int, query: dto.SourceObjectFieldTrackingListRequest
     ) -> dto.Page[dto.SourceObjectFieldTrackingResponse]:
         await self._get(source_id)
-        await self._field_tracking(source_id, tracking_id)
-        return await self._page(
-            select(SourceObjectFieldTracking)
-            .where(
-                col(SourceObjectFieldTracking.source_field_tracking_id) == tracking_id,
-            )
-            .order_by(col(SourceObjectFieldTracking.id)),
-            dto.SourceObjectFieldTrackingResponse,
+        statement = self._tracking_statement(source_id).where(
+            col(SourceObjectFieldTracking.valid_to).is_(None)
+        )
+        if query.business_object_id is not None:
+            statement = statement.join(
+                BusinessObjectField,
+                col(SourceObjectFieldTracking.business_object_field_id)
+                == col(BusinessObjectField.id),
+            ).where(col(BusinessObjectField.business_object_id) == query.business_object_id)
+        for key in ("business_object_field_id", "tracking_enabled"):
+            value = getattr(query, key)
+            if value is not None:
+                statement = statement.where(col(getattr(SourceObjectFieldTracking, key)) == value)
+        return await self._tracking_page(
+            source_id,
+            statement.order_by(col(SourceObjectFieldTracking.tracking_id)),
             query,
         )
 
     async def get_object_field_tracking(
-            self, source_id: int, tracking_id: int, object_tracking_id: int
+        self, source_id: int, tracking_id: UUID, *, at: datetime | None = None
     ) -> dto.SourceObjectFieldTrackingResponse:
         await self._get(source_id)
-        return dto.SourceObjectFieldTrackingResponse.model_validate(
-            await self._object_tracking(source_id, tracking_id, object_tracking_id)
+        row = await self._object_tracking(source_id, tracking_id, at=at)
+        return self._tracking_response(source_id, row)
+
+    async def list_object_field_tracking_versions(
+        self, source_id: int, tracking_id: UUID, query: dto.Pagination
+    ) -> dto.Page[dto.SourceObjectFieldTrackingResponse]:
+        await self._get(source_id)
+        await self._object_tracking(source_id, tracking_id)
+        statement = (
+            self._tracking_statement(source_id)
+            .where(col(SourceObjectFieldTracking.tracking_id) == tracking_id)
+            .order_by(col(SourceObjectFieldTracking.version))
         )
+        return await self._tracking_page(source_id, statement, query)
+
+    async def get_object_field_tracking_version(
+        self, source_id: int, tracking_id: UUID, version: int
+    ) -> dto.SourceObjectFieldTrackingResponse:
+        await self._get(source_id)
+        row = await self._object_tracking(source_id, tracking_id, version=version)
+        return self._tracking_response(source_id, row)
+
+    @staticmethod
+    def _expect_tracking_version(row: SourceObjectFieldTracking, expected_version: int) -> None:
+        if row.version != expected_version:
+            raise SourceConflict(
+                f"Expected tracking version {expected_version}, current version is {row.version}"
+            )
+
+    async def _append_tracking_version(
+        self, row: SourceObjectFieldTracking, changes: dict, reason: str | None
+    ) -> SourceObjectFieldTracking:
+        def comparable(value):
+            return self._utc(value) if isinstance(value, datetime) else value
+
+        if all(
+            comparable(getattr(row, key)) == comparable(value) for key, value in changes.items()
+        ):
+            return row
+        if row.version == 2147483647:
+            raise SourceConflict("Tracking version limit reached")
+        now = max(utc_now(), self._utc(row.valid_from) + timedelta(microseconds=1))
+        values = row.model_dump(
+            exclude={
+                "id",
+                "version",
+                "created_at",
+                "updated_at",
+                "valid_from",
+                "valid_to",
+                "change_reason",
+            }
+        )
+        values.update(changes)
+        row.valid_to = now
+        self._session.add(row)
+        # Close first to release the partial unique indexes. Both writes remain
+        # in the same transaction, so a failed insert restores the previous head.
+        await self._session.flush()
+        successor = SourceObjectFieldTracking(
+            **values,
+            version=row.version + 1,
+            valid_from=now,
+            created_at=now,
+            updated_at=now,
+            change_reason=reason,
+        )
+        self._session.add(successor)
+        await self._session.flush()
+        return successor
+
+    async def update_object_field_tracking(
+        self, source_id: int, tracking_id: UUID, request: dto.SourceObjectFieldTrackingUpdate
+    ) -> dto.SourceObjectFieldTrackingResponse:
+        async with self._transaction():
+            await self._writable_source(source_id)
+            current = await self._object_tracking(source_id, tracking_id)
+            self._expect_tracking_version(current, request.expected_version)
+            row = await self._append_tracking_version(
+                current,
+                request.model_dump(
+                    exclude_unset=True, exclude={"expected_version", "change_reason"}
+                ),
+                request.change_reason,
+            )
+            await self._refresh_field_demand(row.source_field_tracking_id)
+            result = self._tracking_response(source_id, row)
+        return result
 
     async def _validate_observation(
-            self, observation_id: int, tracking: SourceObjectFieldTracking
+        self, observation_id: int, tracking: SourceObjectFieldTracking
     ) -> None:
         evidence = SQLModel.metadata.tables.get("field_observations")
         required = {"id", "source_field_tracking_id", "source_object_field_tracking_id"}
@@ -584,42 +698,46 @@ class SourcesService:
             raise SourceConflict(
                 "Layer 3 FieldObservation must be registered before setting observation references"
             )
-        observation = (
-            await self._session.execute(
-                select(
-                    evidence.c.source_field_tracking_id,
-                    evidence.c.source_object_field_tracking_id,
-                )
-                .where(evidence.c.id == observation_id)
-                .with_for_update(read=True)
+        # Evidence refers to an exact historical version. It may be carried into
+        # later versions only if that snapshot belongs to this same binding.
+        observed_tracking = SourceObjectFieldTracking.__table__.alias("observed_tracking")
+        valid = await self._session.scalar(
+            select(evidence.c.id)
+            .join(
+                observed_tracking,
+                evidence.c.source_object_field_tracking_id == observed_tracking.c.id,
             )
-        ).one_or_none()
-        if (
-                observation is None
-                or observation.source_object_field_tracking_id != tracking.id
-                or (observation.source_field_tracking_id != tracking.source_field_tracking_id)
-        ):
+            .where(
+                evidence.c.id == observation_id,
+                evidence.c.source_field_tracking_id == tracking.source_field_tracking_id,
+                observed_tracking.c.source_field_tracking_id == tracking.source_field_tracking_id,
+                observed_tracking.c.business_object_field_id == tracking.business_object_field_id,
+                observed_tracking.c.tracking_id == tracking.tracking_id,
+            )
+            .with_for_update(read=True)
+        )
+        if valid is None:
             raise SourceValidationError(
-                "Observation must belong to this exact source/object/field tracking"
+                "Observation must belong to a version of this exact source/object/field binding"
             )
 
-    async def update_object_field_tracking(
-            self,
-            source_id: int,
-            tracking_id: int,
-            object_tracking_id: int,
-            request: dto.SourceObjectFieldTrackingUpdate,
+    async def record_tracking_observation(
+        self, source_id: int, tracking_id: UUID, request: TrackingObservationUpdate
     ) -> dto.SourceObjectFieldTrackingResponse:
+        """Internal worker operation; never exposed as a public configuration route."""
         async with self._transaction():
             await self._writable_source(source_id)
-            row = await self._object_tracking(source_id, tracking_id, object_tracking_id)
-            changes = request.model_dump(exclude_unset=True)
+            current = await self._object_tracking(source_id, tracking_id)
+            self._expect_tracking_version(current, request.expected_version)
+            if not current.tracking_enabled:
+                raise SourceConflict("Tracking is disabled")
+            changes = request.model_dump(
+                exclude_unset=True, exclude={"expected_version", "change_reason"}
+            )
             for key in ("last_observation_id", "baseline_observation_id"):
                 if changes.get(key) is not None:
-                    await self._validate_observation(changes[key], row)
-            # Updating last_checked_at never implies a change to the observed value.
-            for key, value in changes.items():
-                setattr(row, key, value)
-            row.updated_at = utc_now()
-            result = await self._save(row, dto.SourceObjectFieldTrackingResponse)
+                    await self._validate_observation(changes[key], current)
+            # Recording a check never infers a changed value or advances a baseline.
+            row = await self._append_tracking_version(current, changes, request.change_reason)
+            result = self._tracking_response(source_id, row)
         return result

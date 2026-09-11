@@ -1,8 +1,10 @@
 """Layer 2 HTTP endpoints, backed directly by SourcesService."""
 
 from typing import Annotated
+from uuid import UUID
 
 from fastapi import APIRouter, Path, Query, Response, status
+from pydantic import AwareDatetime
 
 from sources.api.dependencies import SourcesServiceDep
 from sources.schemas import api as dto
@@ -135,123 +137,82 @@ async def update_warning(
     return await service.update_warning(source_id, warning_id, request)
 
 
-@router.get("/{source_id}/business-entities")
-async def list_entities(
-    source_id: PositiveId, query: Pagination, service: SourcesServiceDep
-) -> dto.Page[dto.SourceBusinessEntityResponse]:
-    return await service.list_entities(source_id, query)
-
-
-@router.put("/{source_id}/business-entities/{entity_id}")
-async def link_entity(
-    source_id: PositiveId, entity_id: PositiveId, service: SourcesServiceDep
-) -> dto.SourceBusinessEntityResponse:
-    return await service.link_entity(source_id, entity_id)
-
-
-@router.delete("/{source_id}/business-entities/{entity_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def unlink_entity(
-    source_id: PositiveId, entity_id: PositiveId, service: SourcesServiceDep
-) -> Response:
-    await service.unlink_entity(source_id, entity_id)
-    return Response(status_code=status.HTTP_204_NO_CONTENT)
-
-
-@router.get("/{source_id}/business-objects")
-async def list_objects(
-    source_id: PositiveId, query: Pagination, service: SourcesServiceDep
-) -> dto.Page[dto.SourceBusinessObjectResponse]:
-    return await service.list_objects(source_id, query)
-
-
-@router.put("/{source_id}/business-objects/{object_id}")
-async def link_object(
-    source_id: PositiveId, object_id: PositiveId, service: SourcesServiceDep
-) -> dto.SourceBusinessObjectResponse:
-    return await service.link_object(source_id, object_id)
-
-
-@router.delete("/{source_id}/business-objects/{object_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def unlink_object(
-    source_id: PositiveId, object_id: PositiveId, service: SourcesServiceDep
-) -> Response:
-    await service.unlink_object(source_id, object_id)
-    return Response(status_code=status.HTTP_204_NO_CONTENT)
-
-
-@router.post("/{source_id}/field-trackings", status_code=status.HTTP_201_CREATED)
-async def create_field_tracking(
-    source_id: PositiveId, request: dto.SourceFieldTrackingCreate, service: SourcesServiceDep
-) -> dto.SourceFieldTrackingResponse:
-    return await service.create_field_tracking(source_id, request)
-
-
-@router.get("/{source_id}/field-trackings")
-async def list_field_trackings(
-    source_id: PositiveId, query: Pagination, service: SourcesServiceDep
-) -> dto.Page[dto.SourceFieldTrackingResponse]:
-    return await service.list_field_trackings(source_id, query)
-
-
-@router.get("/{source_id}/field-trackings/{tracking_id}")
-async def get_field_tracking(
-    source_id: PositiveId, tracking_id: PositiveId, service: SourcesServiceDep
-) -> dto.SourceFieldTrackingResponse:
-    return await service.get_field_tracking(source_id, tracking_id)
-
-
-@router.patch("/{source_id}/field-trackings/{tracking_id}")
-async def update_field_tracking(
-    source_id: PositiveId,
-    tracking_id: PositiveId,
-    request: dto.SourceFieldTrackingUpdate,
-    service: SourcesServiceDep,
-) -> dto.SourceFieldTrackingResponse:
-    return await service.update_field_tracking(source_id, tracking_id, request)
-
-
-@router.post(
-    "/{source_id}/field-trackings/{tracking_id}/object-field-trackings",
-    status_code=status.HTTP_201_CREATED,
-)
+@router.post("/{source_id}/object-field-trackings", status_code=status.HTTP_201_CREATED)
 async def create_object_field_tracking(
     source_id: PositiveId,
-    tracking_id: PositiveId,
     request: dto.SourceObjectFieldTrackingCreate,
     service: SourcesServiceDep,
 ) -> dto.SourceObjectFieldTrackingResponse:
-    return await service.create_object_field_tracking(source_id, tracking_id, request)
+    """Bind a concrete object field; all supporting links are created atomically."""
+    return await service.create_object_field_tracking(source_id, request)
 
 
-@router.get("/{source_id}/field-trackings/{tracking_id}/object-field-trackings")
+@router.get("/{source_id}/object-field-trackings")
 async def list_object_field_trackings(
-    source_id: PositiveId, tracking_id: PositiveId, query: Pagination, service: SourcesServiceDep
+    source_id: PositiveId,
+    query: Annotated[dto.SourceObjectFieldTrackingListRequest, Query()],
+    service: SourcesServiceDep,
 ) -> dto.Page[dto.SourceObjectFieldTrackingResponse]:
-    return await service.list_object_field_trackings(source_id, tracking_id, query)
+    """List current versions, including disabled bindings unless filtered."""
+    return await service.list_object_field_trackings(source_id, query)
 
 
-@router.get(
-    "/{source_id}/field-trackings/{tracking_id}/object-field-trackings/{object_tracking_id}"
-)
+@router.get("/{source_id}/object-field-trackings/{tracking_id}")
 async def get_object_field_tracking(
     source_id: PositiveId,
-    tracking_id: PositiveId,
-    object_tracking_id: PositiveId,
+    tracking_id: UUID,
     service: SourcesServiceDep,
+    at: Annotated[AwareDatetime | None, Query()] = None,
 ) -> dto.SourceObjectFieldTrackingResponse:
-    return await service.get_object_field_tracking(source_id, tracking_id, object_tracking_id)
+    """Read the current version, or the version effective at a given instant."""
+    return await service.get_object_field_tracking(source_id, tracking_id, at=at)
 
 
-@router.patch(
-    "/{source_id}/field-trackings/{tracking_id}/object-field-trackings/{object_tracking_id}"
-)
+@router.patch("/{source_id}/object-field-trackings/{tracking_id}")
 async def update_object_field_tracking(
     source_id: PositiveId,
-    tracking_id: PositiveId,
-    object_tracking_id: PositiveId,
+    tracking_id: UUID,
     request: dto.SourceObjectFieldTrackingUpdate,
     service: SourcesServiceDep,
 ) -> dto.SourceObjectFieldTrackingResponse:
+    """Append a version; reject stale expected_version with 409."""
+    return await service.update_object_field_tracking(source_id, tracking_id, request)
+
+
+@router.delete("/{source_id}/object-field-trackings/{tracking_id}")
+async def disable_object_field_tracking(
+    source_id: PositiveId,
+    tracking_id: UUID,
+    expected_version: Annotated[int, Query(gt=0, le=2147483647)],
+    service: SourcesServiceDep,
+) -> dto.SourceObjectFieldTrackingResponse:
+    """Append a disabled version and retain the binding and its entire history."""
     return await service.update_object_field_tracking(
-        source_id, tracking_id, object_tracking_id, request
+        source_id,
+        tracking_id,
+        dto.SourceObjectFieldTrackingUpdate(
+            expected_version=expected_version,
+            tracking_enabled=False,
+            change_reason="Tracking disabled",
+        ),
     )
+
+
+@router.get("/{source_id}/object-field-trackings/{tracking_id}/versions")
+async def list_object_field_tracking_versions(
+    source_id: PositiveId,
+    tracking_id: UUID,
+    query: Pagination,
+    service: SourcesServiceDep,
+) -> dto.Page[dto.SourceObjectFieldTrackingResponse]:
+    return await service.list_object_field_tracking_versions(source_id, tracking_id, query)
+
+
+@router.get("/{source_id}/object-field-trackings/{tracking_id}/versions/{version}")
+async def get_object_field_tracking_version(
+    source_id: PositiveId,
+    tracking_id: UUID,
+    version: PositiveId,
+    service: SourcesServiceDep,
+) -> dto.SourceObjectFieldTrackingResponse:
+    return await service.get_object_field_tracking_version(source_id, tracking_id, version)
