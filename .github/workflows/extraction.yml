@@ -2,7 +2,7 @@ name: Extraction service
 on:
   pull_request:
   push:
-    branches: [main, 'codex/finish-extraction-service*']
+    branches: [main, 'codex/finish-extraction-service*', 'codex/extraction-recipes*']
 jobs:
   extraction:
     runs-on: ubuntu-latest
@@ -28,7 +28,7 @@ jobs:
           python-version: '3.13'
       - run: pip install -e '.[dev]'
       - run: alembic upgrade head
-      - run: pytest tests/test_capture.py tests/test_extraction.py tests/test_extraction_migrations.py -q --tb=short
-      - run: ruff check extraction tests/test_capture.py tests/test_extraction_migrations.py sources/services/tracking.py
+      - run: pytest tests/test_capture.py tests/test_recipes.py tests/test_extraction.py tests/test_extraction_migrations.py -q --tb=short
+      - run: ruff check extraction tests/test_capture.py tests/test_recipes.py tests/test_extraction.py tests/extraction_support.py tests/test_extraction_migrations.py sources/services/tracking.py migrations/versions/e102_extraction_recipes.py
       - run: alembic downgrade e100_extraction_legacy
       - run: alembic upgrade head

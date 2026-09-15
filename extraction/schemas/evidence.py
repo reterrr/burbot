@@ -191,6 +191,14 @@ class ScopeInstance(CreatedAtMixin, table=True):
 
 
 class FieldSelector(CreatedAtMixin, table=True):
+    """Append-only field recipe: optional locator + validated extraction operation.
+
+    The historical table name is retained. NULL extraction_json marks pre-recipe
+    rows whose behavior is unknown; execution requires manual rediscovery.
+    Only pageUrl recipes may omit the locator. New rows are validated by the
+    extraction repository, including copies made during scope rollover.
+    """
+
     __tablename__ = "field_selectors"
     __table_args__ = (
         UniqueConstraint(
@@ -207,14 +215,20 @@ class FieldSelector(CreatedAtMixin, table=True):
         CheckConstraint("version > 0", name="selector_version_positive"),
         CheckConstraint("confidence_score BETWEEN 0 AND 1", name="selector_confidence"),
         CheckConstraint("valid_to IS NULL OR valid_to > valid_from", name="selector_validity"),
+        CheckConstraint(
+            "(selector_type IS NULL) = (selector_string IS NULL)",
+            name="selector_complete_locator",
+        ),
     )
     id: int | None = Field(default=None, sa_column=id_column())
     scope_id: int = Field(sa_column=reference("source_scopes.id"))
     source_field_tracking_id: int = Field(sa_column=reference("source_field_trackings.id"))
-    selector_type: SelectorType = Field(
-        sa_column=Column(pg_enum(SelectorType, "extraction_selector_type"), nullable=False)
+    selector_type: SelectorType | None = Field(
+        default=None,
+        sa_column=Column(pg_enum(SelectorType, "extraction_selector_type"), nullable=True),
     )
-    selector_string: str = Field(sa_column=Column(Text, nullable=False))
+    selector_string: str | None = Field(default=None, sa_column=Column(Text, nullable=True))
+    extraction_json: dict[str, Any] | None = Field(default=None, sa_column=json_column())
     confidence_score: float = 1.0
     discovered_by: DiscoveryMethod = Field(
         default=DiscoveryMethod.MANUAL,

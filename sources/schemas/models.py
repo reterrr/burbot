@@ -376,6 +376,7 @@ class SourceSnapshot(CreatedAtMixin, table=True):
     id: int | None = Field(default=None, sa_column=id_column())
     source_id: int = Field(sa_column=reference("sources.id"))
     file_id: int | None = Field(default=None, sa_column=reference("stored_files.id", nullable=True))
+    page_url: str | None = Field(default=None, sa_column=Column(Text, nullable=True))
     fetched_at: datetime = Field(
         default_factory=utc_now, sa_column=Column(DateTime(timezone=True), nullable=False)
     )

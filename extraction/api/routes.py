@@ -18,13 +18,17 @@ router = APIRouter(
 PositiveId = Annotated[int, Path(gt=0, le=9223372036854775807)]
 
 
-@router.post("", status_code=status.HTTP_201_CREATED)
-async def create_extraction_run(
-    request: dto.CreateExtractionRunRequest,
+@router.post("", status_code=status.HTTP_201_CREATED, deprecated=True)
+async def create_pending_run_alias(
+    request: capture_dto.CreateRunRequest,
     service: ExtractionServiceDep,
-) -> dto.ExtractionRunResponse:
-    """Persist browser/user supplied evidence for the workflow's source snapshot."""
-    return await service.create_extraction_run(request)
+) -> capture_dto.RunResponse:
+    """Deprecated alias for POST /extraction/runs, followed by /runs/{id}/capture.
+
+    The retired workflow/field_observations payload is no longer accepted: it
+    cannot describe a reusable recipe or concrete record scope.
+    """
+    return await service.create_run(request)
 
 
 @router.get("")
@@ -69,7 +73,7 @@ async def create_snapshot_run(
 async def get_snapshot_run(
     run_id: PositiveId, service: ExtractionServiceDep
 ) -> capture_dto.RunResponse:
-    return await service.capture.get_run(run_id)
+    return await service.get_run(run_id)
 
 
 @capture_router.post("/runs/{run_id}/capture")
@@ -99,7 +103,7 @@ async def resolve_object(
 async def register_token_class(
     request: capture_dto.TokenClassRequest, service: ExtractionServiceDep
 ) -> capture_dto.TokenClassRequest:
-    return await service.capture.register_token_class(request)
+    return await service.register_token_class(request)
 
 
 @capture_router.get("/observations/{observation_id}")
@@ -107,11 +111,11 @@ async def get_observation(
     observation_id: PositiveId,
     service: ExtractionServiceDep,
 ) -> capture_dto.ObservationEvidenceResponse:
-    return await service.capture.get_observation(observation_id)
+    return await service.get_observation(observation_id)
 
 
 @capture_router.get("/runs/{run_id}/capture")
 async def get_capture(
     run_id: PositiveId, service: ExtractionServiceDep
 ) -> capture_dto.CaptureResponse:
-    return await service.capture.get_capture(run_id)
+    return await service.get_capture(run_id)

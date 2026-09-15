@@ -77,9 +77,14 @@
       "confidence": 1.0,
       "discovered_by": "MANUAL",
       "confirmed_by_human": true,
-      "selector": {
-        "type": "XLSX_RANGE",
-        "value": "A{row}"
+      "rule": {
+        "selector": {
+          "type": "XLSX_RANGE",
+          "value": "A{row}"
+        },
+        "extraction": {
+          "type": "text"
+        }
       }
     }
   ]

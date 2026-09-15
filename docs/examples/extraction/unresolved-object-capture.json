@@ -78,9 +78,14 @@
       "confidence": 1.0,
       "discovered_by": "MANUAL",
       "confirmed_by_human": true,
-      "selector": {
-        "type": "CSS",
-        "value": "td.number"
+      "rule": {
+        "selector": {
+          "type": "CSS",
+          "value": "td.number"
+        },
+        "extraction": {
+          "type": "text"
+        }
       }
     }
   ]

@@ -14,11 +14,10 @@ from extraction.schemas.enums import (
     ExtractionIssueCode,
     ExtractionRunStatus,
     ObservationStatus,
-    SelectorType,
 )
+from extraction.schemas.recipes import Confidence, FieldExtractionRuleRequest, SelectorRequest
 
 ClientKey = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=150)]
-Confidence = Annotated[float, Field(ge=0, le=1, allow_inf_nan=False)]
 Coordinate = Annotated[float, Field(allow_inf_nan=False)]
 
 
@@ -47,13 +46,6 @@ class TokenClassRequest(RequestModel):
     validation_regex: str | None = None
     parser_name: ClientKey | None = None
     description: str | None = None
-
-
-class SelectorRequest(RequestModel):
-    type: SelectorType
-    value: NonBlank
-    confidence: Confidence = 1.0
-    discovered_by: DiscoveryMethod = DiscoveryMethod.MANUAL
 
 
 class HTMLMetadata(RequestModel):
@@ -147,7 +139,7 @@ class ValueRequest(RequestModel):
     char_end: int | None = Field(default=None, ge=0)
     confidence: Confidence = 1.0
     discovered_by: DiscoveryMethod = DiscoveryMethod.MANUAL
-    selector: SelectorRequest | None = None
+    rule: FieldExtractionRuleRequest | None = None
     confirmed_by_human: bool = False
     supersedes_observation_id: Identifier | None = None
     notes: str | None = None
