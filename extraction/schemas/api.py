@@ -26,6 +26,11 @@ class Pagination(RequestModel):
     limit: int = Field(default=100, ge=1, le=100)
 
 
+class ExtractionRunListRequest(Pagination):
+    workflow_id: Identifier | None = None
+    source_id: Identifier | None = None
+
+
 T = TypeVar("T")
 
 
