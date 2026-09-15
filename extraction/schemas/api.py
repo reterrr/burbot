@@ -9,7 +9,7 @@ from extraction.schemas.models import ExtractionRunStatus
 
 
 Identifier = Annotated[int, Field(gt=0, le=9223372036854775807)]
-NonBlank = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=2000)]
+NonBlank = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
 TokenClassId = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=150)]
 
 
@@ -44,14 +44,14 @@ class Page(BaseModel, Generic[T]):  # noqa: UP046 - supports Pydantic 2.9
 class CreateExtractionConcreteValueRequest(RequestModel):
     concrete_value: NonBlank
     char_start: int = Field(ge=0, le=2147483647)
-    char_end: int = Field(ge=0, le=2147483647)
+    char_end: int = Field(gt=0, le=2147483647)
     token_class_id: TokenClassId
     object_field_id: Identifier
 
     @model_validator(mode="after")
     def valid_range(self) -> Self:
-        if self.char_end < self.char_start:
-            raise ValueError("char_end cannot be before char_start")
+        if self.char_end <= self.char_start:
+            raise ValueError("char_end must be greater than char_start")
         return self
 
 
