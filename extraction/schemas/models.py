@@ -181,7 +181,7 @@ class ConcreteValue(SQLModel, table=True):
     __tablename__ = "extraction_concrete_values"
     __table_args__ = (
         CheckConstraint("char_start >= 0", name="extraction_values_char_start_nonnegative"),
-        CheckConstraint("char_end >= char_start", name="extraction_values_char_range"),
+        CheckConstraint("char_end > char_start", name="extraction_values_char_range"),
         CheckConstraint("value_index >= 0", name="extraction_values_index_nonnegative"),
         UniqueConstraint(
             "field_observation_id",
