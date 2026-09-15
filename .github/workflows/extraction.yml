@@ -28,7 +28,7 @@ jobs:
           python-version: '3.13'
       - run: pip install -e '.[dev]'
       - run: alembic upgrade head
-      - run: pytest tests/test_capture.py tests/test_extraction.py tests/test_extraction_migrations.py -q
+      - run: pytest tests/test_capture.py tests/test_extraction.py tests/test_extraction_migrations.py -q --tb=short
       - run: ruff check extraction tests/test_capture.py tests/test_extraction_migrations.py sources/services/tracking.py
       - run: alembic downgrade e100_extraction_legacy
       - run: alembic upgrade head

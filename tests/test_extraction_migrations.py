@@ -52,6 +52,7 @@ async def test_migrations_preserve_legacy_and_protect_capture(monkeypatch):
         url, connect_args={"server_settings": {"search_path": f"{schema},public"}}
     )
     cfg = config()
+    cfg.attributes["version_table_schema"] = schema
 
     async def migrate(target, downgrade=False):
         async with engine.begin() as connection:

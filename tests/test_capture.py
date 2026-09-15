@@ -122,7 +122,7 @@ async def sessions(tmp_path):
     try:
         async with engine.begin() as connection:
             await connection.run_sync(
-                lambda conn: SQLModel.metadata.create_all(conn, tables=tables)
+                lambda conn: SQLModel.metadata.create_all(conn, tables=tables, checkfirst=False)
             )
         factory = async_sessionmaker(engine, expire_on_commit=False, autoflush=False)
         async with factory() as session:

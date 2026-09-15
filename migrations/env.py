@@ -49,6 +49,7 @@ def do_run_migrations(connection: Connection) -> None:
         connection=connection,
         target_metadata=target_metadata,
         compare_type=True,
+        version_table_schema=config.attributes.get("version_table_schema"),
     )
 
     with context.begin_transaction():
