@@ -4,7 +4,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
@@ -16,6 +16,8 @@ from extraction.exceptions import (
     ExtractionValidationError,
 )
 from extraction.schemas import api as dto
+from extraction.schemas import capture as capture_dto
+from extraction.schemas.evidence import TokenClass
 from extraction.schemas.models import (
     ConcreteValue,
     ExtractionRun,
@@ -23,6 +25,8 @@ from extraction.schemas.models import (
     FieldObservation,
     utc_now,
 )
+from extraction.services.adapters import SnapshotExtractor
+from extraction.services.capture import CaptureService
 from sources.schemas.enums import SourceState
 from sources.schemas.models import (
     Source,
@@ -65,8 +69,9 @@ class ExtractionService:
     evidence, not canonical business state.
     """
 
-    def __init__(self, session: AsyncSession) -> None:
+    def __init__(self, session: AsyncSession, extractor: SnapshotExtractor | None = None) -> None:
         self._session = session
+        self.capture = CaptureService(session, extractor)
 
     @asynccontextmanager
     async def _transaction(self) -> AsyncIterator[None]:
@@ -81,9 +86,7 @@ class ExtractionService:
                     "This extraction run already contains an observation for that object field"
                 ) from error
             if constraint == "uq_extraction_values_observation_index":
-                raise ExtractionConflict(
-                    "Concrete evidence was inserted concurrently"
-                ) from error
+                raise ExtractionConflict("Concrete evidence was inserted concurrently") from error
             raise
         except BaseException:
             await self._session.rollback()
@@ -274,6 +277,12 @@ class ExtractionService:
                 raise ExtractionConflict(f"Source {source.id} is archived")
 
             prepared = await self._prepare_observations(workflow, request)
+            for token_id in {
+                item.value.token_class_id for group in prepared for item in group.values
+            }:
+                await self.capture.repo.get_or_create(
+                    TokenClass, {"id": token_id}, {"name": token_id}
+                )
             now = utc_now()
             run = ExtractionRun(
                 workflow_id=workflow.id,
@@ -347,10 +356,20 @@ class ExtractionService:
             observation_id: [] for observation_id in observation_ids
         }
 
+        capture_value_owners = {
+            observation.concrete_value_id: observation.id
+            for observation in observations
+            if observation.concrete_value_id is not None
+        }
         if observation_ids:
             values = await self._session.scalars(
                 select(ConcreteValue)
-                .where(col(ConcreteValue.field_observation_id).in_(observation_ids))
+                .where(
+                    or_(
+                        col(ConcreteValue.field_observation_id).in_(observation_ids),
+                        col(ConcreteValue.id).in_(capture_value_owners),
+                    )
+                )
                 .order_by(
                     col(ConcreteValue.field_observation_id),
                     col(ConcreteValue.value_index),
@@ -358,7 +377,8 @@ class ExtractionService:
                 )
             )
             for value in values:
-                values_by_observation[value.field_observation_id].append(value)
+                owner = value.field_observation_id or capture_value_owners[value.id]
+                values_by_observation[owner].append(value)
 
         field_observations: list[dto.FieldObservationResponse] = []
         for observation in observations:
@@ -413,9 +433,7 @@ class ExtractionService:
             select(func.count()).select_from(statement.order_by(None).subquery())
         )
         runs = await self._session.scalars(
-            statement.order_by(col(ExtractionRun.id).desc())
-            .offset(query.offset)
-            .limit(query.limit)
+            statement.order_by(col(ExtractionRun.id).desc()).offset(query.offset).limit(query.limit)
         )
         return dto.ExtractionRunListResponse(
             items=[self._run_summary(run) for run in runs],
@@ -423,3 +441,19 @@ class ExtractionService:
             offset=query.offset,
             limit=query.limit,
         )
+
+    async def create_run(self, request: capture_dto.CreateRunRequest) -> capture_dto.RunResponse:
+        return await self.capture.create_run(request)
+
+    async def register_capture(
+        self, run_id: int, request: capture_dto.CaptureRequest
+    ) -> capture_dto.CaptureResponse:
+        return await self.capture.register_capture(run_id, request)
+
+    async def resolve_observation_object(
+        self, observation_id: int, business_object_id: int
+    ) -> capture_dto.ObservationResponse:
+        return await self.capture.resolve_observation_object(observation_id, business_object_id)
+
+    async def execute(self, run_id: int, capture_key: str) -> capture_dto.CaptureResponse:
+        return await self.capture.execute(run_id, capture_key)

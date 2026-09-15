@@ -12,3 +12,7 @@ class ExtractionConflict(ExtractionError):
 
 class ExtractionValidationError(ExtractionError):
     """Submitted extraction evidence is inconsistent with the domain model."""
+
+
+class ExtractionNotConfigured(ExtractionError):
+    """Snapshot execution adapter is not configured in this application."""

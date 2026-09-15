@@ -1,14 +1,12 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
-from enum import StrEnum
+from datetime import datetime
 
 from sqlalchemy import (
     BigInteger,
     CheckConstraint,
     Column,
     DateTime,
-    Enum as SAEnum,
     ForeignKey,
     Index,
     Integer,
@@ -20,49 +18,8 @@ from sqlalchemy import (
 )
 from sqlmodel import Field, SQLModel
 
-
-def utc_now() -> datetime:
-    return datetime.now(UTC)
-
-
-def id_column() -> Column:
-    return Column(
-        BigInteger().with_variant(Integer, "sqlite"),
-        primary_key=True,
-        autoincrement=True,
-    )
-
-
-def reference(target: str, *, nullable: bool = False) -> Column:
-    return Column(
-        BigInteger,
-        ForeignKey(target, ondelete="RESTRICT"),
-        nullable=nullable,
-    )
-
-
-def created_at_column() -> Column:
-    return Column(
-        DateTime(timezone=True),
-        nullable=False,
-        server_default=func.now(),
-    )
-
-
-def pg_enum(enum_class: type[StrEnum], name: str) -> SAEnum:
-    return SAEnum(
-        enum_class,
-        name=name,
-        native_enum=True,
-        validate_strings=True,
-        values_callable=lambda members: [str(member.value) for member in members],
-    )
-
-
-class ExtractionRunStatus(StrEnum):
-    RUNNING = "running"
-    COMPLETED = "completed"
-    FAILED = "failed"
+from extraction.schemas.common import created_at_column, id_column, pg_enum, reference, utc_now
+from extraction.schemas.enums import ExtractionRunStatus, ObservationStatus
 
 
 class ExtractionRun(SQLModel, table=True):
@@ -86,7 +43,10 @@ class ExtractionRun(SQLModel, table=True):
     )
 
     id: int | None = Field(default=None, sa_column=id_column())
-    workflow_id: int = Field(sa_column=reference("workflows.id"))
+    workflow_id: int | None = Field(
+        default=None, sa_column=reference("workflows.id", nullable=True)
+    )
+    extractor_version: str | None = Field(default=None, sa_column=Column(String(150)))
     source_id: int = Field(sa_column=Column(BigInteger, nullable=False))
     source_snapshot_id: int = Field(sa_column=Column(BigInteger, nullable=False))
     status: ExtractionRunStatus = Field(
@@ -97,12 +57,11 @@ class ExtractionRun(SQLModel, table=True):
             server_default=text("'running'"),
         ),
     )
-    started_at: datetime = Field(
-        default_factory=utc_now,
+    started_at: datetime | None = Field(
+        default=None,
         sa_column=Column(
             DateTime(timezone=True),
-            nullable=False,
-            server_default=func.now(),
+            nullable=True,
         ),
     )
     finished_at: datetime | None = Field(
@@ -133,10 +92,30 @@ class FieldObservation(SQLModel, table=True):
 
     __tablename__ = "field_observations"
     __table_args__ = (
-        UniqueConstraint(
+        Index(
+            "uq_field_observations_run_object_field",
             "extraction_run_id",
             "business_object_field_id",
-            name="uq_field_observations_run_object_field",
+            unique=True,
+            postgresql_where=text("scope_instance_id IS NULL"),
+            sqlite_where=text("scope_instance_id IS NULL"),
+        ),
+        Index("ix_observations_scope_field", "scope_instance_id", "source_field_tracking_id"),
+        CheckConstraint("confidence BETWEEN 0 AND 1", name="observations_confidence"),
+        CheckConstraint(
+            "(business_object_id IS NULL AND business_object_field_id IS NULL "
+            "AND source_object_field_tracking_id IS NULL) OR "
+            "(business_object_id IS NOT NULL AND business_object_field_id IS NOT NULL "
+            "AND source_object_field_tracking_id IS NOT NULL)",
+            name="observations_binding",
+        ),
+        CheckConstraint(
+            "status NOT IN ('BOUND', 'ACCEPTED') OR business_object_id IS NOT NULL",
+            name="observations_bound_status",
+        ),
+        CheckConstraint(
+            "supersedes_observation_id IS NULL OR supersedes_observation_id <> id",
+            name="observations_no_self_supersession",
         ),
         Index("ix_field_observations_run", "extraction_run_id"),
         Index("ix_field_observations_object", "business_object_id"),
@@ -151,11 +130,44 @@ class FieldObservation(SQLModel, table=True):
     id: int | None = Field(default=None, sa_column=id_column())
     extraction_run_id: int = Field(sa_column=reference("extraction_runs.id"))
     source_field_tracking_id: int = Field(sa_column=reference("source_field_trackings.id"))
-    source_object_field_tracking_id: int = Field(
-        sa_column=reference("source_object_field_trackings.id")
+    source_object_field_tracking_id: int | None = Field(
+        default=None, sa_column=reference("source_object_field_trackings.id", nullable=True)
     )
-    business_object_id: int = Field(sa_column=reference("business_objects.id"))
-    business_object_field_id: int = Field(sa_column=reference("business_object_fields.id"))
+    business_object_id: int | None = Field(
+        default=None, sa_column=reference("business_objects.id", nullable=True)
+    )
+    business_object_field_id: int | None = Field(
+        default=None, sa_column=reference("business_object_fields.id", nullable=True)
+    )
+    scope_instance_id: int | None = Field(
+        default=None, sa_column=reference("scope_instances.id", nullable=True)
+    )
+    concrete_value_id: int | None = Field(
+        default=None,
+        sa_column=Column(
+            BigInteger,
+            ForeignKey(
+                "extraction_concrete_values.id",
+                use_alter=True,
+                name="fk_observation_concrete_value",
+                ondelete="RESTRICT",
+            ),
+        ),
+    )
+    confidence: float = Field(default=1.0)
+    status: ObservationStatus = Field(
+        default=ObservationStatus.DETECTED,
+        sa_column=Column(
+            pg_enum(ObservationStatus, "extraction_observation_status"),
+            nullable=False,
+            server_default=text("'DETECTED'"),
+        ),
+    )
+    supersedes_observation_id: int | None = Field(
+        default=None, sa_column=reference("field_observations.id", nullable=True)
+    )
+    validated_at: datetime | None = Field(default=None, sa_column=Column(DateTime(timezone=True)))
+    notes: str | None = Field(default=None, sa_column=Column(Text))
     observed_at: datetime = Field(
         default_factory=utc_now,
         sa_column=Column(
@@ -190,23 +202,48 @@ class ConcreteValue(SQLModel, table=True):
         ),
         Index("ix_extraction_values_observation", "field_observation_id"),
         Index("ix_extraction_values_snapshot", "source_snapshot_id"),
+        Index("ix_extraction_values_element", "element_id"),
+        Index("ix_extraction_values_hash", "value_hash"),
+        CheckConstraint("confidence BETWEEN 0 AND 1", name="values_confidence"),
+        CheckConstraint("(char_start IS NULL) = (char_end IS NULL)", name="values_complete_range"),
+        CheckConstraint(
+            "NOT is_semantic_null OR normalized_value IS NULL", name="values_explicit_null"
+        ),
+        CheckConstraint(
+            "element_id IS NOT NULL OR field_observation_id IS NOT NULL", name="values_provenance"
+        ),
     )
 
     id: int | None = Field(default=None, sa_column=id_column())
-    field_observation_id: int = Field(sa_column=reference("field_observations.id"))
+    field_observation_id: int | None = Field(
+        default=None, sa_column=reference("field_observations.id", nullable=True)
+    )
+    element_id: int | None = Field(default=None, sa_column=reference("elements.id", nullable=True))
     source_snapshot_id: int = Field(sa_column=Column(BigInteger, nullable=False))
     raw_value: str = Field(sa_column=Column(Text, nullable=False))
-    char_start: int = Field(sa_column=Column(Integer, nullable=False))
-    char_end: int = Field(sa_column=Column(Integer, nullable=False))
-    token_class_id: str = Field(sa_column=Column(String(150), nullable=False))
-    value_index: int = Field(sa_column=Column(Integer, nullable=False))
+    char_start: int | None = Field(default=None, sa_column=Column(Integer, nullable=True))
+    char_end: int | None = Field(default=None, sa_column=Column(Integer, nullable=True))
+    token_class_id: str = Field(
+        sa_column=Column(
+            String(150), ForeignKey("token_classes.id", ondelete="RESTRICT"), nullable=False
+        )
+    )
+    value_index: int = Field(default=0, sa_column=Column(Integer, nullable=False))
+    normalized_value: str | None = Field(default=None, sa_column=Column(Text))
+    is_semantic_null: bool = Field(default=False)
+    value_hash: str | None = Field(default=None, sa_column=Column(String(64)))
+    confidence: float = Field(default=1.0)
+    discovered_by: str = Field(default="MANUAL", sa_column=Column(String(30), nullable=False))
     created_at: datetime = Field(
         default_factory=utc_now,
         sa_column=created_at_column(),
     )
 
 
+from extraction.schemas.evidence import EVIDENCE_TABLES  # noqa: E402
+
 EXTRACTION_TABLES = (
+    *EVIDENCE_TABLES,
     ExtractionRun.__table__,
     FieldObservation.__table__,
     ConcreteValue.__table__,

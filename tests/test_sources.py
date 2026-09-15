@@ -60,6 +60,8 @@ def sqlite_jsonb(_type, _compiler, **_kwargs):
 
 
 from sources.services.sources import SourcesService  # noqa: E402
+from extraction.schemas.models import EXTRACTION_TABLES, ExtractionRun, FieldObservation  # noqa: E402
+from tasks.schemas.models import Workflow  # noqa: E402
 
 pytestmark = pytest.mark.asyncio
 
@@ -100,6 +102,8 @@ async def sessions(tmp_path):
                         BusinessObject.__table__,
                         BusinessObjectField.__table__,
                         *SOURCE_TABLES,
+                        Workflow.__table__,
+                        *EXTRACTION_TABLES,
                     ],
                 )
             )
@@ -817,7 +821,7 @@ async def test_archive_versions_all_enabled_trackings_and_retains_history(
         )
 
 
-async def test_internal_observation_check_is_versioned_and_requires_evidence_layer(
+async def test_internal_observation_check_is_versioned_and_requires_existing_evidence(
     client, business, sessions
 ):
     source = await register(client)
@@ -831,7 +835,7 @@ async def test_internal_observation_check_is_versioned_and_requires_evidence_lay
         )
         assert checked.version == 2 and checked.last_changed_at is None
         assert checked.baseline_observation_id is None
-        with pytest.raises(SourceConflict, match="Layer 3"):
+        with pytest.raises(SourceValidationError, match="Observation"):
             await service.record_tracking_observation(
                 source["id"],
                 checked.id,
@@ -854,91 +858,76 @@ async def test_internal_observation_check_is_versioned_and_requires_evidence_lay
 async def test_evidence_can_reference_older_versions_of_the_same_binding(
     client, business, sessions
 ):
-    from sqlalchemy import Column, Table
-
     source = await register(client)
     child, collection = await track(client, source["id"])
     other, _ = await track(client, source["id"], 51)
-    observations = Table(
-        "field_observations",
-        SQLModel.metadata,
-        Column("id", BigInteger, primary_key=True),
-        Column("source_field_tracking_id", BigInteger, nullable=False),
-        Column("source_object_field_tracking_id", BigInteger, nullable=True),
-    )
-    try:
-        async with sessions() as session:
-            connection = await session.connection()
-            await connection.run_sync(lambda conn: observations.create(conn))
-            parent_id = (
-                await session.get(SourceObjectFieldTracking, child["version_id"])
-            ).source_field_tracking_id
-            await session.execute(
-                observations.insert(),
-                [
-                    {
-                        "id": 100,
-                        "source_field_tracking_id": parent_id,
-                        "source_object_field_tracking_id": child["version_id"],
-                    },
-                    {
-                        "id": 101,
-                        "source_field_tracking_id": parent_id,
-                        "source_object_field_tracking_id": other["version_id"],
-                    },
-                    {
-                        "id": 102,
-                        "source_field_tracking_id": parent_id + 999,
-                        "source_object_field_tracking_id": child["version_id"],
-                    },
-                ],
-            )
-            await session.commit()
-            service = SourcesService(session)
-            for bad_id in (101, 102, 999):
-                with pytest.raises(SourceValidationError):
-                    await service.record_tracking_observation(
-                        source["id"],
-                        UUID(child["id"]),
-                        TrackingObservationUpdate(
-                            expected_version=1, baseline_observation_id=bad_id
-                        ),
-                    )
-            v2 = await service.record_tracking_observation(
-                source["id"],
-                UUID(child["id"]),
-                TrackingObservationUpdate(
-                    expected_version=1, baseline_observation_id=100, last_observation_id=100
+    async with sessions() as session:
+        run = ExtractionRun(source_id=source["id"], source_snapshot_id=100, status="completed")
+        session.add(run)
+        await session.flush()
+        parent_id = (
+            await session.get(SourceObjectFieldTracking, child["version_id"])
+        ).source_field_tracking_id
+        other_parent = (
+            await session.get(SourceObjectFieldTracking, other["version_id"])
+        ).source_field_tracking_id
+        first_slot = await session.get(BusinessObjectField, 50)
+        other_slot = await session.get(BusinessObjectField, 51)
+        session.add_all(
+            [
+                FieldObservation(
+                    id=100,
+                    extraction_run_id=run.id,
+                    source_field_tracking_id=parent_id,
+                    source_object_field_tracking_id=child["version_id"],
+                    business_object_id=first_slot.business_object_id,
+                    business_object_field_id=50,
                 ),
-            )
-            v3 = await service.update_object_field_tracking(
-                source["id"],
-                v2.id,
-                SourceObjectFieldTrackingUpdate(expected_version=2, desired_refresh_seconds=60),
-            )
-            v4 = await service.record_tracking_observation(
-                source["id"],
-                v3.id,
-                TrackingObservationUpdate(
-                    expected_version=3,
-                    baseline_observation_id=100,
-                    last_checked_at=datetime.now(UTC),
+                FieldObservation(
+                    id=101,
+                    extraction_run_id=run.id,
+                    source_field_tracking_id=other_parent,
+                    source_object_field_tracking_id=other["version_id"],
+                    business_object_id=other_slot.business_object_id,
+                    business_object_field_id=51,
                 ),
-            )
-            assert v4.version == 4 and v4.baseline_observation_id == 100
-            assert v4.last_changed_at is None
-            assert (
-                await session.scalar(
-                    select(observations.c.source_object_field_tracking_id).where(
-                        observations.c.id == 100
-                    )
+            ]
+        )
+        await session.commit()
+        service = SourcesService(session)
+        for bad_id in (101, 999):
+            with pytest.raises(SourceValidationError):
+                await service.record_tracking_observation(
+                    source["id"],
+                    UUID(child["id"]),
+                    TrackingObservationUpdate(expected_version=1, baseline_observation_id=bad_id),
                 )
-                == child["version_id"]
-            )
-        first = (await client.get(collection + f"/{child['id']}/versions/1")).json()
-        assert first["last_observation_id"] is None and first["baseline_observation_id"] is None
-    finally:
-        SQLModel.metadata.remove(observations)
+        v2 = await service.record_tracking_observation(
+            source["id"],
+            UUID(child["id"]),
+            TrackingObservationUpdate(
+                expected_version=1, baseline_observation_id=100, last_observation_id=100
+            ),
+        )
+        v3 = await service.update_object_field_tracking(
+            source["id"],
+            v2.id,
+            SourceObjectFieldTrackingUpdate(expected_version=2, desired_refresh_seconds=60),
+        )
+        v4 = await service.record_tracking_observation(
+            source["id"],
+            v3.id,
+            TrackingObservationUpdate(
+                expected_version=3, baseline_observation_id=100, last_checked_at=datetime.now(UTC)
+            ),
+        )
+        assert v4.version == 4 and v4.baseline_observation_id == 100
+        assert v4.last_changed_at is None
+        assert (await session.get(FieldObservation, 100)).source_object_field_tracking_id == child[
+            "version_id"
+        ]
+    first = (await client.get(collection + f"/{child['id']}/versions/1")).json()
+    assert first["last_observation_id"] is None and first["baseline_observation_id"] is None
 
 
 @pytest.mark.skipif(not os.environ.get("SOURCES_TEST_DATABASE_URL"), reason="Requires PostgreSQL")

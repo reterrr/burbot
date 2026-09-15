@@ -15,6 +15,7 @@ from pydantic import (
     model_validator,
 )
 
+from sources.schemas.common import utc_now
 from sources.schemas.enums import (
     SourceState,
     SourceStateTrigger,
@@ -270,4 +271,31 @@ class SourceObjectFieldTrackingResponse(ResponseModel):
     valid_to: datetime | None
     is_current: bool
     change_reason: str | None
+    created_at: datetime
+
+
+class SourceSnapshotCreate(RequestModel):
+    file_id: Identifier | None = None
+    fetched_at: datetime = Field(default_factory=utc_now)
+    mime_type: str | None = None
+    content_hash: str | None = Field(default=None, pattern=r"^[a-fA-F0-9]{64}$")
+    structure_hash: str | None = Field(default=None, pattern=r"^[a-fA-F0-9]{64}$")
+    parser_version: str | None = None
+
+    @model_validator(mode="after")
+    def aware_timestamp(self):
+        if self.fetched_at.tzinfo is None:
+            raise ValueError("fetched_at must include a timezone")
+        return self
+
+
+class SourceSnapshotResponse(ResponseModel):
+    id: int
+    source_id: int
+    file_id: int | None
+    fetched_at: datetime
+    mime_type: str | None
+    content_hash: str | None
+    structure_hash: str | None
+    parser_version: str | None
     created_at: datetime
