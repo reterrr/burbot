@@ -22,6 +22,7 @@ from business_layer.schemas.models import (  # noqa: E402
 from extraction.exceptions import ExtractionConflict, ExtractionValidationError  # noqa: E402
 from extraction.schemas.api import CreateExtractionRunRequest  # noqa: E402
 from extraction.schemas.models import (  # noqa: E402
+    EXTRACTION_TABLES,
     ConcreteValue,
     ExtractionRun,
     FieldObservation,
@@ -72,14 +73,14 @@ async def sessions(tmp_path):
         SourceFieldTracking.__table__,
         SourceObjectFieldTracking.__table__,
         Workflow.__table__,
-        ExtractionRun.__table__,
-        FieldObservation.__table__,
-        ConcreteValue.__table__,
+        *EXTRACTION_TABLES,
     ]
 
     try:
         async with engine.begin() as connection:
-            await connection.run_sync(lambda conn: SQLModel.metadata.create_all(conn, tables=tables))
+            await connection.run_sync(
+                lambda conn: SQLModel.metadata.create_all(conn, tables=tables)
+            )
         yield async_sessionmaker(engine, expire_on_commit=False, autoflush=False)
     finally:
         await engine.dispose()

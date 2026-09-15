@@ -1,0 +1,34 @@
+name: Extraction service
+on:
+  pull_request:
+  push:
+    branches: [main, 'codex/finish-extraction-service*']
+jobs:
+  extraction:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: burbot
+          POSTGRES_PASSWORD: burbot_test
+          POSTGRES_DB: burbot_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U burbot -d burbot_test"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      DCKR_DATABASE_URL: postgresql+asyncpg://burbot:burbot_test@localhost:5432/burbot_test
+      HOST_DATABASE_URL: postgresql+asyncpg://burbot:burbot_test@localhost:5432/burbot_test
+      EXTRACTION_TEST_DATABASE_URL: postgresql+asyncpg://burbot:burbot_test@localhost:5432/burbot_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - run: pip install -e '.[dev]'
+      - run: alembic upgrade head
+      - run: pytest tests/test_capture.py tests/test_extraction.py tests/test_extraction_migrations.py -q
+      - run: ruff check extraction tests/test_capture.py tests/test_extraction_migrations.py sources/services/tracking.py
+      - run: alembic downgrade e100_extraction_legacy
+      - run: alembic upgrade head

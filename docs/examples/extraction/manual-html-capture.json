@@ -1,0 +1,88 @@
+{
+  "capture_key": "html-first-discovery-001",
+  "scopes": [
+    {
+      "client_key": "document",
+      "name": "ROOT",
+      "selector": {
+        "type": "CSS",
+        "value": "html"
+      }
+    },
+    {
+      "client_key": "recruitments",
+      "parent_client_key": "document",
+      "name": "Recruitment row",
+      "business_entity_id": 42,
+      "selector": {
+        "type": "CSS",
+        "value": "table.recruitments tbody tr"
+      }
+    }
+  ],
+  "elements": [
+    {
+      "client_key": "document-element",
+      "element_from": "HTML",
+      "html": {
+        "tag_name": "html"
+      }
+    },
+    {
+      "client_key": "row-1",
+      "parent_client_key": "document-element",
+      "element_from": "HTML",
+      "html": {
+        "tag_name": "tr",
+        "css_path": "table.recruitments tbody tr:nth-child(1)"
+      }
+    },
+    {
+      "client_key": "number-1",
+      "parent_client_key": "row-1",
+      "element_from": "HTML",
+      "text_content": "1/2026",
+      "html": {
+        "tag_name": "td",
+        "attributes_json": {
+          "class": "number"
+        }
+      }
+    }
+  ],
+  "scope_instances": [
+    {
+      "client_key": "document-instance",
+      "scope_client_key": "document",
+      "root_element_client_key": "document-element"
+    },
+    {
+      "client_key": "recruitment-1",
+      "parent_client_key": "document-instance",
+      "scope_client_key": "recruitments",
+      "root_element_client_key": "row-1",
+      "occurrence_index": 0,
+      "business_object_id": 1001
+    }
+  ],
+  "values": [
+    {
+      "client_key": "external-number-1",
+      "scope_instance_client_key": "recruitment-1",
+      "element_client_key": "number-1",
+      "business_entity_field_id": 101,
+      "token_class_id": "text",
+      "raw_value": "1/2026",
+      "normalized_value": "1/2026",
+      "char_start": 0,
+      "char_end": 6,
+      "confidence": 1.0,
+      "discovered_by": "MANUAL",
+      "confirmed_by_human": true,
+      "selector": {
+        "type": "CSS",
+        "value": "td.number"
+      }
+    }
+  ]
+}

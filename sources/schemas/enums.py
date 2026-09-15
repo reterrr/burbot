@@ -25,6 +25,7 @@ class SourceType(StrEnum):
 
     HTML = "HTML"
     PDF = "PDF"
+    XLSX = "XLSX"
 
 
 class SourceStateTrigger(StrEnum):

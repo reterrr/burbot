@@ -216,3 +216,17 @@ async def get_object_field_tracking_version(
     service: SourcesServiceDep,
 ) -> dto.SourceObjectFieldTrackingResponse:
     return await service.get_object_field_tracking_version(source_id, tracking_id, version)
+
+
+@router.post("/{source_id}/snapshots", status_code=status.HTTP_201_CREATED)
+async def create_snapshot(
+    source_id: PositiveId, request: dto.SourceSnapshotCreate, service: SourcesServiceDep
+) -> dto.SourceSnapshotResponse:
+    return await service.create_snapshot(source_id, request)
+
+
+@router.get("/{source_id}/snapshots/{snapshot_id}")
+async def get_snapshot(
+    source_id: PositiveId, snapshot_id: PositiveId, service: SourcesServiceDep
+) -> dto.SourceSnapshotResponse:
+    return await service.get_snapshot(source_id, snapshot_id)

@@ -2,7 +2,7 @@
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from uuid import UUID
 
 from sqlalchemy import func, or_, select, update
@@ -33,11 +33,13 @@ from sources.schemas.models import (
     SourceFieldTracking,
     SourceMetadata,
     SourceObjectFieldTracking,
+    SourceSnapshot,
     SourceStateHistory,
     SourceWarning,
     StoredFile,
 )
 from sources.services.lifecycle import can_transition
+from sources.services.tracking import append_tracking_version
 
 
 def _unique_conflict(error: IntegrityError) -> str | None:
@@ -162,6 +164,7 @@ class SourcesService:
         allowed = {
             SourceType.HTML: {"text/html", "application/xhtml+xml"},
             SourceType.PDF: {"application/pdf"},
+            SourceType.XLSX: {"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"},
         }
         if file.mime_type.split(";", 1)[0].strip().lower() not in allowed[source_type]:
             raise InvalidSourceFile(f"Stored file {file_id} does not match type {source_type}")
@@ -632,44 +635,7 @@ class SourcesService:
     async def _append_tracking_version(
         self, row: SourceObjectFieldTracking, changes: dict, reason: str | None
     ) -> SourceObjectFieldTracking:
-        def comparable(value):
-            return self._utc(value) if isinstance(value, datetime) else value
-
-        if all(
-            comparable(getattr(row, key)) == comparable(value) for key, value in changes.items()
-        ):
-            return row
-        if row.version == 2147483647:
-            raise SourceConflict("Tracking version limit reached")
-        now = max(utc_now(), self._utc(row.valid_from) + timedelta(microseconds=1))
-        values = row.model_dump(
-            exclude={
-                "id",
-                "version",
-                "created_at",
-                "updated_at",
-                "valid_from",
-                "valid_to",
-                "change_reason",
-            }
-        )
-        values.update(changes)
-        row.valid_to = now
-        self._session.add(row)
-        # Close first to release the partial unique indexes. Both writes remain
-        # in the same transaction, so a failed insert restores the previous head.
-        await self._session.flush()
-        successor = SourceObjectFieldTracking(
-            **values,
-            version=row.version + 1,
-            valid_from=now,
-            created_at=now,
-            updated_at=now,
-            change_reason=reason,
-        )
-        self._session.add(successor)
-        await self._session.flush()
-        return successor
+        return await append_tracking_version(self._session, row, changes, reason)
 
     async def update_object_field_tracking(
         self, source_id: int, tracking_id: UUID, request: dto.SourceObjectFieldTrackingUpdate
@@ -741,3 +707,21 @@ class SourcesService:
             row = await self._append_tracking_version(current, changes, request.change_reason)
             result = self._tracking_response(source_id, row)
         return result
+
+    async def create_snapshot(
+        self, source_id: int, request: dto.SourceSnapshotCreate
+    ) -> dto.SourceSnapshotResponse:
+        async with self._transaction():
+            source = await self._writable_source(source_id)
+            if request.file_id is not None:
+                await self._validate_file(request.file_id, source.type)
+            row = SourceSnapshot(source_id=source_id, **request.model_dump())
+            return await self._save(row, dto.SourceSnapshotResponse)
+
+    async def get_snapshot(self, source_id: int, snapshot_id: int) -> dto.SourceSnapshotResponse:
+        row = await self._session.get(SourceSnapshot, snapshot_id)
+        if row is None or row.source_id != source_id:
+            raise SourceResourceNotFound(
+                f"Snapshot {snapshot_id} does not exist for source {source_id}"
+            )
+        return dto.SourceSnapshotResponse.model_validate(row)

@@ -1,0 +1,5 @@
+{
+  "id": "text",
+  "name": "Text",
+  "description": "A textual literal; normalization is supplied by the extractor."
+}

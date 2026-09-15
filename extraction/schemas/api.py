@@ -7,10 +7,11 @@ from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_vali
 
 from extraction.schemas.models import ExtractionRunStatus
 
-
 Identifier = Annotated[int, Field(gt=0, le=9223372036854775807)]
 NonBlank = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
-TokenClassId = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=150)]
+TokenClassId = Annotated[
+    str, StringConstraints(strip_whitespace=True, min_length=1, max_length=150)
+]
 
 
 class RequestModel(BaseModel):
@@ -74,28 +75,28 @@ class ConcreteValueResponse(ResponseModel):
     id: int
     snapshot_id: int
     concrete_value: str
-    char_start: int
-    char_end: int
+    char_start: int | None
+    char_end: int | None
     token_class_id: str
     value_index: int
 
 
 class FieldObservationResponse(ResponseModel):
     id: int
-    business_object_id: int
-    business_object_field_id: int
-    tracking_version_id: int
+    business_object_id: int | None
+    business_object_field_id: int | None
+    tracking_version_id: int | None
     observed_at: datetime
     concrete_values: list[ConcreteValueResponse]
 
 
 class ExtractionRunSummary(ResponseModel):
     id: int
-    workflow_id: int
+    workflow_id: int | None
     source_id: int
     source_snapshot_id: int
     status: ExtractionRunStatus
-    started_at: datetime
+    started_at: datetime | None
     finished_at: datetime | None
     error_message: str | None
     created_at: datetime
