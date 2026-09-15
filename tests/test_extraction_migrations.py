@@ -32,6 +32,8 @@ def test_offline_migration_chain_compiles(monkeypatch):
         "CREATE TABLE elements_xlsx",
         "CREATE TABLE extraction_captures",
         "fk_source_object_field_trackings_last_observation_id",
+        "ALTER TABLE field_selectors ADD COLUMN extraction_json JSONB",
+        "ALTER TABLE source_snapshots ADD COLUMN page_url TEXT",
     ):
         assert fragment in sql
     assert "DROP TABLE" not in sql
@@ -150,6 +152,129 @@ async def test_migrations_preserve_legacy_and_protect_capture(monkeypatch):
                     text("SELECT to_regclass('extraction_captures') IS NOT NULL")
                 )
             ).scalar_one()
+    finally:
+        await engine.dispose()
+        async with admin.begin() as connection:
+            await connection.execute(DropSchema(schema, cascade=True))
+        await admin.dispose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(
+    not os.environ.get("EXTRACTION_TEST_DATABASE_URL"), reason="Requires PostgreSQL"
+)
+async def test_recipe_migration_preserves_unknown_rows_and_versions_rediscovery(monkeypatch):
+    from extraction_support import capture, run_capture
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    from extraction.schemas.evidence import FieldSelector
+    from extraction.services.recipes import stored_rule
+
+    url = os.environ["EXTRACTION_TEST_DATABASE_URL"]
+    monkeypatch.setenv("HOST_DATABASE_URL", url)
+    schema = f"recipe_migration_{uuid4().hex}"
+    admin = create_async_engine(url)
+    async with admin.begin() as connection:
+        await connection.execute(CreateSchema(schema))
+    engine = create_async_engine(
+        url, connect_args={"server_settings": {"search_path": f"{schema},public"}}
+    )
+    cfg = config()
+    cfg.attributes["version_table_schema"] = schema
+
+    async def migrate(target, downgrade=False):
+        async with engine.begin() as connection:
+
+            def run(sync):
+                cfg.attributes["connection"] = sync
+                (command.downgrade if downgrade else command.upgrade)(cfg, target)
+
+            await connection.run_sync(run)
+
+    try:
+        await migrate("e101_extraction_capture")
+        async with engine.begin() as connection:
+            statements = [
+                "INSERT INTO business_models (id,key,name) VALUES (10,'model','Model')",
+                "INSERT INTO business_entities (id,business_model_id,table_name) "
+                "VALUES (20,10,'recruitments')",
+                "INSERT INTO business_entity_fields (id,business_entity_id) VALUES (30,20)",
+                "INSERT INTO sources (id,type,url) VALUES (60,'HTML','https://example.org/downloads')",
+                "INSERT INTO source_field_trackings (id,source_id,business_entity_field_id) "
+                "VALUES (70,60,30)",
+                "INSERT INTO source_snapshots (id,source_id,fetched_at) VALUES (100,60,now())",
+                "INSERT INTO token_classes (id,name) VALUES ('text','Text')",
+                """INSERT INTO source_scopes
+                   (id,source_id,name,selector_type,selector_string,confidence_score,discovered_by,version,valid_from)
+                   VALUES (1,60,'ROOT','CSS','html',1,'MANUAL',4,'2026-01-01T00:00:00Z')""",
+                """INSERT INTO field_selectors
+                   (id,scope_id,source_field_tracking_id,selector_type,selector_string,confidence_score,discovered_by,version,valid_from)
+                   VALUES (1,1,70,'CSS','a.schedule',1,'MANUAL',7,'2026-01-01T00:00:00Z')""",
+                "SELECT setval('field_selectors_id_seq',1,true)",
+            ]
+            for statement in statements:
+                await connection.execute(text(statement))
+        await migrate("head")
+        async with engine.connect() as connection:
+            original = (
+                await connection.execute(
+                    text(
+                        "SELECT selector_string,extraction_json,version,valid_to "
+                        "FROM field_selectors WHERE id=1"
+                    )
+                )
+            ).one()
+            assert tuple(original) == ("a.schedule", None, 7, None)
+            assert (
+                await connection.execute(text("SELECT page_url FROM source_snapshots WHERE id=100"))
+            ).scalar_one() is None
+        # An unknown legacy definition can be downgraded/re-upgraded losslessly.
+        await migrate("e101_extraction_capture", downgrade=True)
+        await migrate("head")
+        sessions = async_sessionmaker(engine, expire_on_commit=False, autoflush=False)
+        async with sessions() as session:
+            data = capture(object_id=None)
+            data["scopes"] = data["scopes"][:1]
+            data["scope_instances"] = data["scope_instances"][:1]
+            data["values"][0].update(
+                scope_instance_client_key="root",
+                char_start=None,
+                char_end=None,
+                rule={
+                    "selector": {"type": "CSS", "value": "a.schedule"},
+                    "extraction": {"type": "attribute", "attribute": "href"},
+                },
+            )
+            await run_capture(session, data)
+            old = await session.get(FieldSelector, 1)
+            new = await session.get(FieldSelector, 2)
+            assert old.extraction_json is None and old.version == 7
+            assert old.valid_to == new.valid_from and new.version == 8
+            assert stored_rule(new).extraction.attribute == "href"
+        with pytest.raises(Exception, match="Cannot downgrade.*recipes"):
+            await migrate("e101_extraction_capture", downgrade=True)
+        async with engine.connect() as connection:
+            assert (
+                await connection.execute(
+                    text("SELECT extraction_json->>'attribute' FROM field_selectors WHERE id=2")
+                )
+            ).scalar_one() == "href"
+            # pageUrl has no locator; the migrated columns allow both NULL.
+        async with engine.begin() as connection:
+            await connection.execute(
+                text("""
+                UPDATE field_selectors SET valid_to=now() + interval '1 second' WHERE id=2
+            """)
+            )
+            await connection.execute(
+                text("""
+                INSERT INTO field_selectors
+                    (scope_id,source_field_tracking_id,selector_type,selector_string,extraction_json,
+                     confidence_score,discovered_by,version,valid_from)
+                VALUES (1,70,NULL,NULL,'{"type":"pageUrl"}'::jsonb,1,'MANUAL',9,
+                        now() + interval '1 second')
+            """)
+            )
     finally:
         await engine.dispose()
         async with admin.begin() as connection:

@@ -23,11 +23,11 @@ from extraction.schemas.enums import ExtractionRunStatus, ObservationStatus
 
 
 class ExtractionRun(SQLModel, table=True):
-    """One Layer 3 extraction execution for one source-processing workflow.
+    """One Layer 3 extraction execution for one snapshot, optionally in a workflow.
 
-    ``source_id`` and ``source_snapshot_id`` are copied from the workflow on
-    creation. They intentionally remain logical cross-context references rather
-    than database foreign keys, matching the Tasks/Orchestration boundary.
+    New runs validate the registered snapshot and optional workflow together.
+    Source/snapshot IDs remain logical references so historical workflow evidence
+    does not acquire fabricated snapshots when the capture schema is installed.
     """
 
     __tablename__ = "extraction_runs"

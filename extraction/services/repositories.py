@@ -17,6 +17,7 @@ from business_layer.schemas.models import (
 from extraction.exceptions import ExtractionNotFound, ExtractionValidationError
 from extraction.schemas.evidence import ExtractionCapture, FieldSelector, SourceScope
 from extraction.schemas.models import ConcreteValue, ExtractionRun, FieldObservation
+from extraction.services.recipes import stored_rule
 from sources.schemas.models import (
     Source,
     SourceFieldTracking,
@@ -65,6 +66,9 @@ class ExtractionRepository:
         return await self.get(BusinessObject, object_id, validation=True)
 
     async def add[Model: SQLModel](self, row: Model) -> Model:
+        if isinstance(row, FieldSelector):
+            # Includes recipe copies on scope rollover. No new unchecked/legacy JSON.
+            row.extraction_json = stored_rule(row).extraction.model_dump(mode="json")
         self.session.add(row)
         await self.session.flush()
         return row
@@ -146,6 +150,7 @@ class ExtractionRepository:
                     SourceScope.valid_to.is_(None),
                 )
                 .order_by(SourceScope.id)
+                .execution_options(populate_existing=True)
             )
         )
         selectors = list(
@@ -161,13 +166,17 @@ class ExtractionRepository:
                     FieldSelector.valid_to.is_(None),
                 )
                 .order_by(FieldSelector.id)
+                .execution_options(populate_existing=True)
             )
         )
         fields = list(
             await self.session.scalars(
-                select(SourceFieldTracking).where(
+                select(SourceFieldTracking)
+                .where(
                     SourceFieldTracking.source_id == source_id,
                 )
+                .order_by(SourceFieldTracking.id)
+                .execution_options(populate_existing=True)
             )
         )
         return scopes, selectors, fields

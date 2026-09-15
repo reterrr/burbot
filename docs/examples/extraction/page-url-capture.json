@@ -1,0 +1,50 @@
+{
+  "capture_key": "page-url-capture-001",
+  "scopes": [
+    {
+      "client_key": "document",
+      "name": "ROOT",
+      "selector": {
+        "type": "CSS",
+        "value": "html"
+      }
+    }
+  ],
+  "elements": [
+    {
+      "client_key": "document-element",
+      "element_from": "HTML",
+      "html": {
+        "tag_name": "html"
+      }
+    }
+  ],
+  "scope_instances": [
+    {
+      "client_key": "document-instance",
+      "scope_client_key": "document",
+      "root_element_client_key": "document-element"
+    }
+  ],
+  "values": [
+    {
+      "client_key": "field-value",
+      "scope_instance_client_key": "document-instance",
+      "element_client_key": "document-element",
+      "business_entity_field_id": 101,
+      "token_class_id": "text",
+      "raw_value": "https://example.org/downloads",
+      "normalized_value": "https://example.org/downloads",
+      "confidence": 1.0,
+      "discovered_by": "MANUAL",
+      "confirmed_by_human": true,
+      "rule": {
+        "selector": null,
+        "extraction": {
+          "type": "pageUrl"
+        }
+      },
+      "business_object_id": 1001
+    }
+  ]
+}

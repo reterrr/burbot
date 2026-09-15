@@ -1,0 +1,70 @@
+{
+  "capture_key": "selection-quote-capture-001",
+  "scopes": [
+    {
+      "client_key": "document",
+      "name": "ROOT",
+      "selector": {
+        "type": "CSS",
+        "value": "html"
+      }
+    }
+  ],
+  "elements": [
+    {
+      "client_key": "document-element",
+      "element_from": "HTML",
+      "html": {
+        "tag_name": "html"
+      }
+    },
+    {
+      "client_key": "field-element",
+      "parent_client_key": "document-element",
+      "element_from": "HTML",
+      "text_content": "Program: Generator Kompetencji 3.0 oraz informacje dodatkowe.",
+      "html": {
+        "tag_name": "p",
+        "attributes_json": {
+          "class": "description"
+        }
+      }
+    }
+  ],
+  "scope_instances": [
+    {
+      "client_key": "document-instance",
+      "scope_client_key": "document",
+      "root_element_client_key": "document-element"
+    }
+  ],
+  "values": [
+    {
+      "client_key": "field-value",
+      "scope_instance_client_key": "document-instance",
+      "element_client_key": "field-element",
+      "business_entity_field_id": 101,
+      "token_class_id": "text",
+      "raw_value": "Generator Kompetencji 3.0",
+      "normalized_value": "Generator Kompetencji 3.0",
+      "confidence": 1.0,
+      "discovered_by": "MANUAL",
+      "confirmed_by_human": true,
+      "rule": {
+        "selector": {
+          "type": "CSS",
+          "value": "p.description"
+        },
+        "extraction": {
+          "type": "selection",
+          "quote": {
+            "exact": "Generator Kompetencji 3.0",
+            "prefix": "Program: ",
+            "suffix": " oraz informacje dodatkowe."
+          }
+        }
+      },
+      "business_object_id": 1001
+    }
+  ]
+}

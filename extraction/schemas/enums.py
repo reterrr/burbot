@@ -7,7 +7,7 @@ class ExtractionRunStatus(StrEnum):
     SUCCEEDED = "succeeded"
     PARTIAL = "partial"
     FAILED = "failed"
-    COMPLETED = "completed"  # Existing /extractions contract.
+    COMPLETED = "completed"  # Read compatibility for historical workflow runs.
 
 
 class ElementFrom(StrEnum):

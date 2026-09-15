@@ -715,7 +715,10 @@ class SourcesService:
             source = await self._writable_source(source_id)
             if request.file_id is not None:
                 await self._validate_file(request.file_id, source.type)
-            row = SourceSnapshot(source_id=source_id, **request.model_dump())
+            values = request.model_dump()
+            if values["page_url"] is None:
+                values["page_url"] = source.url
+            row = SourceSnapshot(source_id=source_id, **values)
             return await self._save(row, dto.SourceSnapshotResponse)
 
     async def get_snapshot(self, source_id: int, snapshot_id: int) -> dto.SourceSnapshotResponse:

@@ -1,0 +1,67 @@
+{
+  "capture_key": "harmonogram-link-capture-001",
+  "scopes": [
+    {
+      "client_key": "document",
+      "name": "ROOT",
+      "selector": {
+        "type": "CSS",
+        "value": "html"
+      }
+    }
+  ],
+  "elements": [
+    {
+      "client_key": "document-element",
+      "element_from": "HTML",
+      "html": {
+        "tag_name": "html"
+      }
+    },
+    {
+      "client_key": "field-element",
+      "parent_client_key": "document-element",
+      "element_from": "HTML",
+      "text_content": "Pobierz harmonogram",
+      "html": {
+        "tag_name": "a",
+        "attributes_json": {
+          "class": "schedule",
+          "href": "/files/harmonogram-2026.xlsx"
+        }
+      }
+    }
+  ],
+  "scope_instances": [
+    {
+      "client_key": "document-instance",
+      "scope_client_key": "document",
+      "root_element_client_key": "document-element"
+    }
+  ],
+  "values": [
+    {
+      "client_key": "field-value",
+      "scope_instance_client_key": "document-instance",
+      "element_client_key": "field-element",
+      "business_entity_field_id": 101,
+      "token_class_id": "text",
+      "raw_value": "/files/harmonogram-2026.xlsx",
+      "normalized_value": "/files/harmonogram-2026.xlsx",
+      "confidence": 1.0,
+      "discovered_by": "MANUAL",
+      "confirmed_by_human": true,
+      "rule": {
+        "selector": {
+          "type": "CSS",
+          "value": "a.schedule"
+        },
+        "extraction": {
+          "type": "attribute",
+          "attribute": "href"
+        }
+      },
+      "business_object_id": 1001
+    }
+  ]
+}

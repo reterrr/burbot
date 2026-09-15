@@ -22,6 +22,7 @@ from extraction.schemas.evidence import (
     TokenClass,
 )
 from extraction.schemas.models import ConcreteValue, FieldObservation, utc_now
+from extraction.services.recipes import stored_rule
 from extraction.services.repositories import ExtractionRepository
 from extraction.services.tracking import comparable_value, update_tracking_from_observation
 from sources.schemas.models import Source, SourceBusinessObject, SourceObjectFieldTracking
@@ -53,9 +54,10 @@ class CaptureWriter:
             await self.repo.session.flush()
         return await self.repo.add(model(**values, version=version, valid_from=now))
 
-    async def register_scopes(self, requests):
+    async def register_scopes(self, requests, incoming_rules):
         """Reparent existing descendants and carry selectors on scope rollover."""
-        active, selectors, _ = await self.repo.definitions(self.run.source_id)
+        active, selectors, fields = await self.repo.definitions(self.run.source_id)
+        field_ids = {f.id: f.business_entity_field_id for f in fields}
         old_by_id = {s.id: s for s in active}
         definitions = {
             s.name: (s, old_by_id[s.parent_scope_id].name if s.parent_scope_id else None)
@@ -105,6 +107,13 @@ class CaptureWriter:
                 if old is not None and old.business_entity_id == row.business_entity_id:
                     for selector in selectors:
                         if selector.scope_id == old.id:
+                            if (
+                                name,
+                                field_ids[selector.source_field_tracking_id],
+                            ) in incoming_rules:
+                                # The same capture will teach this field in the new
+                                # scope. Do not copy a stale/unknown recipe first.
+                                continue
                             data = selector.model_dump(
                                 exclude={"id", "created_at", "valid_from", "valid_to", "version"}
                             )
@@ -217,7 +226,8 @@ class CaptureWriter:
             raise ExtractionConflict("Source/object/field tracking is disabled")
         return slot, tracking
 
-    async def register_selector(self, scope, source_field, request):
+    async def register_selector(self, scope, source_field, request: dto.FieldExtractionRuleRequest):
+        """Version the complete recipe, including HOW, without mutating its payload."""
         if scope.source_id != source_field.source_id:
             raise ExtractionValidationError("Scope and tracked field belong to different sources")
         previous = await self.repo.current_selector(scope.id, source_field.id)
@@ -227,8 +237,9 @@ class CaptureWriter:
             dict(
                 scope_id=scope.id,
                 source_field_tracking_id=source_field.id,
-                selector_type=request.type,
-                selector_string=request.value,
+                selector_type=request.selector.type if request.selector else None,
+                selector_string=request.selector.value if request.selector else None,
+                extraction_json=request.extraction.model_dump(mode="json"),
                 confidence_score=request.confidence,
                 discovered_by=request.discovered_by,
             ),
@@ -353,11 +364,22 @@ class CaptureWriter:
             "TEXT_PATTERN",
             "INDEX_ABSOLUTE",
         }
-        recipes = [scope.selector for scope in request.scopes]
-        recipes.extend(value.selector for value in request.values if value.selector is not None)
-        if any(recipe.type not in allowed_types for recipe in recipes):
+        locators = [scope.selector for scope in request.scopes]
+        locators.extend(
+            value.rule.selector
+            for value in request.values
+            if value.rule is not None and value.rule.selector is not None
+        )
+        if any(locator.type not in allowed_types for locator in locators):
             raise ExtractionValidationError("Selector type does not support this document format")
-        await self.register_scopes(request.scopes)
+        scope_names = {s.client_key: s.name for s in request.scopes}
+        instance_scopes = {i.client_key: i.scope_client_key for i in request.scope_instances}
+        incoming_rules = {
+            (scope_names[instance_scopes[v.scope_instance_client_key]], v.business_entity_field_id)
+            for v in request.values
+            if v.rule is not None
+        }
+        await self.register_scopes(request.scopes, incoming_rules)
         await self.register_elements(request.elements)
         await self.register_scope_instances(request.scope_instances)
         observations, resolved, unresolved, reconciliation, changed = {}, [], [], [], []
@@ -386,15 +408,38 @@ class CaptureWriter:
                     )
                 record_objects[record_key] = object_id
             source_field = await self.repo.source_field(self.run.source_id, field.id)
-            if value.selector is not None:
+            rule = value.rule
+            if rule is not None:
                 selector_key = (scope.id, source_field.id)
-                signature = (value.selector.type, value.selector.value)
+                signature = rule.model_dump(mode="json")
                 if selector_key in selectors_seen and selectors_seen[selector_key] != signature:
                     raise ExtractionValidationError(
-                        "Repeated records must share one reusable field selector"
+                        "Repeated records must share one reusable field recipe"
                     )
                 selectors_seen[selector_key] = signature
-                await self.register_selector(scope, source_field, value.selector)
+                await self.register_selector(scope, source_field, rule)
+            else:
+                existing = await self.repo.current_selector(scope.id, source_field.id)
+                if existing is not None and existing.extraction_json is not None:
+                    rule = stored_rule(existing)
+            if rule is not None:
+                if rule.selector is not None and rule.selector.type not in allowed_types:
+                    raise ExtractionValidationError("Recipe locator does not support this format")
+                if rule.extraction.type == "attribute" and document_type != "HTML":
+                    raise ExtractionValidationError("Attribute extraction requires HTML evidence")
+                if (
+                    rule.extraction.type in {"attribute", "pageUrl"}
+                    and value.char_start is not None
+                ):
+                    raise ExtractionValidationError(
+                        "Attribute and pageUrl literals cannot have element text offsets"
+                    )
+                if rule.extraction.type == "pageUrl" and (
+                    self.snapshot.page_url is None or value.raw_value != self.snapshot.page_url
+                ):
+                    raise ExtractionValidationError(
+                        "pageUrl literal must equal the URL recorded on the source snapshot"
+                    )
             observation, changed_id = await self.register_value(
                 value, field, source_field, scope, instance
             )

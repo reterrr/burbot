@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Annotated, Generic, Self, TypeVar
+from typing import Annotated, Generic, TypeVar
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
-from extraction.schemas.models import ExtractionRunStatus
+from extraction.schemas.enums import ExtractionRunStatus
 
 Identifier = Annotated[int, Field(gt=0, le=9223372036854775807)]
 NonBlank = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
@@ -40,35 +40,6 @@ class Page(BaseModel, Generic[T]):  # noqa: UP046 - supports Pydantic 2.9
     total: int
     offset: int
     limit: int
-
-
-class CreateExtractionConcreteValueRequest(RequestModel):
-    concrete_value: NonBlank
-    char_start: int = Field(ge=0, le=2147483647)
-    char_end: int = Field(gt=0, le=2147483647)
-    token_class_id: TokenClassId
-    object_field_id: Identifier
-
-    @model_validator(mode="after")
-    def valid_range(self) -> Self:
-        if self.char_end <= self.char_start:
-            raise ValueError("char_end must be greater than char_start")
-        return self
-
-
-class SetExtractionFieldEvidenceRequest(RequestModel):
-    snapshot_id: Identifier
-    values: list[CreateExtractionConcreteValueRequest] = Field(min_length=1)
-
-
-class CreateFieldObservationRequest(RequestModel):
-    object_id: Identifier
-    concrete_values: list[SetExtractionFieldEvidenceRequest] = Field(min_length=1)
-
-
-class CreateExtractionRunRequest(RequestModel):
-    workflow_id: Identifier
-    field_observations: list[CreateFieldObservationRequest] = Field(min_length=1)
 
 
 class ConcreteValueResponse(ResponseModel):

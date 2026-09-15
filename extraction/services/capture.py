@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+from copy import deepcopy
 
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -38,8 +39,18 @@ def payload_hash(request: dto.CaptureRequest) -> str:
 
 
 def definitions_fingerprint(definitions):
-    scopes, selectors, _ = definitions
-    return (tuple(s.id for s in scopes), tuple(s.id for s in selectors))
+    """Include semantic content, not just row IDs (including legacy/corrupt rows)."""
+    return hashlib.sha256(
+        json.dumps(
+            [
+                [r.model_dump(mode="json") for r in sorted(rows, key=lambda r: r.id)]
+                for rows in definitions
+            ],
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        ).encode()
+    ).hexdigest()
 
 
 class CaptureService:
@@ -287,21 +298,29 @@ class CaptureService:
                 raise ExtractionConflict(f"Cannot execute a {run.status} run")
             snapshot = await self.repo.get_snapshot(run.source_snapshot_id)
             definitions = await self.repo.definitions(run.source_id)
+            # Validate DB JSON before parser I/O. Legacy/invalid definitions require
+            # rediscovery; do not guess text or silently omit those fields.
+            known_definitions = ExtractionDefinitions.from_rows(*definitions)
             fingerprint = definitions_fingerprint(definitions)
-            # Detach immutable adapter inputs before ending the read transaction.
+            if any(s.rule.extraction.type == "pageUrl" for s in known_definitions.selectors):
+                if snapshot.page_url is None:
+                    raise ExtractionConflict("pageUrl execution requires a recorded snapshot URL")
             snapshot_input = type(snapshot).model_validate(snapshot.model_dump())
-            adapter_definitions = ExtractionDefinitions(
-                *[
-                    [type(row).model_validate(row.model_dump()) for row in rows]
-                    for rows in definitions
-                ]
-            )
+            # Keep authoritative copies separate: an adapter must not be able to
+            # modify the definitions against which its returned capture is checked.
+            adapter_definitions = deepcopy(known_definitions)
             await self.session.rollback()
             try:
                 capture = await self.extractor.extract(
                     snapshot_input, adapter_definitions, capture_key=capture_key
                 )
-                capture = dto.CaptureRequest.model_validate(capture)
+                if adapter_definitions != known_definitions:
+                    raise ExtractionValidationError("Adapter mutated its extraction definitions")
+                capture = dto.CaptureRequest.model_validate(
+                    capture.model_dump(mode="json")
+                    if isinstance(capture, dto.CaptureRequest)
+                    else capture
+                )
                 if capture.capture_key != capture_key:
                     raise ExtractionValidationError("Adapter returned the wrong capture key")
                 if any(v.confirmed_by_human for v in capture.values):
@@ -309,8 +328,8 @@ class CaptureService:
                         "Automatic adapters cannot assert human confirmation"
                     )
                 # Execution may apply existing recipes, but cannot rewrite them.
-                active = {s.name: s for s in adapter_definitions.scopes}
-                active_by_id = {s.id: s for s in adapter_definitions.scopes}
+                active = {s.name: s for s in known_definitions.scopes}
+                active_by_id = {s.id: s for s in known_definitions.scopes}
                 requested_scopes = {s.client_key: s for s in capture.scopes}
                 for scope in capture.scopes:
                     known = active.get(scope.name)
@@ -337,24 +356,23 @@ class CaptureService:
                     # These are annotations of the existing recipe, not a new discovery.
                     scope.selector.confidence = known.confidence_score
                     scope.selector.discovered_by = known.discovered_by
-                field_ids = {f.id: f.business_entity_field_id for f in adapter_definitions.fields}
                 registered_fields = {
-                    (active_by_id[s.scope_id].name, field_ids[s.source_field_tracking_id])
-                    for s in adapter_definitions.selectors
+                    (active_by_id[s.scope_id].name, s.business_entity_field_id)
+                    for s in known_definitions.selectors
                 }
                 instances = {i.client_key: i for i in capture.scope_instances}
                 for value in capture.values:
                     instance = instances[value.scope_instance_client_key]
                     scope_name = requested_scopes[instance.scope_client_key].name
                     if (scope_name, value.business_entity_field_id) not in registered_fields:
-                        raise ExtractionValidationError("Adapter field has no registered selector")
+                        raise ExtractionValidationError("Adapter field has no registered recipe")
                     if value.discovered_by == DiscoveryMethod.MANUAL:
                         raise ExtractionValidationError(
                             "Automatic adapters cannot claim manual discovery"
                         )
-                if any(v.selector is not None for v in capture.values):
+                if any(v.rule is not None for v in capture.values):
                     raise ExtractionValidationError(
-                        "Execution adapters must omit field selector updates"
+                        "Execution adapters must omit field recipe updates"
                     )
             except Exception as error:
                 await self.fail_run(

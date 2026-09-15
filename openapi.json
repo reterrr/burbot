@@ -2886,15 +2886,16 @@
         "tags": [
           "extractions"
         ],
-        "summary": "Create Extraction Run",
-        "description": "Persist browser/user supplied evidence for the workflow's source snapshot.",
-        "operationId": "create_extraction_run_extractions_post",
+        "summary": "Create Pending Run Alias",
+        "description": "Deprecated alias for POST /extraction/runs, followed by /runs/{id}/capture.\n\nThe retired workflow/field_observations payload is no longer accepted: it\ncannot describe a reusable recipe or concrete record scope.",
+        "operationId": "create_pending_run_alias_extractions_post",
+        "deprecated": true,
         "requestBody": {
           "required": true,
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/CreateExtractionRunRequest"
+                "$ref": "#/components/schemas/CreateRunRequest"
               }
             }
           }
@@ -2905,7 +2906,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ExtractionRunResponse"
+                  "$ref": "#/components/schemas/RunResponse"
                 }
               }
             }
@@ -3500,6 +3501,34 @@
           "field_values"
         ],
         "title": "AssignFieldValuesRequest"
+      },
+      "AttributeExtraction": {
+        "properties": {
+          "type": {
+            "type": "string",
+            "const": "attribute",
+            "title": "Type",
+            "default": "attribute"
+          },
+          "attribute": {
+            "type": "string",
+            "enum": [
+              "href",
+              "src",
+              "datetime",
+              "title",
+              "alt",
+              "content"
+            ],
+            "title": "Attribute"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "attribute"
+        ],
+        "title": "AttributeExtraction"
       },
       "BusinessModel": {
         "properties": {
@@ -4254,99 +4283,6 @@
         ],
         "title": "ConcreteValueResponse"
       },
-      "CreateExtractionConcreteValueRequest": {
-        "properties": {
-          "concrete_value": {
-            "type": "string",
-            "minLength": 1,
-            "title": "Concrete Value"
-          },
-          "char_start": {
-            "type": "integer",
-            "maximum": 2147483647.0,
-            "minimum": 0.0,
-            "title": "Char Start"
-          },
-          "char_end": {
-            "type": "integer",
-            "maximum": 2147483647.0,
-            "exclusiveMinimum": 0.0,
-            "title": "Char End"
-          },
-          "token_class_id": {
-            "type": "string",
-            "maxLength": 150,
-            "minLength": 1,
-            "title": "Token Class Id"
-          },
-          "object_field_id": {
-            "type": "integer",
-            "maximum": 9.223372036854776e+18,
-            "exclusiveMinimum": 0.0,
-            "title": "Object Field Id"
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "concrete_value",
-          "char_start",
-          "char_end",
-          "token_class_id",
-          "object_field_id"
-        ],
-        "title": "CreateExtractionConcreteValueRequest"
-      },
-      "CreateExtractionRunRequest": {
-        "properties": {
-          "workflow_id": {
-            "type": "integer",
-            "maximum": 9.223372036854776e+18,
-            "exclusiveMinimum": 0.0,
-            "title": "Workflow Id"
-          },
-          "field_observations": {
-            "items": {
-              "$ref": "#/components/schemas/CreateFieldObservationRequest"
-            },
-            "type": "array",
-            "minItems": 1,
-            "title": "Field Observations"
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "workflow_id",
-          "field_observations"
-        ],
-        "title": "CreateExtractionRunRequest"
-      },
-      "CreateFieldObservationRequest": {
-        "properties": {
-          "object_id": {
-            "type": "integer",
-            "maximum": 9.223372036854776e+18,
-            "exclusiveMinimum": 0.0,
-            "title": "Object Id"
-          },
-          "concrete_values": {
-            "items": {
-              "$ref": "#/components/schemas/SetExtractionFieldEvidenceRequest"
-            },
-            "type": "array",
-            "minItems": 1,
-            "title": "Concrete Values"
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "object_id",
-          "concrete_values"
-        ],
-        "title": "CreateFieldObservationRequest"
-      },
       "CreateObjectResponse": {
         "properties": {
           "object_id": {
@@ -4946,6 +4882,63 @@
         ],
         "title": "Field"
       },
+      "FieldExtractionRuleRequest": {
+        "properties": {
+          "selector": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LocatorRequest"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "extraction": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/TextExtraction"
+              },
+              {
+                "$ref": "#/components/schemas/AttributeExtraction"
+              },
+              {
+                "$ref": "#/components/schemas/SelectionExtraction"
+              },
+              {
+                "$ref": "#/components/schemas/PageUrlExtraction"
+              }
+            ],
+            "title": "Extraction",
+            "discriminator": {
+              "propertyName": "type",
+              "mapping": {
+                "attribute": "#/components/schemas/AttributeExtraction",
+                "pageUrl": "#/components/schemas/PageUrlExtraction",
+                "selection": "#/components/schemas/SelectionExtraction",
+                "text": "#/components/schemas/TextExtraction"
+              }
+            }
+          },
+          "confidence": {
+            "type": "number",
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Confidence",
+            "default": 1.0
+          },
+          "discovered_by": {
+            "$ref": "#/components/schemas/DiscoveryMethod",
+            "default": "MANUAL"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "extraction"
+        ],
+        "title": "FieldExtractionRuleRequest"
+      },
       "FieldObservationResponse": {
         "properties": {
           "id": {
@@ -5129,6 +5122,25 @@
           "message"
         ],
         "title": "IssueRequest"
+      },
+      "LocatorRequest": {
+        "properties": {
+          "type": {
+            "$ref": "#/components/schemas/SelectorType"
+          },
+          "value": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Value"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "type",
+          "value"
+        ],
+        "title": "LocatorRequest"
       },
       "ObservationEvidenceResponse": {
         "properties": {
@@ -5550,6 +5562,19 @@
           "page_number"
         ],
         "title": "PDFMetadata"
+      },
+      "PageUrlExtraction": {
+        "properties": {
+          "type": {
+            "type": "string",
+            "const": "pageUrl",
+            "title": "Type",
+            "default": "pageUrl"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "PageUrlExtraction"
       },
       "Page_ExtractionRunSummary_": {
         "properties": {
@@ -6072,6 +6097,50 @@
         ],
         "title": "ScopeRequest"
       },
+      "SelectionExtraction": {
+        "properties": {
+          "type": {
+            "type": "string",
+            "const": "selection",
+            "title": "Type",
+            "default": "selection"
+          },
+          "quote": {
+            "$ref": "#/components/schemas/SelectionQuote"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "quote"
+        ],
+        "title": "SelectionExtraction"
+      },
+      "SelectionQuote": {
+        "properties": {
+          "exact": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Exact"
+          },
+          "prefix": {
+            "type": "string",
+            "title": "Prefix"
+          },
+          "suffix": {
+            "type": "string",
+            "title": "Suffix"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "exact",
+          "prefix",
+          "suffix"
+        ],
+        "title": "SelectionQuote"
+      },
       "SelectorRequest": {
         "properties": {
           "type": {
@@ -6100,7 +6169,8 @@
           "type",
           "value"
         ],
-        "title": "SelectorRequest"
+        "title": "SelectorRequest",
+        "description": "A scope locator and its discovery annotations; no field extraction operation."
       },
       "SelectorType": {
         "type": "string",
@@ -6114,31 +6184,6 @@
           "XLSX_RANGE"
         ],
         "title": "SelectorType"
-      },
-      "SetExtractionFieldEvidenceRequest": {
-        "properties": {
-          "snapshot_id": {
-            "type": "integer",
-            "maximum": 9.223372036854776e+18,
-            "exclusiveMinimum": 0.0,
-            "title": "Snapshot Id"
-          },
-          "values": {
-            "items": {
-              "$ref": "#/components/schemas/CreateExtractionConcreteValueRequest"
-            },
-            "type": "array",
-            "minItems": 1,
-            "title": "Values"
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "snapshot_id",
-          "values"
-        ],
-        "title": "SetExtractionFieldEvidenceRequest"
       },
       "SourceCheckScheduleResponse": {
         "properties": {
@@ -6741,6 +6786,19 @@
             ],
             "title": "File Id"
           },
+          "page_url": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 2048
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Page Url",
+            "description": "Captured page URL including fragment; defaults to Source.url on registration."
+          },
           "fetched_at": {
             "type": "string",
             "format": "date-time",
@@ -6818,6 +6876,17 @@
             ],
             "title": "File Id"
           },
+          "page_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Page Url"
+          },
           "fetched_at": {
             "type": "string",
             "format": "date-time",
@@ -6878,6 +6947,7 @@
           "id",
           "source_id",
           "file_id",
+          "page_url",
           "fetched_at",
           "mime_type",
           "content_hash",
@@ -7869,6 +7939,19 @@
         "title": "TaskType",
         "description": "What should actually be done."
       },
+      "TextExtraction": {
+        "properties": {
+          "type": {
+            "type": "string",
+            "const": "text",
+            "title": "Type",
+            "default": "text"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "TextExtraction"
+      },
       "TokenClassRequest": {
         "properties": {
           "id": {
@@ -8086,10 +8169,10 @@
             "$ref": "#/components/schemas/DiscoveryMethod",
             "default": "MANUAL"
           },
-          "selector": {
+          "rule": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/SelectorRequest"
+                "$ref": "#/components/schemas/FieldExtractionRuleRequest"
               },
               {
                 "type": "null"

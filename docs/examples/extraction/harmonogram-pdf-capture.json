@@ -89,9 +89,14 @@
       "confidence": 1.0,
       "discovered_by": "MANUAL",
       "confirmed_by_human": true,
-      "selector": {
-        "type": "ANCHOR_RELATIVE",
-        "value": "{\"anchor_text\": \"Numer naboru\", \"relation\": \"SAME_ROW\"}"
+      "rule": {
+        "selector": {
+          "type": "ANCHOR_RELATIVE",
+          "value": "{\"anchor_text\": \"Numer naboru\", \"relation\": \"SAME_ROW\"}"
+        },
+        "extraction": {
+          "type": "text"
+        }
       }
     }
   ]

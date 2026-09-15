@@ -276,6 +276,11 @@ class SourceObjectFieldTrackingResponse(ResponseModel):
 
 class SourceSnapshotCreate(RequestModel):
     file_id: Identifier | None = None
+    page_url: str | None = Field(
+        default=None,
+        max_length=2048,
+        description="Captured page URL including fragment; defaults to Source.url on registration.",
+    )
     fetched_at: datetime = Field(default_factory=utc_now)
     mime_type: str | None = None
     content_hash: str | None = Field(default=None, pattern=r"^[a-fA-F0-9]{64}$")
@@ -286,6 +291,14 @@ class SourceSnapshotCreate(RequestModel):
     def aware_timestamp(self):
         if self.fetched_at.tzinfo is None:
             raise ValueError("fetched_at must include a timezone")
+        if self.page_url is not None:
+            parsed = AnyHttpUrl(self.page_url)
+            if parsed.username is not None or parsed.password is not None:
+                raise ValueError("Snapshot URLs must not contain credentials")
+            if self.page_url != self.page_url.strip():
+                raise ValueError("Snapshot URLs must not contain surrounding whitespace")
+            # Validate without SourceURL canonicalization: fragments/escaping
+            # carry browser pageUrl semantics and must survive registration.
         return self
 
 
@@ -293,6 +306,7 @@ class SourceSnapshotResponse(ResponseModel):
     id: int
     source_id: int
     file_id: int | None
+    page_url: str | None
     fetched_at: datetime
     mime_type: str | None
     content_hash: str | None
