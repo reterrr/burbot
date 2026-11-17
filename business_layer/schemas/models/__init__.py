@@ -1,7 +1,6 @@
 from .entities import (
     BusinessEntity,
     BusinessEntityField,
-    BusinessEntityRelation,
     BusinessModel,
     BusinessEntityFieldVersion,
     BusinessEntityRelationVersion,
@@ -12,13 +11,12 @@ from .entities import (
 from .data import (
     BusinessObject,
     BusinessObjectField,
-    BusinessObjectFieldValue
+    BusinessObjectFieldValue,
 )
 
 __all__ = [
     "BusinessEntity",
     "BusinessEntityField",
-    "BusinessEntityRelation",
     "BusinessObjectField",
     "BusinessObjectFieldValue",
     "BusinessModel",
@@ -28,3 +26,7 @@ __all__ = [
     "BusinessEntityVersion",
     "BusinessModelRevision",
 ]
+
+from .definition_code import BusinessDefinitionCodeVersion
+
+__all__.append("BusinessDefinitionCodeVersion")

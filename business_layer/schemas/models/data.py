@@ -70,6 +70,10 @@ class BusinessObject(SQLModel, table=True):
         ),
     )
 
+    archived_at: datetime | None = Field(
+        default=None, sa_column=Column(DateTime(timezone=True), nullable=True),
+    )
+
     business_entity_id: int = Field(
         sa_column=Column(
             BigInteger,
@@ -148,6 +152,17 @@ class BusinessObjectField(SQLModel, table=True):
             ForeignKey("business_entity_fields.id"),
             nullable=False,
         ),
+    )
+    effective_value_id: int | None = Field(
+        sa_column=Column(
+            BigInteger,
+            ForeignKey(
+                "business_object_field_values.id", ondelete="RESTRICT",
+                use_alter=True, name="fk_business_object_fields_effective_value",
+            ),
+            nullable=True,
+            default=None
+        )
     )
 
     created_at: datetime = Field(
