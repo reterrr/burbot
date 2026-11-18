@@ -47,6 +47,9 @@ def current(model, at):
 class DataService:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
+        from business_layer.services.collections import CollectionsService
+
+        self.collections = CollectionsService(session, self)
 
     async def _lock_entity(self, entity_id: int):
         entity = await self._session.get(BusinessEntity, entity_id)
@@ -169,8 +172,51 @@ class DataService:
             slots = await self._sync_slots(obj, fields)
             return CreateObjectResponse(object_id=obj.id, object_fields=slots)
 
+    async def _validate_link(self, value, definition, field_id, at):
+        """Shared scalar/collection reference and Source integrity policy."""
+        if value is None:
+            return
+        if definition["type"] == "reference":
+            target_entity = definition.get("reference_entity_id")
+            if target_entity is None:
+                relation = await self._session.scalar(
+                    select(BusinessEntityRelationVersion).where(
+                        BusinessEntityRelationVersion.from_field_id == field_id,
+                        BusinessEntityRelationVersion.status == BusinessDefinitionStatus.ACTIVE,
+                        *current(BusinessEntityRelationVersion, at),
+                    )
+                )
+                target_entity = relation.to_entity_id if relation else None
+            target = await self._session.get(BusinessObject, value, populate_existing=True)
+            if target is None or target.business_entity_id != target_entity:
+                raise HTTPException(422, "Invalid reference target")
+            if target.archived_at is not None:
+                raise HTTPException(422, "Reference target is archived")
+        if definition["type"] == "source":
+            from sources.schemas.models import Source
+
+            source = await self._session.scalar(
+                select(Source)
+                .where(Source.id == value)
+                .with_for_update(read=True, key_share=True)
+                .execution_options(populate_existing=True)
+            )
+            if source is None:
+                raise HTTPException(422, "Source does not exist")
+
     async def _write_values(
-        self, obj, slots, fields, values, effective_at, now, *, allow_system=False
+        self,
+        obj,
+        slots,
+        fields,
+        values,
+        effective_at,
+        now,
+        *,
+        allow_system=False,
+        expected_collection_revisions=None,
+        require_collection_revision=False,
+        expected_value_ids=None,
     ):
         for field_id, value in values.items():
             version = fields.get(field_id)
@@ -183,29 +229,28 @@ class DataService:
                 validate_value(value, definition)
             except (ValueError, TypeError, OverflowError) as error:
                 raise HTTPException(422, f"{version.key}: {error}") from error
-            if definition["type"] == "reference" and value is not None:
-                relation = await self._session.scalar(
-                    select(BusinessEntityRelationVersion).where(
-                        BusinessEntityRelationVersion.from_field_id == field_id,
-                        BusinessEntityRelationVersion.status == BusinessDefinitionStatus.ACTIVE,
-                        *current(BusinessEntityRelationVersion, now),
+            if definition["type"] == "list":
+                try:
+                    accepted = await self.collections.set_field_value(
+                        slots[field_id],
+                        value,
+                        effective_at=effective_at,
+                        recorded_at=now,
+                        require_revision=require_collection_revision,
+                        has_value_precondition=slots[field_id] in (expected_value_ids or {}),
+                        expected_revision=(expected_collection_revisions or {}).get(
+                            slots[field_id]
+                        ),
                     )
-                )
-                target = await self._session.get(BusinessObject, value)
-                if (
-                    relation is None
-                    or target is None
-                    or target.business_entity_id != relation.to_entity_id
-                ):
-                    raise HTTPException(422, f"{version.key}: invalid reference target")
-                if target.archived_at is not None:
-                    raise HTTPException(422, f"{version.key}: reference target is archived")
-            if definition["type"] == "source" and value is not None:
-                # Verify identity without importing acquisition's application service.
-                from sources.schemas.models import Source
-
-                if await self._session.get(Source, value) is None:
-                    raise HTTPException(422, f"{version.key}: source does not exist")
+                    await self._session.execute(
+                        update(BusinessObjectField)
+                        .where(BusinessObjectField.id == slots[field_id])
+                        .values(effective_value_id=accepted.id)
+                    )
+                except ValueError as error:
+                    raise HTTPException(422, str(error)) from error
+                continue
+            await self._validate_link(value, definition, field_id, now)
             if definition.get("unique") and value is not None:
                 conflict = await self._session.scalar(
                     select(BusinessObjectFieldValue.id)
@@ -255,6 +300,7 @@ class DataService:
         *,
         effective_at: datetime | None = None,
         expected_value_ids: dict[int, int | None] | None = None,
+        expected_collection_revisions: dict[int, int] | None = None,
     ):
         try:
             effective_at = aware(effective_at) if effective_at is not None else None
@@ -292,7 +338,26 @@ class DataService:
                     if current_values.get(slot_id) != expected:
                         raise HTTPException(409, f"Stale value for object field {slot_id}")
             values = {reverse[slot_id]: value for slot_id, value in dict_values.items()}
-            await self._write_values(obj, slots, fields, values, effective_at or now, now)
+            if set(expected_collection_revisions or {}) - set(dict_values):
+                raise HTTPException(422, "Collection revisions must refer to assigned slots")
+            for slot_id, revision in (expected_collection_revisions or {}).items():
+                if (
+                    fields[reverse[slot_id]].definition_json["type"] != "list"
+                    or type(revision) is not int
+                    or revision < 0
+                ):
+                    raise HTTPException(422, "Invalid collection revision precondition")
+            await self._write_values(
+                obj,
+                slots,
+                fields,
+                values,
+                effective_at or now,
+                now,
+                require_collection_revision=True,
+                expected_value_ids=expected_value_ids,
+                expected_collection_revisions=expected_collection_revisions,
+            )
         return await self.get_object(object_id)
 
     async def archive_object(self, object_id: int):
@@ -336,8 +401,10 @@ class DataService:
     async def _read_objects(self, objects, *, at=None, known_at=None):
         now = datetime.now(UTC)
         try:
-            at = aware(at) if at is not None else now
-            known_at = aware(known_at) if known_at is not None else now
+            selected_at = aware(at) if at is not None else None
+            selected_known_at = aware(known_at) if known_at is not None else None
+            at = selected_at if selected_at is not None else now
+            known_at = selected_known_at if selected_known_at is not None else now
         except ValueError as error:
             raise HTTPException(422, str(error)) from error
         ids = [obj.id for obj in objects]
@@ -363,14 +430,31 @@ class DataService:
                 )
             )
         ).all()
+        collection_ids = {
+            version.collection_id
+            for _, version in rows
+            if version is not None and version.collection_id is not None
+        }
+        collections = await self.collections.materialize_fields(
+            collection_ids, at=selected_at, known_at=selected_known_at
+        )
         fields = {object_id: [] for object_id in ids}
         for slot, version in rows:
+            collection = collections.get(version.collection_id) if version else None
             fields[slot.business_object_id].append(
                 BusinessObjectFieldRead(
                     object_field_id=slot.id,
                     business_entity_field_id=slot.business_entity_field_id,
                     value_id=version.id if version else None,
-                    value=version.value_json if version else None,
+                    value=(
+                        collection["value"]
+                        if collection is not None
+                        else version.value_json
+                        if version
+                        else None
+                    ),
+                    collection_id=version.collection_id if version else None,
+                    collection_revision=collection["revision"] if collection is not None else None,
                     valid_from=version.valid_from if version else None,
                 )
             )
@@ -440,7 +524,21 @@ class DataService:
             BusinessObjectFieldValueRead(
                 id=row.id,
                 business_object_field_id=row.business_object_field_id,
-                value=row.value_json,
+                value=(
+                    [
+                        item["value"]
+                        for item in (
+                            await self.collections.get_collection(
+                                row.collection_id,
+                                at=at or row.valid_from,
+                                known_at=known_at or row.transaction_from,
+                            )
+                        )["items"]
+                    ]
+                    if row.collection_id is not None
+                    else row.value_json
+                ),
+                collection_id=row.collection_id,
                 valid_from=row.valid_from,
                 valid_to=row.valid_to,
                 transaction_from=row.transaction_from,
@@ -506,18 +604,19 @@ class DataService:
                     if key not in fields:
                         raise HTTPException(409, f"Seed field '{key}' has no active definition")
                     field_id, version = fields[key]
-                    if version.definition_json["type"] == "reference" and value is not None:
-                        if (
-                            not isinstance(value, dict)
-                            or set(value) != {"$ref"}
-                            or not isinstance(value["$ref"], str)
-                        ):
-                            raise HTTPException(
-                                422, f"Seed field '{key}' requires a named reference"
-                            )
-                        value = result.objects.get(value["$ref"])
-                        if value is None:
-                            raise HTTPException(422, f"Unresolved seed reference for '{key}'")
+                    kind = version.definition_json["type"]
+                    is_reference = kind == "reference" or (
+                        kind == "list" and version.definition_json["item"]["type"] == "reference"
+                    )
+                    if is_reference and value is not None:
+                        references = value if kind == "list" else [value]
+                        resolved = []
+                        for reference in references:
+                            identity = result.objects.get(reference["$ref"])
+                            if identity is None:
+                                raise HTTPException(422, f"Unresolved seed reference for '{key}'")
+                            resolved.append(identity)
+                        value = resolved if kind == "list" else resolved[0]
                     supplied[field_id] = value
                 obj = await self.create_object(entity_id, supplied)
                 result.created.append(name)

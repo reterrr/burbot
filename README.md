@@ -1,5 +1,13 @@
 # Burbot
 
+## Business Collections
+
+The business DSL supports `List(T)` through universal, ordered, bitemporal
+collections. Scalar/enum values, BusinessObject references, and Source references
+share the same container and item storage. See [Collections](docs/collections.md)
+for declarations, canonical-value semantics, guarded APIs, migrations, and real
+PostgreSQL verification commands.
+
 ## Sources / Acquisition — Layer 2
 
 The root API serves Layer 2 at `/sources`, using the same database as the business

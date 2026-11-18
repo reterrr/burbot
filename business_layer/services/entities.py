@@ -22,6 +22,8 @@ from business_layer.schemas.models import (
     BusinessEntityVersion,
     BusinessModel,
     BusinessModelRevision,
+    BusinessObjectField,
+    BusinessObjectFieldValue,
 )
 from business_layer.services.schema_language import Sema
 from business_layer.services.transactions import transaction
@@ -39,7 +41,7 @@ SCHEMA_METADATA_KEY = "schemas"
 SCHEMA_HASH_METADATA_KEY = "schema_hash"
 SCHEMA_HASH_VERSION_METADATA_KEY = "schema_hash_version"
 
-SCHEMA_HASH_VERSION = 3
+SCHEMA_HASH_VERSION = 4
 
 SYSTEM_ID_FIELD = "id"
 
@@ -317,6 +319,8 @@ class EntitiesService:
                     changes=[],
                 )
 
+            await self._validate_collection_evolution(model_id, current_schema, validated)
+
             revision_metadata = self._revision_metadata(
                 metadata_json=metadata_json,
                 schema=validated,
@@ -472,6 +476,9 @@ class EntitiesService:
                     key=lambda value: value.persistent_key,
                 )
             ]
+            for field in entity_data["fields"]:
+                if field.get("item"):
+                    field["item"].pop("location", None)
 
             entities.append(entity_data)
 
@@ -810,13 +817,16 @@ class EntitiesService:
         is primarily a relation change.
         """
 
-        return field.model_dump(
+        result = field.model_dump(
             mode="json",
             exclude={
                 "location",
                 "reference",
             },
         )
+        if result.get("item"):
+            result["item"].pop("location", None)
+        return result
 
     # ========================================================
     # Semantic relations
@@ -1132,6 +1142,22 @@ class EntitiesService:
             source_entity_id = self._require_id(source_state.identity)
 
             for field in source_entity.fields:
+                if field.type == Sema.Type.LIST and field.item.type == Sema.Type.REFERENCE:
+                    target = entities_by_name[field.item.reference]
+                    target_id = self._require_id(entities[target.tablename].identity)
+                    source_id = self._require_id(source_state.fields[field.name])
+                    version = await self._session.scalar(
+                        select(BusinessEntityFieldVersion).where(
+                            BusinessEntityFieldVersion.business_entity_field_id == source_id,
+                            BusinessEntityFieldVersion.business_model_revision_id == revision_id,
+                        )
+                    )
+                    definition = dict(version.definition_json)
+                    definition["item"] = {**definition["item"], "reference_entity_id": target_id}
+                    definition["item"].pop("reference", None)
+                    version.definition_json = definition
+                    await self._session.flush()
+                    continue
                 if field.type != Sema.Type.REFERENCE:
                     continue
 
@@ -1236,17 +1262,24 @@ class EntitiesService:
     # ========================================================
 
     async def _get_or_create_field_identity(
-        self, *, entity_id: int, physical_name: str, persistent_key: str,
+        self,
+        *,
+        entity_id: int,
+        physical_name: str,
+        persistent_key: str,
     ) -> BusinessEntityField:
-        identity = await self._session.scalar(select(BusinessEntityField).where(
-            BusinessEntityField.business_entity_id == entity_id,
-            BusinessEntityField.persistent_key == persistent_key,
-        ))
+        identity = await self._session.scalar(
+            select(BusinessEntityField).where(
+                BusinessEntityField.business_entity_id == entity_id,
+                BusinessEntityField.persistent_key == persistent_key,
+            )
+        )
         if identity is not None:
             identity.physical_name = physical_name
             return identity
         identity = BusinessEntityField(
-            business_entity_id=entity_id, physical_name=physical_name,
+            business_entity_id=entity_id,
+            physical_name=physical_name,
             persistent_key=persistent_key,
         )
         self._session.add(identity)
@@ -1407,6 +1440,8 @@ class EntitiesService:
             },
             exclude_none=True,
         )
+        if definition.get("item"):
+            definition["item"].pop("location", None)
 
         return {
             "key": field.name,
@@ -1418,6 +1453,92 @@ class EntitiesService:
     # ========================================================
     # Diff endpoint
     # ========================================================
+
+    async def _validate_collection_evolution(self, model_id, previous, desired):
+        """Block incompatible carrier changes and validate current collection contents."""
+        from fastapi import HTTPException
+
+        from business_layer.services.data import DataService
+        from business_layer.services.validation import validate_value
+
+        old_entities = {entity.tablename: entity for entity in previous.entities}
+        old_targets = {entity.name: entity.tablename for entity in previous.entities}
+        new_targets = {entity.name: entity.tablename for entity in desired.entities}
+        data = DataService(self._session)
+        for entity in desired.entities:
+            old = old_entities.get(entity.tablename)
+            if old is None:
+                continue
+            old_fields = {field.persistent_key: field for field in old.fields}
+            for field in entity.fields:
+                before = old_fields.get(field.persistent_key)
+                if before is None or Sema.Type.LIST not in (before.type, field.type):
+                    continue
+                field_id = await self._session.scalar(
+                    select(BusinessEntityField.id)
+                    .join(
+                        BusinessEntity, BusinessEntity.id == BusinessEntityField.business_entity_id
+                    )
+                    .where(
+                        BusinessEntity.business_model_id == model_id,
+                        BusinessEntity.table_name == entity.tablename,
+                        BusinessEntityField.persistent_key == field.persistent_key,
+                    )
+                )
+                if field_id is None:
+                    continue
+                history = await self._session.scalar(
+                    select(BusinessObjectFieldValue.id)
+                    .join(
+                        BusinessObjectField,
+                        BusinessObjectField.id == BusinessObjectFieldValue.business_object_field_id,
+                    )
+                    .where(BusinessObjectField.business_entity_field_id == field_id)
+                    .limit(1)
+                )
+                incompatible = before.type != field.type
+                if not incompatible:
+                    incompatible = before.item.type != field.item.type
+                    if before.item.type == field.item.type == Sema.Type.REFERENCE:
+                        incompatible = (
+                            old_targets[before.item.reference] != new_targets[field.item.reference]
+                        )
+                if history is not None and incompatible:
+                    raise HTTPException(
+                        409, "Incompatible collection type change requires an explicit migration"
+                    )
+                if field.type != Sema.Type.LIST:
+                    continue
+                values = (
+                    await self._session.scalars(
+                        select(BusinessObjectFieldValue)
+                        .join(
+                            BusinessObjectField,
+                            BusinessObjectField.id
+                            == BusinessObjectFieldValue.business_object_field_id,
+                        )
+                        .where(
+                            BusinessObjectField.business_entity_field_id == field_id,
+                            BusinessObjectFieldValue.transaction_to.is_(None),
+                            BusinessObjectFieldValue.valid_to.is_(None),
+                        )
+                    )
+                ).all()
+                for value in values:
+                    contents = value.value_json
+                    if value.collection_id is not None:
+                        contents = [
+                            item["value"]
+                            for item in (
+                                await data.collections.get_collection(value.collection_id)
+                            )["items"]
+                        ]
+                    try:
+                        validate_value(contents, field.model_dump(mode="json"))
+                    except (ValueError, TypeError, OverflowError) as error:
+                        raise HTTPException(
+                            409, f"Existing collection violates the new definition: {error}"
+                        ) from error
 
     async def find_changes(
         self,

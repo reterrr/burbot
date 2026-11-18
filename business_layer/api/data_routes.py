@@ -80,6 +80,7 @@ async def assign_object_field_values(
         payload.field_values,
         effective_at=payload.effective_at,
         expected_value_ids=payload.expected_value_ids,
+        expected_collection_revisions=payload.expected_collection_revisions,
     )
 
 

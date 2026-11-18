@@ -53,10 +53,11 @@ class Sema:
         REFERENCE = "reference"
         ENUM = "enum"
         SOURCE = "source"
+        LIST = "list"
 
     class SemaException(ValueError):
         def __init__(
-                self, description: str, location: SourceLocation, *, code: str = "SEMANTIC_ERROR"
+            self, description: str, location: SourceLocation, *, code: str = "SEMANTIC_ERROR"
         ):
             self.description, self.location, self.code = description, location, code
             super().__init__(f"{description} at {location.line}:{location.column}")
@@ -82,11 +83,9 @@ class Sema:
         members: list[Sema.EnumMember]
         location: SourceLocation
 
-    class Field(LanguageModel):
-        name: str
-        persistent_key: Annotated[str, StringConstraints(min_length=1, max_length=150)]
+    class ValueType(LanguageModel):
         type: Sema.Type
-        location: SourceLocation
+        location: SourceLocation | None = None
         nullable: bool = Field(default=True, strict=True)
         unique: bool = Field(default=False, strict=True)
         index: bool = Field(default=False, strict=True)
@@ -105,6 +104,15 @@ class Sema:
         reference: str | None = None
         enum_type: str | None = None
         enum_values: list[str | int] | None = None
+        item: Sema.ValueType | None = None
+        min_items: int | None = Field(default=None, strict=True, ge=0)
+        max_items: int | None = Field(default=None, strict=True, ge=0)
+        unique_items: bool = Field(default=False, strict=True)
+
+    class Field(ValueType):
+        name: str
+        persistent_key: Annotated[str, StringConstraints(min_length=1, max_length=150)]
+        location: SourceLocation
 
         @model_validator(mode="before")
         @classmethod
@@ -140,6 +148,7 @@ class Sema:
         "JSON",
         "Reference",
         "Source",
+        "List",
     }
     RESERVED_FIELD_NAMES = {"id"}
     TABLE_NAME_PATTERN = re.compile(r"^e_[a-z2-7]{52}$")
@@ -149,10 +158,10 @@ class Sema:
 
     def identifier(self, name, item):
         if (
-                not name.isidentifier()
-                or keyword.iskeyword(name)
-                or name.startswith("_")
-                or len(name) > 150
+            not name.isidentifier()
+            or keyword.iskeyword(name)
+            or name.startswith("_")
+            or len(name) > 150
         ):
             self.error(f"Invalid identifier '{name}'", item)
 
@@ -176,7 +185,7 @@ class Sema:
                     self.error(f"Duplicate enum member '{member.name}'", member)
                 if type(member.value) not in (str, int):
                     self.error("Enum values must be strings or integers", member)
-                if type(member.value) is int and abs(member.value) > 2 ** 53 - 1:
+                if type(member.value) is int and abs(member.value) > 2**53 - 1:
                     self.error("Enum integer exceeds the portable safe-integer range", member)
                 if member.value in values:
                     self.error("Enum values must be unique", member)
@@ -203,10 +212,14 @@ class Sema:
                 if field.name in names:
                     self.error(f"Duplicate field '{field.name}'", field)
                 names.add(field.name)
-                if (not field.persistent_key or field.persistent_key != field.persistent_key.strip()
-                        or field.persistent_key == "id"):
+                if (
+                    not field.persistent_key
+                    or field.persistent_key != field.persistent_key.strip()
+                    or field.persistent_key == "id"
+                ):
                     self.error(
-                        "Persistent key must be nonblank, trimmed, and not reserved 'id'", field,
+                        "Persistent key must be nonblank, trimmed, and not reserved 'id'",
+                        field,
                     )
                 if field.persistent_key in persistent_keys:
                     self.error(f"Duplicate persistent key '{field.persistent_key}'", field)
@@ -219,6 +232,45 @@ class Sema:
 
     def _field(self, field, entities, enums):
         kind = field.type
+        if kind == self.Type.LIST:
+            if field.item is None:
+                self.error("List requires exactly one item type", field)
+            if field.item.type == self.Type.LIST:
+                raise self.SemaException(
+                    "Nested collections are not supported",
+                    field.location,
+                    code="UNSUPPORTED_NESTED_COLLECTION",
+                )
+            if field.unique or field.primary_key:
+                self.error("List uses unique_items; unique/primary_key are not supported", field)
+            if (
+                field.min_items is not None
+                and field.max_items is not None
+                and field.min_items > field.max_items
+            ):
+                self.error("min_items cannot exceed max_items", field)
+            if (
+                field.item.has_default
+                or field.item.default is not None
+                or field.item.unique
+                or field.item.primary_key
+                or field.item.index
+            ):
+                self.error(
+                    "Item types accept value constraints, not field defaults or indexes", field
+                )
+            if "nullable" in field.item.model_fields_set and field.item.nullable:
+                self.error("Null collection items are not supported", field)
+            field.item.nullable = False
+            field.item.location = field.item.location or field.location
+            self._field(field.item, entities, enums)
+        elif (
+            field.item is not None
+            or field.min_items is not None
+            or field.max_items is not None
+            or field.unique_items
+        ):
+            self.error("Collection options require List", field)
         if field.primary_key and field.nullable:
             self.error("Primary key cannot be nullable", field)
         if kind == self.Type.REFERENCE:
@@ -235,7 +287,7 @@ class Sema:
             self.error("Only enum fields may specify enum options", field)
         string_options = (field.min_length, field.max_length, field.pattern)
         if kind not in (self.Type.STRING, self.Type.TEXT) and any(
-                x is not None for x in string_options
+            x is not None for x in string_options
         ):
             self.error("String constraints require String or Text", field)
         if field.min_length is not None and field.min_length < 0:
@@ -243,9 +295,9 @@ class Sema:
         if field.max_length is not None and field.max_length <= 0:
             self.error("max_length must be positive", field)
         if (
-                field.min_length is not None
-                and field.max_length is not None
-                and field.min_length > field.max_length
+            field.min_length is not None
+            and field.max_length is not None
+            and field.min_length > field.max_length
         ):
             self.error("min_length cannot exceed max_length", field)
         if field.pattern is not None:
@@ -258,7 +310,7 @@ class Sema:
         if kind not in numeric and any(x is not None for x in bounds):
             self.error("Numeric constraints require a numeric type", field)
         if any(
-                type(x) not in (int, float) or not math.isfinite(x) for x in bounds if x is not None
+            type(x) not in (int, float) or not math.isfinite(x) for x in bounds if x is not None
         ):
             self.error("Numeric bounds must be finite numbers", field)
         if field.gt is not None and field.ge is not None:
@@ -277,9 +329,9 @@ class Sema:
         if field.scale is not None and field.scale < 0:
             self.error("scale must be non-negative", field)
         if (
-                field.precision is not None
-                and field.scale is not None
-                and field.scale > field.precision
+            field.precision is not None
+            and field.scale is not None
+            and field.scale > field.precision
         ):
             self.error("scale cannot exceed precision", field)
         if kind == self.Type.SOURCE and (field.primary_key or field.default is not None):
@@ -297,7 +349,7 @@ class Sema:
 
 
 # Resolve nested forward references once the enclosing namespace exists.
-for _model in (Sema.EnumDefinition, Sema.Field, Sema.Entity, Sema.Schema):
+for _model in (Sema.EnumDefinition, Sema.ValueType, Sema.Field, Sema.Entity, Sema.Schema):
     _model.model_rebuild()
 
 

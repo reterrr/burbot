@@ -7,12 +7,13 @@ from sqlalchemy import (
     Column,
     DateTime,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     UniqueConstraint,
     func,
     literal_column,
 )
-from sqlalchemy.dialects.postgresql import ExcludeConstraint, JSONB
+from sqlalchemy.dialects.postgresql import JSONB, ExcludeConstraint
 from sqlmodel import Field, SQLModel
 
 
@@ -71,7 +72,8 @@ class BusinessObject(SQLModel, table=True):
     )
 
     archived_at: datetime | None = Field(
-        default=None, sa_column=Column(DateTime(timezone=True), nullable=True),
+        default=None,
+        sa_column=Column(DateTime(timezone=True), nullable=True),
     )
 
     business_entity_id: int = Field(
@@ -157,11 +159,13 @@ class BusinessObjectField(SQLModel, table=True):
         sa_column=Column(
             BigInteger,
             ForeignKey(
-                "business_object_field_values.id", ondelete="RESTRICT",
-                use_alter=True, name="fk_business_object_fields_effective_value",
+                "business_object_field_values.id",
+                ondelete="RESTRICT",
+                use_alter=True,
+                name="fk_business_object_fields_effective_value",
             ),
             nullable=True,
-            default=None
+            default=None,
         )
     )
 
@@ -203,6 +207,17 @@ class BusinessObjectFieldValue(SQLModel, table=True):
 
     __table_args__ = (
         CheckConstraint(
+            "(collection_id IS NULL AND value_json IS NOT NULL) OR "
+            "(collection_id IS NOT NULL AND value_json IS NULL)",
+            name="business_object_field_values_value_channel",
+        ),
+        ForeignKeyConstraint(
+            ["business_object_field_id", "collection_id"],
+            ["business_collections.root_field_id", "business_collections.id"],
+            ondelete="RESTRICT",
+            name="fk_business_values_collection_owner",
+        ),
+        CheckConstraint(
             "valid_to IS NULL OR valid_to > valid_from",
             name="business_object_field_values_valid_range",
         ),
@@ -213,7 +228,6 @@ class BusinessObjectFieldValue(SQLModel, table=True):
             """,
             name="business_object_field_values_transaction_range",
         ),
-
         # Prevent two ambiguous canonical values for the same
         # BusinessObjectField at the same valid-time AND
         # transaction-time point.
@@ -228,25 +242,16 @@ class BusinessObjectFieldValue(SQLModel, table=True):
                 "=",
             ),
             (
-                literal_column(
-                    "tstzrange(valid_from, valid_to, '[)')"
-                ),
+                literal_column("tstzrange(valid_from, valid_to, '[)')"),
                 "&&",
             ),
             (
-                literal_column(
-                    "tstzrange("
-                    "transaction_from, "
-                    "transaction_to, "
-                    "'[)'"
-                    ")"
-                ),
+                literal_column("tstzrange(transaction_from, transaction_to, '[)')"),
                 "&&",
             ),
             using="gist",
             name="ex_business_object_field_values_bitemporal_overlap",
         ),
-
         Index(
             "ix_business_object_field_values_field",
             "business_object_field_id",
@@ -308,7 +313,14 @@ class BusinessObjectFieldValue(SQLModel, table=True):
     value_json: Any = Field(
         sa_column=Column(
             JSONB,
-            nullable=False,
+            nullable=True,
+        ),
+    )
+
+    collection_id: int | None = Field(
+        default=None,
+        sa_column=Column(
+            BigInteger, ForeignKey("business_collections.id", ondelete="RESTRICT"), index=True
         ),
     )
 
