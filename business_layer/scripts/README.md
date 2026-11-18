@@ -1,5 +1,11 @@
 # Persistent service walkthrough
 
+Collections have an independent demo namespace: run
+`python -m business_layer.scripts.step_24_collections --model-key my_walkthrough`.
+It persists three ordered references, reorders/removes/appends them, reads their
+earlier snapshot, and renames the List field with its persistent key retained.
+See [Collections](../../docs/collections.md) for the full DSL and API contract.
+
 These scripts call BusinessService, EntitiesService, and DataService directly.
 They connect to your Docker PostgreSQL using `HOST_DATABASE_URL` in the project's
 `.env`. No API, pytest, mock database, automatic cleanup, or test rollback is used.

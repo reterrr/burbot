@@ -21,7 +21,10 @@ if config.config_file_name is not None:
 # Import all SQLModel table classes so they register themselves
 # in SQLModel.metadata.
 dotenv.load_dotenv()
-load_models()
+# Applying explicit migrations must not depend on optional application modules.
+# Only autogeneration needs the complete current ORM model graph.
+if getattr(config.cmd_opts, "autogenerate", False) or config.attributes.get("load_metadata"):
+    load_models()
 
 target_metadata = SQLModel.metadata
 
@@ -51,6 +54,11 @@ def do_run_migrations(connection: Connection) -> None:
         compare_type=True,
         version_table_schema=config.attributes.get("version_table_schema"),
     )
+    # Programmatic alembic.check/revision also supplies this public context option.
+    # Loading into the same metadata object after configure is safe; never run
+    # autogeneration against an accidentally empty model graph.
+    if context.get_context().opts.get("revision_context") is not None:
+        load_models()
 
     with context.begin_transaction():
         context.run_migrations()

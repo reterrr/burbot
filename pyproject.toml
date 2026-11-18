@@ -33,6 +33,7 @@ packages = ["schemas", "business_layer", "shared", "sources", "extraction", "tas
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+asyncio_default_fixture_loop_scope = "function"
 
 [tool.ruff]
 line-length = 100

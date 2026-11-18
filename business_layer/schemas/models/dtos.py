@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import Annotated, Any
 
 from pydantic import BaseModel, Field
 
@@ -22,6 +22,7 @@ class AssignFieldValuesRequest(BaseModel):
     field_values: dict[int, Any] = Field(min_length=1)
     effective_at: datetime | None = None
     expected_value_ids: dict[int, int | None] | None = None
+    expected_collection_revisions: dict[int, Annotated[int, Field(strict=True, ge=0)]] | None = None
 
 
 class BusinessObjectFieldRead(BaseModel):
@@ -29,6 +30,8 @@ class BusinessObjectFieldRead(BaseModel):
     business_entity_field_id: int
 
     value_id: int | None = None
+    collection_id: int | None = None
+    collection_revision: int | None = None
     value: Any | None = None
 
     valid_from: datetime | None = None
@@ -51,6 +54,7 @@ class BusinessObjectFieldValueRead(BaseModel):
     id: int
     business_object_field_id: int
     value: Any
+    collection_id: int | None = None
 
     valid_from: datetime
     valid_to: datetime | None

@@ -310,6 +310,7 @@ def sema_http_exception(
     return HTTPException(
         status_code=(status.HTTP_422_UNPROCESSABLE_ENTITY),
         detail={
+            "code": exception.code,
             "message": exception.description,
             "location": {
                 "line": exception.location.line,

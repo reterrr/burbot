@@ -8,13 +8,66 @@ from decimal import Decimal, InvalidOperation
 from uuid import UUID
 
 
+def value_key(value, definition):
+    """Logical equality for collection uniqueness, without bool/int coercion."""
+    kind = definition["type"]
+    if kind in ("float", "decimal"):
+        number = Decimal(str(value))
+        return "0" if number == 0 else str(number.normalize())
+    if kind == "json":
+
+        def canonical(item):
+            if item is None:
+                return ["null"]
+            if type(item) is bool:
+                return ["boolean", item]
+            if type(item) in (int, float):
+                return ["number", value_key(item, {"type": "decimal"})]
+            if isinstance(item, str):
+                return ["string", item]
+            if isinstance(item, list):
+                return ["array", [canonical(child) for child in item]]
+            return ["object", [[key, canonical(child)] for key, child in sorted(item.items())]]
+
+        return json.dumps(canonical(value), allow_nan=False)
+    if kind == "uuid":
+        return UUID(value).hex
+    if kind == "datetime":
+        from datetime import UTC
+
+        return datetime.fromisoformat(value).astimezone(UTC).isoformat()
+    return json.dumps(value, sort_keys=True, allow_nan=False)
+
+
 def validate_value(value, definition: dict):
     if value is None:
         if not definition.get("nullable", True):
             raise ValueError("Field does not allow null")
         return
     kind = definition["type"]
-    if kind in ("string", "text"):
+    if kind == "list":
+        if not isinstance(value, list):
+            raise ValueError("Expected a list")
+        minimum, maximum = definition.get("min_items"), definition.get("max_items")
+        if minimum is not None and len(value) < minimum:
+            raise ValueError("Collection violates min_items")
+        if maximum is not None and len(value) > maximum:
+            raise ValueError("Collection violates max_items")
+        item_type = definition["item"]
+        seen = set()
+        for index, item in enumerate(value):
+            if item is None:
+                raise ValueError("Null collection items are not supported")
+            try:
+                validate_value(item, item_type)
+            except (ValueError, TypeError, OverflowError) as error:
+                raise ValueError(f"Item {index}: {error}") from error
+            if definition.get("unique_items"):
+                key = value_key(item, item_type)
+                if key in seen:
+                    raise ValueError("Collection violates unique_items")
+                seen.add(key)
+    elif kind in ("string", "text"):
         if not isinstance(value, str):
             raise ValueError("Expected a string")
         if definition.get("min_length") is not None and len(value) < definition["min_length"]:

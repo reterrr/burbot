@@ -47,6 +47,9 @@ OPTIONS = {
     "le",
     "precision",
     "scale",
+    "min_items",
+    "max_items",
+    "unique_items",
 }
 
 
@@ -276,7 +279,19 @@ class Parser:
         if not isinstance(expression, ast.Name):
             self.fail("Field types must be built-in, entity, or enum names", node)
         symbol = expression.id
-        if symbol == "Reference":
+        if symbol == "List":
+            if len(args) != 1:
+                self.fail("List requires exactly one item type", node, "SEMANTIC_ERROR")
+            if (
+                isinstance(args[0], ast.Call)
+                and isinstance(args[0].func, ast.Name)
+                and args[0].func.id == "List"
+            ):
+                self.fail(
+                    "Nested collections are not supported", args[0], "UNSUPPORTED_NESTED_COLLECTION"
+                )
+            kind, extra = "list", {"item": self.field("item", args[0], args[0])}
+        elif symbol == "Reference":
             if len(args) != 1:
                 self.fail("Reference requires exactly one target entity", node)
             target = args[0]
@@ -369,21 +384,24 @@ class Parser:
         for option in call.keywords:
             if option.arg is None or option.arg in values:
                 self.fail("Seed fields must be unique named arguments", option)
-            value = option.value
-            if isinstance(value, ast.Name) and value.id not in ("True", "False", "None"):
-                values[option.arg] = {"$ref": value.id}
-            elif (
-                isinstance(value, ast.Attribute)
-                and isinstance(value.value, ast.Name)
-                and value.attr == "id"
-                and value.value.id in self.seed_nodes
-            ):
-                values[option.arg] = {"$ref": value.value.id}
-            else:
-                values[option.arg] = self.literal(value)
+            values[option.arg] = self.seed_value(option.value)
         return SeedObject(
             name=name, entity=call.func.id, values=values, location=self.location(node)
         )
+
+    def seed_value(self, value):
+        if isinstance(value, ast.List):
+            return [self.seed_value(item) for item in value.elts]
+        if isinstance(value, ast.Name) and value.id not in ("True", "False", "None"):
+            return {"$ref": value.id}
+        if (
+            isinstance(value, ast.Attribute)
+            and isinstance(value.value, ast.Name)
+            and value.attr == "id"
+            and value.value.id in self.seed_nodes
+        ):
+            return {"$ref": value.value.id}
+        return self.literal(value)
 
 
 def analyze_program(program: Program) -> Program:
@@ -427,21 +445,32 @@ def analyze_program(program: Program) -> Program:
                 else:
                     continue
             value = seed.values[field.name]
-            if field.type == Sema.Type.REFERENCE and value is not None:
-                target = (
-                    seeds.get(value["$ref"])
-                    if (
-                        isinstance(value, dict)
-                        and set(value) == {"$ref"}
-                        and isinstance(value["$ref"], str)
+            item = field.item if field.type == Sema.Type.LIST else field
+            if item.type == Sema.Type.REFERENCE and value is not None:
+                references = value if field.type == Sema.Type.LIST else [value]
+                if not isinstance(references, list):
+                    raise Sema.SemaException("Expected a list of seed references", seed.location)
+                resolved = []
+                for reference in references:
+                    target = (
+                        seeds.get(reference["$ref"])
+                        if isinstance(reference, dict)
+                        and set(reference) == {"$ref"}
+                        and isinstance(reference["$ref"], str)
+                        else None
                     )
-                    else None
-                )
-                if target is None or target.entity != field.reference:
-                    raise Sema.SemaException(
-                        f"'{field.name}' must reference a seed of {field.reference}", seed.location
-                    )
-                dependencies[seed.name].add(target.name)
+                    if target is None or target.entity != item.reference:
+                        raise Sema.SemaException(
+                            f"'{field.name}' must reference a seed of {item.reference}",
+                            seed.location,
+                        )
+                    dependencies[seed.name].add(target.name)
+                    resolved.append(list(seeds).index(target.name) + 1)
+                if field.type == Sema.Type.LIST:
+                    try:
+                        validate_value(resolved, field.model_dump())
+                    except (ValueError, TypeError, OverflowError) as error:
+                        raise Sema.SemaException(str(error), seed.location) from error
             else:
                 try:
                     validate_value(value, field.model_dump())
