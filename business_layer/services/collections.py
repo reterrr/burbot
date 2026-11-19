@@ -12,6 +12,7 @@ from business_layer.schemas.models import (
     BusinessCollectionItem,
     BusinessCollectionItemVersion,
     BusinessEntityFieldVersion,
+    BusinessObject,
     BusinessObjectField,
     BusinessObjectFieldValue,
 )
@@ -26,6 +27,7 @@ from business_layer.services.value_history import (
 )
 
 ITEM_PAYLOAD = ("position", "value_json", "reference_object_id", "source_id", "present")
+POINTER_PAYLOAD = ("value_json", "collection_id", "validated_against_field_version_id")
 
 
 def covers(row, at):
@@ -284,6 +286,7 @@ class CollectionsService:
         *,
         effective_at,
         recorded_at,
+        field_version,
         expected_revision=None,
         require_revision=False,
         has_value_precondition=False,
@@ -308,7 +311,12 @@ class CollectionsService:
             await self._lock(pointer.collection_id, expected_revision)
         if value is None:
             return await accept_value(
-                self.session, slot_id, None, effective_at=effective_at, recorded_at=recorded_at
+                self.session,
+                slot_id,
+                None,
+                validated_against_field_version_id=field_version.id,
+                effective_at=effective_at,
+                recorded_at=recorded_at,
             )
         if pointer is not None and pointer.collection_id is not None:
             collection, _ = await self._lock(pointer.collection_id, expected_revision)
@@ -321,11 +329,17 @@ class CollectionsService:
             slot_id,
             None,
             collection_id=collection.id,
+            validated_against_field_version_id=field_version.id,
             effective_at=effective_at,
             recorded_at=recorded_at,
         )
         await self._mutate_locked(
-            collection, "replace", values=value, effective_at=effective_at, recorded_at=recorded_at
+            collection,
+            "replace",
+            values=value,
+            field_version=field_version,
+            effective_at=effective_at,
+            recorded_at=recorded_at,
         )
         return version
 
@@ -336,10 +350,11 @@ class CollectionsService:
             slot = await self.session.get(BusinessObjectField, root_field_id)
             if slot is None:
                 raise HTTPException(404, "Business object field not found")
-            await self.data._lock_object(slot.business_object_id)
+            obj = await self.data._lock_object(slot.business_object_id)
             now = datetime.now(UTC)
             at = self._effective(effective_at, now)
-            definition = await self._definition(slot, at, now)
+            fields = await self.data._active_fields(obj.business_entity_id, now)
+            definition = fields.get(slot.business_entity_field_id)
             if (
                 not definition
                 or definition.status != "ACTIVE"
@@ -352,7 +367,11 @@ class CollectionsService:
             if current and current.collection_id is not None:
                 raise HTTPException(409, "Field already has a collection")
             version = await self.set_field_value(
-                slot.id, values if values is not None else [], effective_at=at, recorded_at=now
+                slot.id,
+                values if values is not None else [],
+                field_version=definition,
+                effective_at=at,
+                recorded_at=now,
             )
             slot.effective_value_id = version.id
             collection_id = version.collection_id
@@ -372,11 +391,22 @@ class CollectionsService:
         self, collection_id, operation, *, expected_revision=None, effective_at=None, **arguments
     ):
         async with transaction(self.session):
-            collection, _ = await self._lock(collection_id, expected_revision)
+            collection, slot = await self._lock(collection_id, expected_revision)
             now = datetime.now(UTC)
             at = self._effective(effective_at, now)
+            # The model lock held by _lock serializes this lookup with schema writes.
+            owner = await self.session.get(BusinessObject, slot.business_object_id)
+            fields = await self.data._active_fields(owner.business_entity_id, now)
+            field_version = fields.get(slot.business_entity_field_id)
+            if field_version is None or field_version.definition_json["type"] != "list":
+                raise HTTPException(409, "Field does not have an active List definition")
             await self._mutate_locked(
-                collection, operation, effective_at=at, recorded_at=now, **arguments
+                collection,
+                operation,
+                field_version=field_version,
+                effective_at=at,
+                recorded_at=now,
+                **arguments,
             )
         return await self.get_collection(collection_id, at=at)
 
@@ -387,6 +417,7 @@ class CollectionsService:
         *,
         effective_at,
         recorded_at,
+        field_version,
         item_id=None,
         value=None,
         position=None,
@@ -497,6 +528,7 @@ class CollectionsService:
         if operation == "restore":
             identities.add(item_id)
         timelines = {identity: [] for identity in identities}
+        pointer_timeline = []
         validated_links = set()
         for index, start in enumerate(starts):
             end = starts[index + 1] if index + 1 < len(starts) else None
@@ -534,6 +566,10 @@ class CollectionsService:
                     )
                 try:
                     validate_value([old for _, old in state], definition)
+                    # Backdated writes must also satisfy the active definition
+                    # recorded as their validation provenance, just like scalars.
+                    if definition_row.id != field_version.id:
+                        validate_value([old for _, old in state], field_version.definition_json)
                 except (ValueError, TypeError, OverflowError) as error:
                     raise HTTPException(422, str(error)) from error
                 if definition["item"]["type"] in ("reference", "source"):
@@ -548,6 +584,12 @@ class CollectionsService:
                                 old, definition["item"], slot.business_entity_field_id, start
                             )
                             validated_links.add(link)
+            pointer = next((row for row in pointers if covers(row, start)), None)
+            if pointer is not None:
+                pointer_payload = {key: getattr(pointer, key) for key in POINTER_PAYLOAD}
+                if active_at(start):
+                    pointer_payload["validated_against_field_version_id"] = field_version.id
+                pointer_timeline.append((start, end, pointer_payload))
             if active_at(start):
                 desired = {
                     identity: payload(pos, old, definition)
@@ -579,6 +621,20 @@ class CollectionsService:
             )
         if changed:
             collection.revision += 1
+            await self.session.flush()
+        # Ordinary item edits remain independent of canonical value history.
+        # A new validating schema is a new canonical decision even if the
+        # collection identity or contents are unchanged.
+        if await accept_timeline(
+            self.session,
+            BusinessObjectFieldValue,
+            {"business_object_field_id": slot.id},
+            pointer_timeline,
+            effective_at=effective_at,
+            recorded_at=recorded_at,
+        ):
+            current = await self._pointer(slot.id, recorded_at, recorded_at)
+            slot.effective_value_id = current.id if current else None
             await self.session.flush()
 
     async def append_item(self, collection_id, value, **options):

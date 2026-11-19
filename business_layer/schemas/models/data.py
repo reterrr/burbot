@@ -301,6 +301,7 @@ class BusinessObjectFieldValue(SQLModel, table=True):
             ForeignKey(
                 "business_entity_field_versions.id",
                 ondelete="RESTRICT",
+                name="fk_business_values_validated_field_version",
             ),
             nullable=False,
         ),

@@ -115,7 +115,10 @@ applicable container. A composite FK prevents a field value from selecting a
 collection owned by a different slot. Parent-item ownership is unique and leaves
 room for future nested collections; public nested operations are not implemented.
 
-Changing an item creates item history, not a new canonical field-value version.
+Changing an item under the same validating definition creates only item history.
+After a schema change, the next successful edit also records the current
+`validated_against_field_version_id` on the affected canonical pointer timeline;
+old validation provenance is retained. See [Value validation](field-value-validation.md).
 Unchanged item decisions are reused. Removing an item writes a tombstone;
 restoring it explicitly can reuse the same item ID. Clearing a collection means
 `[]`, not null. A null-to-List transition creates a new container and retains the
@@ -246,6 +249,8 @@ columns cannot represent require an explicit migration before rollback.
 It leaves old scalar JSONB values intact. Collections downgrade is supported
 when there are no collections or List definition histories; otherwise it refuses
 rather than silently deleting data. Old migration files are unchanged.
+`b202_value_field_version` adds required validation-version provenance to canonical
+values and backfills existing decisions from their definition history.
 
 Applying explicit Alembic migrations no longer imports optional application
 models. Autogeneration still imports the full model graph. At the base revision,

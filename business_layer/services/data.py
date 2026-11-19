@@ -236,6 +236,7 @@ class DataService:
                         value,
                         effective_at=effective_at,
                         recorded_at=now,
+                        field_version=version,
                         require_revision=require_collection_revision,
                         has_value_precondition=slots[field_id] in (expected_value_ids or {}),
                         expected_revision=(expected_collection_revisions or {}).get(
@@ -276,10 +277,11 @@ class DataService:
                 if conflict is not None:
                     raise HTTPException(409, f"{version.key}: value must be unique")
             try:
-                version = await accept_value(
+                accepted = await accept_value(
                     self._session,
                     slots[field_id],
                     value,
+                    validated_against_field_version_id=version.id,
                     effective_at=effective_at,
                     recorded_at=now,
                 )
@@ -288,7 +290,7 @@ class DataService:
                     .where(
                         BusinessObjectField.id == slots[field_id],
                     )
-                    .values(effective_value_id=version.id)
+                    .values(effective_value_id=accepted.id)
                 )
             except ValueError as error:
                 raise HTTPException(422, str(error)) from error
@@ -446,6 +448,9 @@ class DataService:
                     object_field_id=slot.id,
                     business_entity_field_id=slot.business_entity_field_id,
                     value_id=version.id if version else None,
+                    validated_against_field_version_id=(
+                        version.validated_against_field_version_id if version else None
+                    ),
                     value=(
                         collection["value"]
                         if collection is not None
@@ -524,6 +529,7 @@ class DataService:
             BusinessObjectFieldValueRead(
                 id=row.id,
                 business_object_field_id=row.business_object_field_id,
+                validated_against_field_version_id=row.validated_against_field_version_id,
                 value=(
                     [
                         item["value"]

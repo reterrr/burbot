@@ -640,6 +640,7 @@ async def test_postgres_channel_owner_position_and_overlap_constraints(domain):
         session.add(
             BusinessObjectFieldValue(
                 business_object_field_id=slot.object_field_id,
+                validated_against_field_version_id=slot.validated_against_field_version_id,
                 collection_id=slot.collection_id,
                 value_json="invalid",
                 valid_from=now - timedelta(days=2),
@@ -655,6 +656,7 @@ async def test_postgres_channel_owner_position_and_overlap_constraints(domain):
         session.add(
             BusinessObjectFieldValue(
                 business_object_field_id=other.object_field_id,
+                validated_against_field_version_id=other.validated_against_field_version_id,
                 collection_id=slot.collection_id,
                 value_json=null(),
                 valid_from=now - timedelta(days=2),
@@ -738,7 +740,7 @@ async def test_migration_refuses_to_drop_collection_history(domain, database):
     async with engine.connect() as connection:
         assert (
             await connection.scalar(text("SELECT version_num FROM alembic_version"))
-            == "b201_collections"
+            == "b202_value_field_version"
         )
 
 
@@ -748,10 +750,16 @@ async def test_upgrade_preserves_existing_scalar_json_and_backfills_keys(databas
     async with engine.begin() as connection:
         for statement in [
             "INSERT INTO business_models(id,key,name) VALUES(10,'legacy','Legacy')",
+            "INSERT INTO business_model_revisions(id,business_model_id) VALUES(11,10)",
             "INSERT INTO business_entities(id,business_model_id,table_name) VALUES(20,10,'legacy')",
             (
                 "INSERT INTO business_entity_fields(id,business_entity_id,physical_name) "
                 "VALUES(30,20,'payload')"
+            ),
+            (
+                "INSERT INTO business_entity_field_versions(business_entity_field_id,revision_id,"
+                "key,label,definition_json,valid_from) "
+                "VALUES(30,11,'payload','Payload','{\"type\":\"json\"}'::jsonb,now())"
             ),
             "INSERT INTO business_objects(id,business_entity_id) VALUES(40,20)",
             (
@@ -892,6 +900,18 @@ async def test_business_api_preconditions_temporal_reads_and_membership(domain, 
             if field["object_field_id"] == slot.object_field_id
         )
         assert result["collection_id"] == collection["id"] and result["value"] == ["canonical"]
+        field_version = next(
+            field.version_id for field in domain.definition.fields if field.key == "tags"
+        )
+        assert result["validated_against_field_version_id"] == field_version
+        field_history = await client.get(
+            f"/api/v1/business/object-fields/{slot.object_field_id}/history"
+        )
+        assert field_history.status_code == 200
+        assert all(
+            row["validated_against_field_version_id"] == field_version
+            for row in field_history.json()
+        )
 
 
 async def test_field_value_precondition_prevents_aba_after_null_and_new_container(domain):

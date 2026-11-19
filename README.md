@@ -8,6 +8,10 @@ share the same container and item storage. See [Collections](docs/collections.md
 for declarations, canonical-value semantics, guarded APIs, migrations, and real
 PostgreSQL verification commands.
 
+Canonical values record the active field definition used for validation in
+`validated_against_field_version_id`. See [Value validation](docs/field-value-validation.md)
+for history semantics, migration/backfill, and service verification.
+
 ## Sources / Acquisition — Layer 2
 
 The root API serves Layer 2 at `/sources`, using the same database as the business
