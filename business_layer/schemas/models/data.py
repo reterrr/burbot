@@ -295,6 +295,17 @@ class BusinessObjectFieldValue(SQLModel, table=True):
         ),
     )
 
+    validated_against_field_version_id: int = Field(
+        sa_column=Column(
+            BigInteger,
+            ForeignKey(
+                "business_entity_field_versions.id",
+                ondelete="RESTRICT",
+            ),
+            nullable=False,
+        ),
+    )
+
     # Intentionally Any.
     #
     # JSONB is only the physical carrier.
