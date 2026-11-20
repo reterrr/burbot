@@ -140,7 +140,9 @@ class DataService:
             slots[field_id] = slot.id
         return slots
 
-    async def create_object(self, entity_id: int, values: dict[int, Any] | None = None):
+    async def create_object(
+        self, entity_id: int, values: dict[int, Any] | None = None, *, apply_defaults: bool = True
+    ):
         """Initial values are keyed by entity-field ID, before object slots exist."""
         async with transaction(self._session):
             await self._lock_entity(entity_id)
@@ -161,7 +163,7 @@ class DataService:
                         raise HTTPException(422, "System fields are read-only")
                     initial[field_id] = obj.id
                 elif field_id not in initial:
-                    if definition.get("has_default") or "default" in definition:
+                    if apply_defaults and (definition.get("has_default") or "default" in definition):
                         initial[field_id] = definition.get("default")
                     elif not definition.get("nullable", True):
                         raise HTTPException(422, f"Required field missing: {version.key}")

@@ -34,7 +34,7 @@ dev = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["schemas", "business_layer", "shared", "sources", "extraction", "tasks", "monitoring"]
+packages = ["schemas", "business_layer", "shared", "sources", "extraction", "tasks", "monitoring", "extension_sync"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

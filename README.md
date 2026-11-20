@@ -62,3 +62,9 @@ include a handwritten Alembic revision or change the database on application sta
 A Prefect 3 scheduler, PostgreSQL queue and Firefox Browser Agent automate
 checks of approved public HTML Sources. See [Source monitoring](docs/monitoring.md)
 for setup, agent enrollment, protocols and verification.
+
+## Firefox workspace identities
+
+The Burbot business schema and workspace identity API connect the Firefox
+extension to Business Layer definitions, objects, selectors and reviewed
+commits. [Schema bootstrap and workspace setup](docs/extension-sync.md)

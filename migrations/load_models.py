@@ -19,6 +19,7 @@ def load_models() -> None:
     _load_sources_models()
     _load_tasks_models()
     _load_extraction_models()
+    from extension_sync import models as _sync_models  # noqa: F401
     from monitoring import models as _monitoring_models  # noqa: F401
 
     # Layer 2 owns the observation pointers but Layer 3 owns the target table.
