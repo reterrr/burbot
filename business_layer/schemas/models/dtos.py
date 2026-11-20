@@ -30,6 +30,7 @@ class BusinessObjectFieldRead(BaseModel):
     business_entity_field_id: int
 
     value_id: int | None = None
+    validated_against_field_version_id: int | None = None
     collection_id: int | None = None
     collection_revision: int | None = None
     value: Any | None = None
@@ -53,6 +54,7 @@ class BusinessObjectRead(BaseModel):
 class BusinessObjectFieldValueRead(BaseModel):
     id: int
     business_object_field_id: int
+    validated_against_field_version_id: int
     value: Any
     collection_id: int | None = None
 

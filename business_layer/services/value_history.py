@@ -130,12 +130,37 @@ async def accept_timeline(session, model, identity, segments, *, effective_at, r
     return True
 
 
-async def accept_value(session, field_id, value, *, effective_at, recorded_at, collection_id=None):
+async def accept_value(
+    session,
+    field_id,
+    value,
+    *,
+    validated_against_field_version_id,
+    effective_at,
+    recorded_at,
+    collection_id=None,
+):
+    """Accept a value together with the definition that actually validated it.
+
+    The definition is part of the decision payload: revalidating the same value
+    against a new schema creates history, while copied prefixes retain their
+    original validation version.
+    """
     await accept_timeline(
         session,
         BusinessObjectFieldValue,
         {"business_object_field_id": field_id},
-        [(effective_at, None, {"value_json": value, "collection_id": collection_id})],
+        [
+            (
+                effective_at,
+                None,
+                {
+                    "value_json": value,
+                    "collection_id": collection_id,
+                    "validated_against_field_version_id": validated_against_field_version_id,
+                },
+            )
+        ],
         effective_at=effective_at,
         recorded_at=recorded_at,
     )
