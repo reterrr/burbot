@@ -1,19 +1,98 @@
+# One development stack: existing PostgreSQL + MinIO + API, with Prefect and worker.
+# Run from the Burbot repository root. Requires the existing external 'burbot' network.
+
+x-burbot-app: &burbot-app
+  image: burbot:dev
+  build:
+    context: .
+    dockerfile: Dockerfile
+  networks:
+    - burbot
+  environment: &burbot-env
+    DCKR_DATABASE_URL: ${DCKR_DATABASE_URL:?Set DCKR_DATABASE_URL in .env}
+    # Alembic runs INSIDE a container, so 'db' (not localhost) must be used here.
+    HOST_DATABASE_URL: ${DCKR_DATABASE_URL:?Set DCKR_DATABASE_URL in .env}
+    DATABASE_URL: ${DCKR_DATABASE_URL:?Set DCKR_DATABASE_URL in .env}
+    MONITORING_S3_INTERNAL_URL: http://minio:9000
+    MONITORING_S3_PUBLIC_URL: ${MONITORING_S3_PUBLIC_URL:-http://127.0.0.1:9000}
+    MONITORING_S3_BUCKET: ${MONITORING_S3_BUCKET:-burbot-monitoring}
+    MONITORING_S3_ACCESS_KEY: ${MINIO_ROOT_USER:?Set MINIO_ROOT_USER in .env}
+    MONITORING_S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD:?Set MINIO_ROOT_PASSWORD in .env}
+    PREFECT_API_URL: http://prefect:4200/api
+    PYTHONUNBUFFERED: "1"
+
 services:
-  bot:
-    container_name: bot
-    build:
-      context: .
-      dockerfile: Dockerfile
+  db:
+    container_name: db
+    image: postgres:18.0
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?Set POSTGRES_USER in .env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:?Set POSTGRES_DB in .env}
     ports:
-      - "8000:8000"
-      - "5678:5678"
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql
     networks:
       - burbot
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    restart: unless-stopped
+
+  minio:
+    container_name: minio
+    image: cgr.dev/chainguard/minio:latest
+    user: "1000:1000"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?Set MINIO_ROOT_USER in .env}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?Set MINIO_ROOT_PASSWORD in .env}
+    volumes:
+      # Preserve the user's existing MinIO data directory.
+      - "${HOME:?Set HOME}/minio/data:/data"
+    ports:
+      - "127.0.0.1:${MONITORING_S3_PORT:-9000}:9000"
+      - "127.0.0.1:9001:9001"
+    command: ["server", "/data", "--console-address", ":9001"]
+    networks:
+      - burbot
+    restart: unless-stopped
+
+  initialize:
+    <<: *burbot-app
     depends_on:
-      temporal:
-        condition: service_started
       db:
         condition: service_healthy
+      minio:
+        condition: service_started
+    restart: "no"
+    command:
+      - /bin/sh
+      - -ec
+      - |
+        # The MinIO image is minimal; check readiness from this Python container.
+        until python -c "from urllib.request import urlopen; urlopen('http://minio:9000/minio/health/live', timeout=2)"; do
+          echo 'Waiting for MinIO ...'; sleep 2
+        done
+        alembic upgrade head
+        python -c 'from monitoring.storage import storage_from_env; storage_from_env().ensure_bucket()'
+
+  bot:
+    <<: *burbot-app
+    container_name: bot
+    environment:
+      <<: *burbot-env
+      MONITORING_ADMIN_TOKEN: ${MONITORING_ADMIN_TOKEN:?Set MONITORING_ADMIN_TOKEN in .env}
+    depends_on:
+      initialize:
+        condition: service_completed_successfully
+    ports:
+      - "127.0.0.1:8000:8000"
+      - "127.0.0.1:5678:5678"
+    # business_layer.main is patched to mount /monitoring while retaining /api/v1.
     command:
       - python
       - -m
@@ -22,64 +101,52 @@ services:
       - 0.0.0.0:5678
       - -m
       - business_layer.main
-
-  temporal:
-    image: temporalio/temporal
-    container_name: burbot-temporal
-    user: "0:0" # tylko lokalne środowisko developerskie
-    command:
-      - server
-      - start-dev
-      - --ip
-      - 0.0.0.0
-      - --db-filename
-      - /data/temporal.db
-    ports:
-      - "7233:7233"
-      - "8233:8233"
-    volumes:
-      - temporal-data:/data
     restart: unless-stopped
-    networks:
-      - burbot
-#    healthcheck:
-#      test: [
-#        "CMD",
-#        "temporal",
-#        "operator",
-#        "cluster",
-#        "health",
-#        "--adress",
-#        "localhost:7233"
-#      ]
-#      interval: 5s
-#      timeout: 5s
-#      retries: 10
-#      start_period: 15s
 
-  db:
-    image: postgres:18.0
-    container_name: db
+  prefect:
+    <<: *burbot-app
     environment:
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      POSTGRES_DB: ${POSTGRES_DB}
+      PREFECT_HOME: /var/prefect
+      PREFECT_SERVER_ANALYTICS_ENABLED: "false"
+      PREFECT_UI_API_URL: ${PREFECT_UI_API_URL:-http://127.0.0.1:4200/api}
+    command: ["prefect", "server", "start", "--host", "0.0.0.0"]
     ports:
-      - "${POSTGRES_PORT}:5432"
+      - "127.0.0.1:4200:4200"
     volumes:
-      - postgres-data:/var/lib/postgresql
-    networks:
-      - burbot
+      - prefect-data:/var/prefect
     healthcheck:
-      test: [ "CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}" ]
+      test:
+        - CMD
+        - python
+        - -c
+        - "from urllib.request import urlopen; urlopen('http://127.0.0.1:4200/api/health', timeout=2)"
       interval: 5s
-      timeout: 5s
-      retries: 5
-      start_period: 10s
+      timeout: 3s
+      retries: 20
+      start_period: 15s
+    restart: unless-stopped
+
+  worker:
+    <<: *burbot-app
+    depends_on:
+      initialize:
+        condition: service_completed_successfully
+      prefect:
+        condition: service_healthy
+    command:
+      - /bin/sh
+      - -ec
+      - |
+        if ! prefect work-pool inspect burbot-monitoring >/dev/null 2>&1; then
+          prefect work-pool create --type process burbot-monitoring
+        fi
+        python -m monitoring.deployments
+        exec prefect worker start --pool burbot-monitoring --limit 5
+    restart: unless-stopped
 
 volumes:
-  temporal-data:
   postgres-data:
+  prefect-data:
 
 networks:
   burbot:
