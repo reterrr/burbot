@@ -113,6 +113,8 @@ class Sema:
         name: str
         persistent_key: Annotated[str, StringConstraints(min_length=1, max_length=150)]
         location: SourceLocation
+        label: str | None = Field(default=None, max_length=255)
+        description: str | None = None
 
         @model_validator(mode="before")
         @classmethod

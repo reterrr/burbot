@@ -33,6 +33,8 @@ BUILTINS = {
 }
 OPTIONS = {
     "persistent_key",
+    "label",
+    "description",
     "nullable",
     "unique",
     "index",

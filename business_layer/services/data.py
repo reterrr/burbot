@@ -30,7 +30,12 @@ from business_layer.schemas.models.dtos import (
 )
 from business_layer.services.transactions import transaction
 from business_layer.services.validation import validate_value
-from business_layer.services.value_history import accept_value, aware, history_predicates
+from business_layer.services.value_history import (
+    accept_value,
+    aware,
+    history_predicates,
+    temporal_predicates,
+)
 
 if TYPE_CHECKING:
     from business_layer.services.schema_parser import Program
@@ -281,7 +286,7 @@ class DataService:
                     self._session,
                     slots[field_id],
                     value,
-                    validated_against_field_version_id=version.id,
+                    field_version=version,
                     effective_at=effective_at,
                     recorded_at=now,
                 )
@@ -313,10 +318,10 @@ class DataService:
             now = datetime.now(UTC)
             fields = await self._active_fields(obj.business_entity_id, now)
             slots = await self._sync_slots(obj, fields)
-            reverse = {slot_id: field_id for field_id, slot_id in slots.items()}
+            reverse = {slots[field_id]: field_id for field_id in fields}
             unknown = set(dict_values) - reverse.keys()
             if unknown:
-                raise HTTPException(422, f"Fields do not belong to object: {sorted(unknown)}")
+                raise HTTPException(422, f"Fields are not active on object: {sorted(unknown)}")
             if expected_value_ids is not None:
                 if set(expected_value_ids) - set(dict_values):
                     raise HTTPException(422, "Expected value IDs must refer to assigned slots")
@@ -403,27 +408,32 @@ class DataService:
     async def _read_objects(self, objects, *, at=None, known_at=None):
         now = datetime.now(UTC)
         try:
-            selected_at = aware(at) if at is not None else None
-            selected_known_at = aware(known_at) if known_at is not None else None
-            at = selected_at if selected_at is not None else now
-            known_at = selected_known_at if selected_known_at is not None else now
+            at = aware(at) if at is not None else now
+            known_at = aware(known_at) if known_at is not None else now
         except ValueError as error:
             raise HTTPException(422, str(error)) from error
         ids = [obj.id for obj in objects]
         if not ids:
             return []
         value = BusinessObjectFieldValue
+        definition = BusinessEntityFieldVersion
         rows = (
             await self._session.execute(
                 select(BusinessObjectField, value)
+                .join(
+                    definition,
+                    and_(
+                        definition.business_entity_field_id
+                        == BusinessObjectField.business_entity_field_id,
+                        definition.status == BusinessDefinitionStatus.ACTIVE,
+                        *temporal_predicates(definition, at, known_at),
+                    ),
+                )
                 .outerjoin(
                     value,
                     and_(
                         value.business_object_field_id == BusinessObjectField.id,
-                        value.valid_from <= at,
-                        or_(value.valid_to.is_(None), value.valid_to > at),
-                        value.transaction_from <= known_at,
-                        or_(value.transaction_to.is_(None), value.transaction_to > known_at),
+                        *temporal_predicates(value, at, known_at),
                     ),
                 )
                 .where(BusinessObjectField.business_object_id.in_(ids))
@@ -438,7 +448,7 @@ class DataService:
             if version is not None and version.collection_id is not None
         }
         collections = await self.collections.materialize_fields(
-            collection_ids, at=selected_at, known_at=selected_known_at
+            collection_ids, at=at, known_at=known_at
         )
         fields = {object_id: [] for object_id in ids}
         for slot, version in rows:

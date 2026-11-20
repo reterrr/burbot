@@ -78,7 +78,7 @@ async def test_same_value_after_schema_change_is_a_new_validation_decision(domai
         lambda service: service.execute(
             domain.model_id,
             code=BASE.replace(
-                "name: String(nullable=False)", "name: String(nullable=False, max_length=20)"
+                "name: String(nullable=False)", 'name: String(nullable=False, label="Name")'
             ),
         )
     )
@@ -116,14 +116,19 @@ async def test_same_value_after_schema_change_is_a_new_validation_decision(domai
 
 
 async def test_backdated_scalar_uses_current_definition_and_preserves_prefix(domain):
+    bounded = BASE.replace(
+        "name: String(nullable=False)", "name: String(nullable=False, max_length=5)"
+    )
+    await domain.call(lambda service: service.execute(domain.model_id, code=bounded))
     obj = await domain.make(name="old")
     original = domain.slot(obj, "name")
     effective = original.valid_from + timedelta(microseconds=1)
     await domain.call(
         lambda service: service.execute(
             domain.model_id,
-            code=BASE.replace(
-                "name: String(nullable=False)", "name: String(nullable=False, max_length=5)"
+            code=bounded.replace(
+                "name: String(nullable=False, max_length=5)",
+                'name: String(nullable=False, max_length=5, label="Name")',
             ),
         )
     )
@@ -184,13 +189,17 @@ async def test_whole_list_and_null_revalidation_use_current_field_version(domain
 
 
 async def test_addressed_item_edit_revalidates_pointer_only_for_new_schema(domain):
+    bounded = BASE.replace("tags: List(String())", "tags: List(String(max_length=3))")
+    await domain.call(lambda service: service.execute(domain.model_id, code=bounded))
     obj = await domain.make(tags=["a"])
     original = domain.slot(obj, "tags")
     before = datetime.now(UTC)
     await domain.call(
         lambda service: service.execute(
             domain.model_id,
-            code=BASE.replace("tags: List(String())", "tags: List(String(max_length=3))"),
+            code=bounded.replace(
+                "tags: List(String(max_length=3))", 'tags: List(String(max_length=3), label="Tags")'
+            ),
         )
     )
     current_version = await field_version(domain, "tags")
@@ -253,7 +262,7 @@ async def test_historical_collection_revalidation_preserves_later_pointer_segmen
     await domain.call(
         lambda service: service.execute(
             domain.model_id,
-            code=BASE.replace("tags: List(String())", "tags: List(String(), max_items=5)"),
+            code=BASE.replace("tags: List(String())", 'tags: List(String(), label="Tags")'),
         )
     )
     await domain.edit("append_item", original.collection_id, "extra", effective_at=effective)
@@ -290,7 +299,7 @@ async def test_create_collection_endpoint_service_uses_current_definition(domain
     await domain.call(
         lambda service: service.execute(
             domain.model_id,
-            code=BASE.replace("tags: List(String())", "tags: List(String(), max_items=3)"),
+            code=BASE.replace("tags: List(String())", 'tags: List(String(), label="Tags")'),
         )
     )
     await domain.call(
@@ -369,12 +378,12 @@ async def test_migration_backfills_original_decisions_and_copied_prefixes(databa
         rows = (
             await connection.execute(
                 text(
-                    "SELECT id,validated_against_field_version_id "
+                    "SELECT id,validated_against_field_version_id,business_entity_field_id "
                     "FROM business_object_field_values ORDER BY id"
                 )
             )
         ).all()
-        assert rows == [(60, 101), (61, 101), (62, 103), (63, 103)]
+        assert rows == [(60, 101, 30), (61, 101, 30), (62, 103, 30), (63, 103, 30)]
         await connection.run_sync(lambda conn: migrate(conn, schema, "b201_collections", True))
         await connection.run_sync(lambda conn: migrate(conn, schema, "head"))
         assert (

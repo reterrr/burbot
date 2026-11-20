@@ -8,8 +8,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from business_layer.schemas.execution import ExecutionResult
 from business_layer.schemas.models import BusinessModel
-from business_layer.services.definition_code import DefinitionCodeService
 from business_layer.services.data import DataService
+from business_layer.services.definition_code import DefinitionCodeService
 from business_layer.services.entities import EntitiesService, RegisterResult, SchemaChange
 from business_layer.services.schema_parser import Program, analyze_program
 from business_layer.services.transactions import transaction
@@ -45,6 +45,7 @@ class BusinessService:
                     BusinessModel.id == model_id,
                 )
                 .with_for_update()
+                .execution_options(populate_existing=True)
             )
             if model is None:
                 raise LookupError("Business model not found")

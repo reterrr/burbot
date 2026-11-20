@@ -224,13 +224,28 @@ must exist. Ordered references are not automatic ManyToMany relationships.
 
 ## Schema revisions and migrations
 
-List options and inner definitions participate in semantic hashes, diffs, and
-field definition history; source locations do not. Keep `persistent_key` when
-renaming a field and preserve `tablename` when renaming an entity. Carrier/target
-type changes on a field with value history are rejected with 409 and require an
-explicit data migration. Existing current contents must satisfy tightened item,
-length, nullability, enum, and uniqueness constraints. Older historical snapshots
-remain readable through their original definitions.
+The same evolution policy covers scalar fields and Lists. Any canonical value
+history locks a field's structural definition, including explicit null, an empty
+List, or a closed historical value. Changing a type, constraint, default, enum
+membership, or reference target then requires an explicit data migration.
+
+Use the same `persistent_key` to rename a field or restore it after removal.
+Labels and descriptions can change freely. References follow the target's stable
+`tablename` through an entity rename. Dropping a field from a revision hides it
+from current object reads and preserves its slot, values, and collection items.
+Restoration compares against its last published definition and reveals the
+existing values again. Reads with `at` and `known_at` use the schema and values
+visible at those times. The history endpoints also serve retired fields.
+
+New nullable fields can acquire slots through object field synchronization.
+Adding or reactivating a required field on existing objects needs populated
+values for those objects. A default is applied on object creation. An object
+created while a required field was absent can therefore block restoration.
+
+`POST /business/models/{model_id}/changes` previews whether field changes are
+structural, have value history, and are allowed. Publication repeats the checks
+under the model lock and returns HTTP 409 with `SCHEMA_MIGRATION_REQUIRED` and
+the definitions for a blocked change.
 
 Apply migrations normally:
 
@@ -251,6 +266,8 @@ when there are no collections or List definition histories; otherwise it refuses
 rather than silently deleting data. Old migration files are unchanged.
 `b202_value_field_version` adds required validation-version provenance to canonical
 values and backfills existing decisions from their definition history.
+`b203_value_field_owner` enforces that each validation version belongs to its
+value slot's logical field.
 
 Applying explicit Alembic migrations no longer imports optional application
 models. Autogeneration still imports the full model graph. At the base revision,
@@ -269,7 +286,8 @@ modified. The test role needs schema/extension privileges.
 python -m pip install -e '.[dev]'
 pytest -q tests/test_collections_language.py
 COLLECTIONS_TEST_DATABASE_URL=postgresql+asyncpg://user:password@localhost/test_db \
-  pytest -q tests/test_collections_language.py tests/test_collections_postgres.py
+  pytest -q tests/test_collections_language.py tests/test_collections_postgres.py \
+    tests/test_schema_evolution.py tests/test_schema_evolution_postgres.py
 ```
 
 The integration tests apply the real Alembic chain and exercise migrations,
