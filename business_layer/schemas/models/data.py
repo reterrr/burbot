@@ -56,6 +56,7 @@ class BusinessObject(SQLModel, table=True):
     __tablename__ = "business_objects"
 
     __table_args__ = (
+        UniqueConstraint("id", "business_entity_id", name="uq_business_object_entity_owner"),
         Index(
             "ix_business_objects_entity",
             "business_entity_id",

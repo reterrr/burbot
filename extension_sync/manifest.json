@@ -1,0 +1,2230 @@
+{
+  "format": 1,
+  "key": "burbot",
+  "name": "Burbot PSF/BUR",
+  "entities": [
+    {
+      "localType": "project",
+      "key": "Project",
+      "label": "Projekt",
+      "primaryLabelField": "name",
+      "fields": [
+        {
+          "key": "name",
+          "persistentKey": "name",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Nazwa",
+          "type": "string",
+          "group": "Podstawowe"
+        },
+        {
+          "key": "operator_id",
+          "persistentKey": "operator_id",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Operator (legacy)",
+          "type": "reference",
+          "references": "operator",
+          "group": "Podstawowe",
+          "hidden": true,
+          "legacy": true
+        },
+        {
+          "key": "type",
+          "persistentKey": "type",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Typ projektu",
+          "type": "enum",
+          "options": {
+            "B2B": "B2B",
+            "B2C": "B2C"
+          },
+          "group": "Podstawowe"
+        },
+        {
+          "key": "status",
+          "persistentKey": "status",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Status projektu",
+          "type": "enum",
+          "options": {
+            "PLANOWANY": "Planowany",
+            "AKTYWNY": "Aktywny",
+            "ZAWIESZONY": "Zawieszony",
+            "ZAKONCZONY": "Zakończony"
+          },
+          "group": "Podstawowe",
+          "default": "PLANOWANY",
+          "aliases": {
+            "PLANNED": "PLANOWANY",
+            "ACTIVE": "AKTYWNY",
+            "SUSPENDED": "ZAWIESZONY",
+            "CLOSED": "ZAKONCZONY",
+            "Planned": "PLANOWANY",
+            "Active": "AKTYWNY",
+            "Suspended": "ZAWIESZONY",
+            "Closed": "ZAKONCZONY"
+          }
+        },
+        {
+          "key": "number",
+          "persistentKey": "number",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Numer projektu",
+          "type": "string",
+          "group": "Podstawowe"
+        },
+        {
+          "key": "start_date",
+          "persistentKey": "start_date",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Data rozpoczęcia projektu",
+          "type": "date",
+          "group": "Daty"
+        },
+        {
+          "key": "end_date",
+          "persistentKey": "end_date",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Data zakończenia projektu",
+          "type": "date",
+          "group": "Daty"
+        },
+        {
+          "key": "announcements_site_url",
+          "persistentKey": "announcements_site_url",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Strona ogłoszeń",
+          "type": "url",
+          "group": "Źródła"
+        },
+        {
+          "key": "project_url",
+          "persistentKey": "project_url",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Strona projektu",
+          "type": "url",
+          "group": "Źródła"
+        },
+        {
+          "key": "documents_url",
+          "persistentKey": "documents_url",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Strona dokumentów",
+          "type": "url",
+          "group": "Źródła"
+        },
+        {
+          "key": "documents_link_direct",
+          "persistentKey": "documents_link_direct",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Link prowadzi bezpośrednio do dokumentów",
+          "type": "boolean",
+          "group": "Źródła"
+        },
+        {
+          "key": "notes",
+          "persistentKey": "notes",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Uwagi",
+          "type": "string",
+          "group": "Źródła",
+          "multiline": true
+        },
+        {
+          "key": "schedule_note",
+          "persistentKey": "schedule_note",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Uwaga do harmonogramu / naborów",
+          "type": "string",
+          "group": "Źródła",
+          "multiline": true
+        },
+        {
+          "key": "technical_notes",
+          "persistentKey": "technical_notes",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Uwagi techniczne",
+          "type": "string",
+          "group": "Źródła",
+          "multiline": true
+        },
+        {
+          "key": "eligible_entities",
+          "persistentKey": "eligible_entities",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Kwalifikujące się podmioty",
+          "type": "string",
+          "group": "Warunki projektu",
+          "multiline": true,
+          "maxLength": 4000
+        },
+        {
+          "key": "funding_conditions",
+          "persistentKey": "funding_conditions",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Warunki pomocy i dofinansowania",
+          "type": "string",
+          "group": "Warunki projektu",
+          "multiline": true,
+          "maxLength": 4000
+        },
+        {
+          "key": "application_instructions",
+          "persistentKey": "application_instructions",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Instrukcja składania wniosku",
+          "type": "string",
+          "group": "Warunki projektu",
+          "multiline": true,
+          "maxLength": 5000
+        },
+        {
+          "key": "funding_rules",
+          "persistentKey": "funding_rules",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Zasady dofinansowania",
+          "type": "string",
+          "group": "Dofinansowanie",
+          "multiline": true
+        },
+        {
+          "key": "funding_verified_at",
+          "persistentKey": "funding_verified_at",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Data weryfikacji finansowania",
+          "type": "date",
+          "group": "Dofinansowanie"
+        },
+        {
+          "key": "funding_verification_url",
+          "persistentKey": "funding_verification_url",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Źródło weryfikacji finansowania / URL-e",
+          "type": "string",
+          "group": "Dofinansowanie",
+          "multiline": true
+        },
+        {
+          "key": "last_checked_at",
+          "persistentKey": "last_checked_at",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Ostatnio sprawdzono",
+          "type": "datetime",
+          "group": "Systemowe",
+          "system": true,
+          "readonly": true
+        },
+        {
+          "key": "amount",
+          "persistentKey": "amount",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Previously captured amount",
+          "type": "number",
+          "group": "Earlier captures",
+          "legacy": true
+        },
+        {
+          "key": "refund_percent_min",
+          "persistentKey": "refund_percent_min",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Minimalna refundacja",
+          "type": "percentage",
+          "group": "Dofinansowanie",
+          "min": 0,
+          "max": 100,
+          "legacy": true,
+          "hidden": true
+        },
+        {
+          "key": "refund_percent_max",
+          "persistentKey": "refund_percent_max",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Maksymalna refundacja",
+          "type": "percentage",
+          "group": "Dofinansowanie",
+          "min": 0,
+          "max": 100,
+          "legacy": true,
+          "hidden": true
+        }
+      ]
+    },
+    {
+      "localType": "recruitment",
+      "key": "Recruitment",
+      "label": "Nabór",
+      "primaryLabelField": "external_number",
+      "fields": [
+        {
+          "key": "external_number",
+          "persistentKey": "external_number",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Numer / nazwa naboru",
+          "type": "string",
+          "group": "Podstawowe"
+        },
+        {
+          "key": "project_id",
+          "persistentKey": "project_id",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Projekt",
+          "type": "reference",
+          "references": "project",
+          "group": "Podstawowe"
+        },
+        {
+          "key": "operator_id",
+          "persistentKey": "operator_id",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Operator naboru (legacy)",
+          "type": "reference",
+          "references": "operator",
+          "group": "Podstawowe",
+          "hidden": true,
+          "legacy": true
+        },
+        {
+          "key": "source_number",
+          "persistentKey": "source_number",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Numer źródłowy naboru",
+          "type": "string",
+          "group": "Podstawowe"
+        },
+        {
+          "key": "sequence_number",
+          "persistentKey": "sequence_number",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Numer kolejny",
+          "type": "integer",
+          "group": "Podstawowe",
+          "min": 1
+        },
+        {
+          "key": "year",
+          "persistentKey": "year",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Rok",
+          "type": "integer",
+          "group": "Podstawowe",
+          "min": 1000,
+          "max": 9999
+        },
+        {
+          "key": "continuous",
+          "persistentKey": "continuous",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Nabór ciągły",
+          "type": "boolean",
+          "group": "Podstawowe"
+        },
+        {
+          "key": "status",
+          "persistentKey": "status",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Status naboru",
+          "type": "enum",
+          "options": {
+            "OGLOSZONY": "Ogłoszony",
+            "PLANOWANY": "Planowany",
+            "AKTYWNY": "Aktywny",
+            "ZAWIESZONY": "Zawieszony",
+            "ZAMKNIETY": "Zamknięty",
+            "ANULOWANY": "Anulowany"
+          },
+          "group": "Podstawowe",
+          "allowEmpty": true,
+          "emptyLabel": "Nie wiem / nie ustawiono",
+          "aliases": {
+            "PLANNED": "PLANOWANY",
+            "ANNOUNCED": "OGLOSZONY",
+            "ACTIVE": "AKTYWNY",
+            "SUSPENDED": "ZAWIESZONY",
+            "CLOSED": "ZAMKNIETY",
+            "CANCELLED": "ANULOWANY",
+            "CANCELED": "ANULOWANY",
+            "ZAKONCZONY": "ZAMKNIETY",
+            "Planned": "PLANOWANY",
+            "Announced": "OGLOSZONY",
+            "Active": "AKTYWNY",
+            "Suspended": "ZAWIESZONY",
+            "Closed": "ZAMKNIETY",
+            "Cancelled": "ANULOWANY",
+            "Canceled": "ANULOWANY"
+          }
+        },
+        {
+          "key": "dataRozpoczeciaOd",
+          "persistentKey": "dataRozpoczeciaOd",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Data rozpoczęcia",
+          "type": "date",
+          "group": "Termin rzeczywisty"
+        },
+        {
+          "key": "godzinaRozpoczecia",
+          "persistentKey": "godzinaRozpoczecia",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Godzina start",
+          "type": "time",
+          "group": "Termin rzeczywisty"
+        },
+        {
+          "key": "dataZakonczeniaDo",
+          "persistentKey": "dataZakonczeniaDo",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Data zakończenia",
+          "type": "date",
+          "group": "Termin rzeczywisty"
+        },
+        {
+          "key": "godzinaZakonczenia",
+          "persistentKey": "godzinaZakonczenia",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Godzina koniec",
+          "type": "time",
+          "group": "Termin rzeczywisty"
+        },
+        {
+          "key": "dataRozpoczeciaDo",
+          "persistentKey": "dataRozpoczeciaDo",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Data rozpoczęcia — do (legacy)",
+          "type": "date",
+          "group": "Earlier captures",
+          "legacy": true,
+          "hidden": true,
+          "reviewHidden": true
+        },
+        {
+          "key": "dataZakonczeniaOd",
+          "persistentKey": "dataZakonczeniaOd",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Data zakończenia — od (legacy)",
+          "type": "date",
+          "group": "Earlier captures",
+          "legacy": true,
+          "hidden": true,
+          "reviewHidden": true
+        },
+        {
+          "key": "planned_start_low_date",
+          "persistentKey": "planned_start_low_date",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Planowany start — data od",
+          "type": "date",
+          "group": "Termin planowany"
+        },
+        {
+          "key": "planned_start_ceil_date",
+          "persistentKey": "planned_start_ceil_date",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Planowany start — data do",
+          "type": "date",
+          "group": "Termin planowany"
+        },
+        {
+          "key": "planned_start_time",
+          "persistentKey": "planned_start_time",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Planowany start — godzina",
+          "type": "time",
+          "group": "Termin planowany"
+        },
+        {
+          "key": "planned_end_low_date",
+          "persistentKey": "planned_end_low_date",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Planowany koniec — data od",
+          "type": "date",
+          "group": "Termin planowany"
+        },
+        {
+          "key": "planned_end_ceil_date",
+          "persistentKey": "planned_end_ceil_date",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Planowany koniec — data do",
+          "type": "date",
+          "group": "Termin planowany"
+        },
+        {
+          "key": "planned_end_time",
+          "persistentKey": "planned_end_time",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Planowany koniec — godzina",
+          "type": "time",
+          "group": "Termin planowany"
+        },
+        {
+          "key": "planned_start_low_time",
+          "persistentKey": "planned_start_low_time",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Planowany start — godzina od (legacy)",
+          "type": "time",
+          "group": "Earlier captures",
+          "legacy": true,
+          "hidden": true,
+          "reviewHidden": true
+        },
+        {
+          "key": "planned_start_ceil_time",
+          "persistentKey": "planned_start_ceil_time",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Planowany start — godzina do (legacy)",
+          "type": "time",
+          "group": "Earlier captures",
+          "legacy": true,
+          "hidden": true,
+          "reviewHidden": true
+        },
+        {
+          "key": "planned_end_low_time",
+          "persistentKey": "planned_end_low_time",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Planowany koniec — godzina od (legacy)",
+          "type": "time",
+          "group": "Earlier captures",
+          "legacy": true,
+          "hidden": true,
+          "reviewHidden": true
+        },
+        {
+          "key": "planned_end_ceil_time",
+          "persistentKey": "planned_end_ceil_time",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Planowany koniec — godzina do (legacy)",
+          "type": "time",
+          "group": "Earlier captures",
+          "legacy": true,
+          "hidden": true,
+          "reviewHidden": true
+        },
+        {
+          "key": "planned_start_low_year",
+          "persistentKey": "planned_start_low_year",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Planowany start — rok od",
+          "type": "integer",
+          "group": "Termin planowany",
+          "min": 1000,
+          "max": 9999
+        },
+        {
+          "key": "planned_start_ceil_year",
+          "persistentKey": "planned_start_ceil_year",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Planowany start — rok do",
+          "type": "integer",
+          "group": "Termin planowany",
+          "min": 1000,
+          "max": 9999
+        },
+        {
+          "key": "planned_end_low_year",
+          "persistentKey": "planned_end_low_year",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Planowany koniec — rok od",
+          "type": "integer",
+          "group": "Termin planowany",
+          "min": 1000,
+          "max": 9999
+        },
+        {
+          "key": "planned_end_ceil_year",
+          "persistentKey": "planned_end_ceil_year",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Planowany koniec — rok do",
+          "type": "integer",
+          "group": "Termin planowany",
+          "min": 1000,
+          "max": 9999
+        },
+        {
+          "key": "planned_start_low_month",
+          "persistentKey": "planned_start_low_month",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Planowany start — miesiąc od",
+          "type": "enum",
+          "options": {
+            "1": "Styczeń",
+            "2": "Luty",
+            "3": "Marzec",
+            "4": "Kwiecień",
+            "5": "Maj",
+            "6": "Czerwiec",
+            "7": "Lipiec",
+            "8": "Sierpień",
+            "9": "Wrzesień",
+            "10": "Październik",
+            "11": "Listopad",
+            "12": "Grudzień"
+          },
+          "group": "Termin planowany",
+          "numeric": true
+        },
+        {
+          "key": "planned_start_ceil_month",
+          "persistentKey": "planned_start_ceil_month",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Planowany start — miesiąc do",
+          "type": "enum",
+          "options": {
+            "1": "Styczeń",
+            "2": "Luty",
+            "3": "Marzec",
+            "4": "Kwiecień",
+            "5": "Maj",
+            "6": "Czerwiec",
+            "7": "Lipiec",
+            "8": "Sierpień",
+            "9": "Wrzesień",
+            "10": "Październik",
+            "11": "Listopad",
+            "12": "Grudzień"
+          },
+          "group": "Termin planowany",
+          "numeric": true
+        },
+        {
+          "key": "planned_end_low_month",
+          "persistentKey": "planned_end_low_month",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Planowany koniec — miesiąc od",
+          "type": "enum",
+          "options": {
+            "1": "Styczeń",
+            "2": "Luty",
+            "3": "Marzec",
+            "4": "Kwiecień",
+            "5": "Maj",
+            "6": "Czerwiec",
+            "7": "Lipiec",
+            "8": "Sierpień",
+            "9": "Wrzesień",
+            "10": "Październik",
+            "11": "Listopad",
+            "12": "Grudzień"
+          },
+          "group": "Termin planowany",
+          "numeric": true
+        },
+        {
+          "key": "planned_end_ceil_month",
+          "persistentKey": "planned_end_ceil_month",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Planowany koniec — miesiąc do",
+          "type": "enum",
+          "options": {
+            "1": "Styczeń",
+            "2": "Luty",
+            "3": "Marzec",
+            "4": "Kwiecień",
+            "5": "Maj",
+            "6": "Czerwiec",
+            "7": "Lipiec",
+            "8": "Sierpień",
+            "9": "Wrzesień",
+            "10": "Październik",
+            "11": "Listopad",
+            "12": "Grudzień"
+          },
+          "group": "Termin planowany",
+          "numeric": true
+        },
+        {
+          "key": "planned_start_low_week",
+          "persistentKey": "planned_start_low_week",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Planowany start — tydzień od",
+          "type": "enum",
+          "options": {
+            "1": "1. tydzień",
+            "2": "2. tydzień",
+            "3": "3. tydzień",
+            "4": "4. tydzień",
+            "5": "5. tydzień"
+          },
+          "group": "Termin planowany",
+          "numeric": true
+        },
+        {
+          "key": "planned_start_ceil_week",
+          "persistentKey": "planned_start_ceil_week",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Planowany start — tydzień do",
+          "type": "enum",
+          "options": {
+            "1": "1. tydzień",
+            "2": "2. tydzień",
+            "3": "3. tydzień",
+            "4": "4. tydzień",
+            "5": "5. tydzień"
+          },
+          "group": "Termin planowany",
+          "numeric": true
+        },
+        {
+          "key": "planned_end_low_week",
+          "persistentKey": "planned_end_low_week",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Planowany koniec — tydzień od",
+          "type": "enum",
+          "options": {
+            "1": "1. tydzień",
+            "2": "2. tydzień",
+            "3": "3. tydzień",
+            "4": "4. tydzień",
+            "5": "5. tydzień"
+          },
+          "group": "Termin planowany",
+          "numeric": true
+        },
+        {
+          "key": "planned_end_ceil_week",
+          "persistentKey": "planned_end_ceil_week",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Planowany koniec — tydzień do",
+          "type": "enum",
+          "options": {
+            "1": "1. tydzień",
+            "2": "2. tydzień",
+            "3": "3. tydzień",
+            "4": "4. tydzień",
+            "5": "5. tydzień"
+          },
+          "group": "Termin planowany",
+          "numeric": true
+        },
+        {
+          "key": "planned_start_low_quarter",
+          "persistentKey": "planned_start_low_quarter",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Planowany start — kwartał od",
+          "type": "enum",
+          "options": {
+            "1": "Q1",
+            "2": "Q2",
+            "3": "Q3",
+            "4": "Q4"
+          },
+          "group": "Termin planowany",
+          "numeric": true
+        },
+        {
+          "key": "planned_start_ceil_quarter",
+          "persistentKey": "planned_start_ceil_quarter",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Planowany start — kwartał do",
+          "type": "enum",
+          "options": {
+            "1": "Q1",
+            "2": "Q2",
+            "3": "Q3",
+            "4": "Q4"
+          },
+          "group": "Termin planowany",
+          "numeric": true
+        },
+        {
+          "key": "planned_end_low_quarter",
+          "persistentKey": "planned_end_low_quarter",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Planowany koniec — kwartał od",
+          "type": "enum",
+          "options": {
+            "1": "Q1",
+            "2": "Q2",
+            "3": "Q3",
+            "4": "Q4"
+          },
+          "group": "Termin planowany",
+          "numeric": true
+        },
+        {
+          "key": "planned_end_ceil_quarter",
+          "persistentKey": "planned_end_ceil_quarter",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Planowany koniec — kwartał do",
+          "type": "enum",
+          "options": {
+            "1": "Q1",
+            "2": "Q2",
+            "3": "Q3",
+            "4": "Q4"
+          },
+          "group": "Termin planowany",
+          "numeric": true
+        },
+        {
+          "key": "planned_start_date",
+          "persistentKey": "planned_start_date",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Planowana data rozpoczęcia (legacy)",
+          "type": "date",
+          "group": "Earlier captures",
+          "legacy": true,
+          "hidden": true,
+          "reviewHidden": true
+        },
+        {
+          "key": "planned_end_date",
+          "persistentKey": "planned_end_date",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Planowana data zakończenia (legacy)",
+          "type": "date",
+          "group": "Earlier captures",
+          "legacy": true,
+          "hidden": true,
+          "reviewHidden": true
+        },
+        {
+          "key": "planowanyStartRok",
+          "persistentKey": "planowanyStartRok",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Planowany start — rok (legacy)",
+          "type": "integer",
+          "group": "Earlier captures",
+          "min": 1000,
+          "max": 9999,
+          "legacy": true,
+          "hidden": true,
+          "reviewHidden": true
+        },
+        {
+          "key": "planowanyStartMiesiac",
+          "persistentKey": "planowanyStartMiesiac",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Planowany start — miesiąc (legacy)",
+          "type": "enum",
+          "options": {
+            "1": "Styczeń",
+            "2": "Luty",
+            "3": "Marzec",
+            "4": "Kwiecień",
+            "5": "Maj",
+            "6": "Czerwiec",
+            "7": "Lipiec",
+            "8": "Sierpień",
+            "9": "Wrzesień",
+            "10": "Październik",
+            "11": "Listopad",
+            "12": "Grudzień"
+          },
+          "group": "Earlier captures",
+          "numeric": true,
+          "legacy": true,
+          "hidden": true,
+          "reviewHidden": true
+        },
+        {
+          "key": "planowanyStartTydzien",
+          "persistentKey": "planowanyStartTydzien",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Planowany start — tydzień (legacy)",
+          "type": "enum",
+          "options": {
+            "1": "1. tydzień",
+            "2": "2. tydzień",
+            "3": "3. tydzień",
+            "4": "4. tydzień",
+            "5": "5. tydzień"
+          },
+          "group": "Earlier captures",
+          "numeric": true,
+          "legacy": true,
+          "hidden": true,
+          "reviewHidden": true
+        },
+        {
+          "key": "planowanyStartKwartal",
+          "persistentKey": "planowanyStartKwartal",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Planowany start — kwartał (legacy)",
+          "type": "enum",
+          "options": {
+            "1": "Q1",
+            "2": "Q2",
+            "3": "Q3",
+            "4": "Q4"
+          },
+          "group": "Earlier captures",
+          "numeric": true,
+          "legacy": true,
+          "hidden": true,
+          "reviewHidden": true
+        },
+        {
+          "key": "planowanyKoniecRok",
+          "persistentKey": "planowanyKoniecRok",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Planowany koniec — rok (legacy)",
+          "type": "integer",
+          "group": "Earlier captures",
+          "min": 1000,
+          "max": 9999,
+          "legacy": true,
+          "hidden": true,
+          "reviewHidden": true
+        },
+        {
+          "key": "planowanyKoniecMiesiac",
+          "persistentKey": "planowanyKoniecMiesiac",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Planowany koniec — miesiąc (legacy)",
+          "type": "enum",
+          "options": {
+            "1": "Styczeń",
+            "2": "Luty",
+            "3": "Marzec",
+            "4": "Kwiecień",
+            "5": "Maj",
+            "6": "Czerwiec",
+            "7": "Lipiec",
+            "8": "Sierpień",
+            "9": "Wrzesień",
+            "10": "Październik",
+            "11": "Listopad",
+            "12": "Grudzień"
+          },
+          "group": "Earlier captures",
+          "numeric": true,
+          "legacy": true,
+          "hidden": true,
+          "reviewHidden": true
+        },
+        {
+          "key": "planowanyKoniecTydzien",
+          "persistentKey": "planowanyKoniecTydzien",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Planowany koniec — tydzień (legacy)",
+          "type": "enum",
+          "options": {
+            "1": "1. tydzień",
+            "2": "2. tydzień",
+            "3": "3. tydzień",
+            "4": "4. tydzień",
+            "5": "5. tydzień"
+          },
+          "group": "Earlier captures",
+          "numeric": true,
+          "legacy": true,
+          "hidden": true,
+          "reviewHidden": true
+        },
+        {
+          "key": "planowanyKoniecKwartal",
+          "persistentKey": "planowanyKoniecKwartal",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Planowany koniec — kwartał (legacy)",
+          "type": "enum",
+          "options": {
+            "1": "Q1",
+            "2": "Q2",
+            "3": "Q3",
+            "4": "Q4"
+          },
+          "group": "Earlier captures",
+          "numeric": true,
+          "legacy": true,
+          "hidden": true,
+          "reviewHidden": true
+        },
+        {
+          "key": "statusZakonczenia",
+          "persistentKey": "statusZakonczenia",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Status zakończenia",
+          "type": "string",
+          "group": "Zakończenie"
+        },
+        {
+          "key": "powodStatusu",
+          "persistentKey": "powodStatusu",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Powód statusu",
+          "type": "string",
+          "group": "Zakończenie",
+          "multiline": true
+        },
+        {
+          "key": "action_code",
+          "persistentKey": "action_code",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Kod działania",
+          "type": "string",
+          "group": "Źródła"
+        },
+        {
+          "key": "urlOgloszenia",
+          "persistentKey": "urlOgloszenia",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "URL ogłoszenia",
+          "type": "url",
+          "group": "Źródła"
+        },
+        {
+          "key": "documents_url",
+          "persistentKey": "documents_url",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "URL dokumentów",
+          "type": "url",
+          "group": "Źródła"
+        },
+        {
+          "key": "data_source_url",
+          "persistentKey": "data_source_url",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Źródło danych / URL-e",
+          "type": "string",
+          "group": "Źródła",
+          "multiline": true
+        },
+        {
+          "key": "direct_recruitment_link",
+          "persistentKey": "direct_recruitment_link",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Link prowadzi do konkretnego naboru",
+          "type": "boolean",
+          "group": "Źródła"
+        },
+        {
+          "key": "notes",
+          "persistentKey": "notes",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Uwagi",
+          "type": "string",
+          "group": "Źródła",
+          "multiline": true
+        },
+        {
+          "key": "eligible_entities",
+          "persistentKey": "eligible_entities",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Kwalifikujące się podmioty",
+          "type": "string",
+          "group": "Warunki naboru",
+          "multiline": true,
+          "maxLength": 4000
+        },
+        {
+          "key": "funding_conditions",
+          "persistentKey": "funding_conditions",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Warunki pomocy i dofinansowania",
+          "type": "string",
+          "group": "Warunki naboru",
+          "multiline": true,
+          "maxLength": 4000
+        },
+        {
+          "key": "application_instructions",
+          "persistentKey": "application_instructions",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Instrukcja składania wniosku",
+          "type": "string",
+          "group": "Warunki naboru",
+          "multiline": true,
+          "maxLength": 5000
+        },
+        {
+          "key": "funding_rules",
+          "persistentKey": "funding_rules",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Zasady dofinansowania",
+          "type": "string",
+          "group": "Dofinansowanie",
+          "multiline": true
+        },
+        {
+          "key": "funding_verified_at",
+          "persistentKey": "funding_verified_at",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Data weryfikacji finansowania",
+          "type": "date",
+          "group": "Dofinansowanie"
+        },
+        {
+          "key": "funding_verification_url",
+          "persistentKey": "funding_verification_url",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Źródło weryfikacji finansowania / URL-e",
+          "type": "string",
+          "group": "Dofinansowanie",
+          "multiline": true
+        },
+        {
+          "key": "last_checked_at",
+          "persistentKey": "last_checked_at",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Ostatnio sprawdzono",
+          "type": "datetime",
+          "group": "Systemowe",
+          "system": true,
+          "readonly": true
+        },
+        {
+          "key": "start_date",
+          "persistentKey": "start_date",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Stara data rozpoczęcia",
+          "type": "date",
+          "group": "Earlier captures",
+          "legacy": true
+        },
+        {
+          "key": "end_date",
+          "persistentKey": "end_date",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Stara data zakończenia",
+          "type": "date",
+          "group": "Earlier captures",
+          "legacy": true
+        },
+        {
+          "key": "announced_year",
+          "persistentKey": "announced_year",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Stary rok ogłoszenia",
+          "type": "integer",
+          "group": "Earlier captures",
+          "min": 1000,
+          "max": 9999,
+          "legacy": true
+        },
+        {
+          "key": "announced_quarter",
+          "persistentKey": "announced_quarter",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Stary kwartał ogłoszenia",
+          "type": "enum",
+          "options": {
+            "1": "Q1",
+            "2": "Q2",
+            "3": "Q3",
+            "4": "Q4"
+          },
+          "group": "Earlier captures",
+          "numeric": true,
+          "legacy": true
+        },
+        {
+          "key": "closed_status",
+          "persistentKey": "closed_status",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Stary status zakończenia",
+          "type": "string",
+          "group": "Earlier captures",
+          "legacy": true
+        },
+        {
+          "key": "status_reason",
+          "persistentKey": "status_reason",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Stary powód statusu",
+          "type": "string",
+          "group": "Earlier captures",
+          "multiline": true,
+          "legacy": true
+        },
+        {
+          "key": "announcement_url",
+          "persistentKey": "announcement_url",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Stary URL ogłoszenia",
+          "type": "url",
+          "group": "Earlier captures",
+          "legacy": true
+        },
+        {
+          "key": "legacy_operator_name",
+          "persistentKey": "legacy_operator_name",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Operator",
+          "type": "string",
+          "group": "Podstawowe",
+          "legacy": true
+        },
+        {
+          "key": "legacy_amount",
+          "persistentKey": "legacy_amount",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Amount",
+          "type": "number",
+          "group": "Funding",
+          "legacy": true
+        },
+        {
+          "key": "legacy_deadline",
+          "persistentKey": "legacy_deadline",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Deadline",
+          "type": "date",
+          "group": "Daty",
+          "legacy": true
+        },
+        {
+          "key": "refund_percent_min",
+          "persistentKey": "refund_percent_min",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Minimalna refundacja",
+          "type": "percentage",
+          "group": "Dofinansowanie",
+          "min": 0,
+          "max": 100,
+          "legacy": true,
+          "hidden": true
+        },
+        {
+          "key": "refund_percent_max",
+          "persistentKey": "refund_percent_max",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Maksymalna refundacja",
+          "type": "percentage",
+          "group": "Dofinansowanie",
+          "min": 0,
+          "max": 100,
+          "legacy": true,
+          "hidden": true
+        }
+      ]
+    },
+    {
+      "localType": "operator",
+      "key": "Operator",
+      "label": "Operator",
+      "primaryLabelField": "name",
+      "fields": [
+        {
+          "key": "name",
+          "persistentKey": "name",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Nazwa",
+          "type": "string",
+          "group": "Podstawowe"
+        },
+        {
+          "key": "role",
+          "persistentKey": "role",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Rola",
+          "type": "enum",
+          "options": {
+            "OPERATOR": "Operator",
+            "PARTNER": "Partner"
+          },
+          "group": "Podstawowe",
+          "aliases": {
+            "operator": "OPERATOR",
+            "partner": "PARTNER"
+          }
+        },
+        {
+          "key": "nip",
+          "persistentKey": "nip",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "NIP",
+          "type": "nip",
+          "group": "Podstawowe"
+        },
+        {
+          "key": "address",
+          "persistentKey": "address",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Adres",
+          "type": "string",
+          "group": "Kontakt"
+        },
+        {
+          "key": "email",
+          "persistentKey": "email",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Email",
+          "type": "string",
+          "group": "Kontakt"
+        },
+        {
+          "key": "phone",
+          "persistentKey": "phone",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Telefon",
+          "type": "string",
+          "group": "Kontakt"
+        },
+        {
+          "key": "website",
+          "persistentKey": "website",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Strona WWW",
+          "type": "url",
+          "group": "Kontakt"
+        },
+        {
+          "key": "notes",
+          "persistentKey": "notes",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Uwagi",
+          "type": "string",
+          "group": "Kontakt",
+          "multiline": true
+        },
+        {
+          "key": "last_checked_at",
+          "persistentKey": "last_checked_at",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Ostatnio sprawdzono",
+          "type": "datetime",
+          "group": "Systemowe",
+          "system": true,
+          "readonly": true
+        }
+      ]
+    },
+    {
+      "localType": "operator_assignment",
+      "key": "OperatorAssignment",
+      "label": "Przypisanie operatora",
+      "primaryLabelField": null,
+      "fields": [
+        {
+          "key": "operatorId",
+          "persistentKey": "operatorId",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Operator",
+          "references": "operator",
+          "type": "reference"
+        },
+        {
+          "key": "operatorType",
+          "persistentKey": "operatorType",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Rola operatora",
+          "type": "enum",
+          "options": {
+            "GLOWNY": "Główny",
+            "DODATKOWY": "Dodatkowy"
+          }
+        },
+        {
+          "key": "project_owner",
+          "persistentKey": "project_owner",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "project",
+          "references": "project",
+          "type": "reference"
+        },
+        {
+          "key": "recruitment_owner",
+          "persistentKey": "recruitment_owner",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "recruitment",
+          "references": "recruitment",
+          "type": "reference"
+        }
+      ],
+      "parents": [
+        "project",
+        "recruitment"
+      ]
+    },
+    {
+      "localType": "operator_contact",
+      "key": "OperatorContact",
+      "label": "Kontakt operatora",
+      "primaryLabelField": null,
+      "fields": [
+        {
+          "key": "kind",
+          "persistentKey": "kind",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Rodzaj kontaktu",
+          "type": "enum",
+          "options": {
+            "EMAIL": "Email",
+            "PHONE": "Telefon"
+          }
+        },
+        {
+          "key": "value",
+          "persistentKey": "value",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Dane kontaktowe",
+          "type": "string"
+        },
+        {
+          "key": "variant_no",
+          "persistentKey": "variant_no",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Numer",
+          "type": "integer",
+          "min": 1
+        },
+        {
+          "key": "operator_owner",
+          "persistentKey": "operator_owner",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "operator",
+          "references": "operator",
+          "type": "reference"
+        }
+      ],
+      "parents": [
+        "operator"
+      ]
+    },
+    {
+      "localType": "geography",
+      "key": "Geography",
+      "label": "Geografia",
+      "primaryLabelField": null,
+      "fields": [
+        {
+          "key": "type",
+          "persistentKey": "type",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Typ obszaru",
+          "type": "enum",
+          "options": {
+            "POLSKA": "Polska",
+            "WOJEWODZTWO": "Województwo",
+            "PODREGION": "Podregion",
+            "POWIAT": "Powiat",
+            "GMINA": "Gmina",
+            "MIASTO_NA_PRAWACH_POWIATU": "Miasto na prawach powiatu"
+          }
+        },
+        {
+          "key": "role",
+          "persistentKey": "role",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Rola",
+          "type": "enum",
+          "options": {
+            "OBEJMUJE": "Obejmuje",
+            "WYKLUCZA": "Wyklucza"
+          }
+        },
+        {
+          "key": "value",
+          "persistentKey": "value",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Obszar",
+          "type": "string"
+        },
+        {
+          "key": "operatorId",
+          "persistentKey": "operatorId",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Zakres operatora",
+          "references": "operator",
+          "type": "reference"
+        },
+        {
+          "key": "operator_owner",
+          "persistentKey": "operator_owner",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "operator",
+          "references": "operator",
+          "type": "reference"
+        },
+        {
+          "key": "project_owner",
+          "persistentKey": "project_owner",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "project",
+          "references": "project",
+          "type": "reference"
+        },
+        {
+          "key": "recruitment_owner",
+          "persistentKey": "recruitment_owner",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "recruitment",
+          "references": "recruitment",
+          "type": "reference"
+        }
+      ],
+      "parents": [
+        "operator",
+        "project",
+        "recruitment"
+      ]
+    },
+    {
+      "localType": "funding",
+      "key": "FundingVariant",
+      "label": "Wariant finansowania",
+      "primaryLabelField": null,
+      "fields": [
+        {
+          "key": "refund_percent_base",
+          "persistentKey": "refund_percent_base",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Bazowa refundacja (%)",
+          "type": "percentage",
+          "group": "Refundacja (%)",
+          "min": 0,
+          "max": 100
+        },
+        {
+          "key": "refund_percent_standard",
+          "persistentKey": "refund_percent_standard",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Standardowa refundacja (%)",
+          "type": "percentage",
+          "group": "Refundacja (%)",
+          "min": 0,
+          "max": 100
+        },
+        {
+          "key": "refund_percent_min",
+          "persistentKey": "refund_percent_min",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Minimalna refundacja (%)",
+          "type": "percentage",
+          "group": "Refundacja (%)",
+          "min": 0,
+          "max": 100
+        },
+        {
+          "key": "refund_percent_avg",
+          "persistentKey": "refund_percent_avg",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Średnia refundacja (%)",
+          "type": "percentage",
+          "group": "Refundacja (%)",
+          "min": 0,
+          "max": 100
+        },
+        {
+          "key": "refund_percent_max",
+          "persistentKey": "refund_percent_max",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Maksymalna refundacja (%)",
+          "type": "percentage",
+          "group": "Refundacja (%)",
+          "min": 0,
+          "max": 100
+        },
+        {
+          "key": "max_amount_pln",
+          "persistentKey": "max_amount_pln",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Maksymalnie na firmę (PLN)",
+          "type": "money",
+          "group": "Limity kwotowe (PLN)"
+        },
+        {
+          "key": "max_per_person_pln",
+          "persistentKey": "max_per_person_pln",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Maksymalnie na uczestnika (PLN)",
+          "type": "money",
+          "group": "Limity kwotowe (PLN)"
+        },
+        {
+          "key": "max_service_value_pln",
+          "persistentKey": "max_service_value_pln",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Maksymalna wartość usług (PLN)",
+          "type": "money",
+          "group": "Limity kwotowe (PLN)"
+        },
+        {
+          "key": "max_refund_standard_pln",
+          "persistentKey": "max_refund_standard_pln",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Standardowa maks. kwota refundacji (PLN)",
+          "type": "money",
+          "group": "Limity kwotowe (PLN)"
+        },
+        {
+          "key": "max_refund_max_pln",
+          "persistentKey": "max_refund_max_pln",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Maksymalna kwota refundacji (PLN)",
+          "type": "money",
+          "group": "Limity kwotowe (PLN)"
+        },
+        {
+          "key": "own_contribution_percent_standard",
+          "persistentKey": "own_contribution_percent_standard",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Standardowy wkład własny (%)",
+          "type": "percentage",
+          "group": "Wkład własny",
+          "min": 0,
+          "max": 100
+        },
+        {
+          "key": "own_contribution_percent_min",
+          "persistentKey": "own_contribution_percent_min",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Minimalny wkład własny (%)",
+          "type": "percentage",
+          "group": "Wkład własny",
+          "min": 0,
+          "max": 100
+        },
+        {
+          "key": "own_contribution_form",
+          "persistentKey": "own_contribution_form",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Forma wkładu własnego",
+          "type": "enum",
+          "options": {
+            "UNSPECIFIED": "Nie rozróżniono w źródle",
+            "CASH": "Gotówkowy",
+            "WAGES": "Wynagrodzenia"
+          },
+          "group": "Wkład własny"
+        },
+        {
+          "key": "notes",
+          "persistentKey": "notes",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Uwagi",
+          "type": "string",
+          "group": "Uwagi",
+          "multiline": true
+        },
+        {
+          "key": "refund_percent",
+          "persistentKey": "refund_percent",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Refund (legacy)",
+          "type": "percentage",
+          "min": 0,
+          "max": 100,
+          "legacy": true,
+          "hidden": true
+        },
+        {
+          "key": "company_size",
+          "persistentKey": "company_size",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Wielkość firmy",
+          "type": "enum",
+          "options": {
+            "MICRO": "Micro",
+            "SMALL": "Small",
+            "MEDIUM": "Medium",
+            "LARGE": "Large",
+            "B2C": "B2C / osoba dorosła",
+            "NGO": "NGO",
+            "NON_PUBLIC_FINANCE_EMPLOYER": "Pracodawcy niebędący jednostkami sektora finansów publicznych",
+            "OTHER_EMPLOYER": "Pozostali pracodawcy"
+          }
+        },
+        {
+          "key": "variant_no",
+          "persistentKey": "variant_no",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Numer wariantu",
+          "type": "integer",
+          "min": 1
+        },
+        {
+          "key": "service_category_id",
+          "persistentKey": "service_category_id",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Kategoria usługi",
+          "references": "service_category",
+          "type": "reference"
+        },
+        {
+          "key": "project_owner",
+          "persistentKey": "project_owner",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "project",
+          "references": "project",
+          "type": "reference"
+        },
+        {
+          "key": "recruitment_owner",
+          "persistentKey": "recruitment_owner",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "recruitment",
+          "references": "recruitment",
+          "type": "reference"
+        }
+      ],
+      "parents": [
+        "project",
+        "recruitment"
+      ]
+    },
+    {
+      "localType": "service_category",
+      "key": "ServiceCategory",
+      "label": "Kategoria usługi",
+      "primaryLabelField": null,
+      "fields": [
+        {
+          "key": "label",
+          "persistentKey": "label",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Nazwa",
+          "type": "string"
+        },
+        {
+          "key": "project_owner",
+          "persistentKey": "project_owner",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "project",
+          "references": "project",
+          "type": "reference"
+        },
+        {
+          "key": "recruitment_owner",
+          "persistentKey": "recruitment_owner",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "recruitment",
+          "references": "recruitment",
+          "type": "reference"
+        }
+      ],
+      "parents": [
+        "project",
+        "recruitment"
+      ]
+    },
+    {
+      "localType": "file_source",
+      "key": "DocumentFile",
+      "label": "Plik",
+      "primaryLabelField": null,
+      "fields": [
+        {
+          "key": "name",
+          "persistentKey": "name",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Nazwa pliku",
+          "type": "string"
+        },
+        {
+          "key": "display_name",
+          "persistentKey": "display_name",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Nazwa dokumentu",
+          "type": "string"
+        },
+        {
+          "key": "fileType",
+          "persistentKey": "fileType",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Format pliku",
+          "type": "string"
+        },
+        {
+          "key": "url",
+          "persistentKey": "url",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "URL pliku",
+          "type": "url"
+        },
+        {
+          "key": "source",
+          "persistentKey": "source",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Zarejestrowane źródło",
+          "type": "source"
+        },
+        {
+          "key": "purpose",
+          "persistentKey": "purpose",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Przeznaczenie",
+          "type": "string"
+        },
+        {
+          "key": "has_fields",
+          "persistentKey": "has_fields",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Zawiera pola",
+          "type": "boolean"
+        },
+        {
+          "key": "intended_use",
+          "persistentKey": "intended_use",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Zastosowanie",
+          "type": "string"
+        },
+        {
+          "key": "client_requirement",
+          "persistentKey": "client_requirement",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Wymagalność",
+          "type": "string"
+        },
+        {
+          "key": "signature_requirement",
+          "persistentKey": "signature_requirement",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Podpis",
+          "type": "string"
+        },
+        {
+          "key": "condition",
+          "persistentKey": "condition",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Warunek",
+          "type": "string"
+        },
+        {
+          "key": "delivery_stage",
+          "persistentKey": "delivery_stage",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Etap dostarczenia",
+          "type": "string"
+        },
+        {
+          "key": "responsibility",
+          "persistentKey": "responsibility",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Odpowiedzialność",
+          "type": "enum",
+          "options": {
+            "FUNDPILOT": "FundPilot",
+            "CLIENT": "Klient",
+            "SHARED": "Wspólna"
+          }
+        },
+        {
+          "key": "required_evidence",
+          "persistentKey": "required_evidence",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Potrzebne dowody",
+          "type": "string"
+        },
+        {
+          "key": "source_url",
+          "persistentKey": "source_url",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Źródło",
+          "type": "url"
+        },
+        {
+          "key": "source_description",
+          "persistentKey": "source_description",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Opis źródła",
+          "type": "string"
+        },
+        {
+          "key": "project_owner",
+          "persistentKey": "project_owner",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "project",
+          "references": "project",
+          "type": "reference"
+        },
+        {
+          "key": "recruitment_owner",
+          "persistentKey": "recruitment_owner",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "recruitment",
+          "references": "recruitment",
+          "type": "reference"
+        }
+      ],
+      "parents": [
+        "project",
+        "recruitment"
+      ]
+    },
+    {
+      "localType": "document",
+      "key": "DocumentRequirement",
+      "label": "Wymaganie dokumentowe",
+      "primaryLabelField": null,
+      "fields": [
+        {
+          "key": "label",
+          "persistentKey": "label",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Nazwa",
+          "type": "string",
+          "group": "Dokumenty",
+          "maxLength": 500
+        },
+        {
+          "key": "purpose",
+          "persistentKey": "purpose",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Przeznaczenie",
+          "type": "string",
+          "group": "Dokumenty",
+          "multiline": true,
+          "maxLength": 1000
+        },
+        {
+          "key": "requirement",
+          "persistentKey": "requirement",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Wymagalność",
+          "type": "enum",
+          "options": {
+            "UNKNOWN": "Nie ustalono",
+            "REQUIRED": "Obowiązkowy",
+            "CONDITIONAL": "Warunkowy",
+            "INFORMATIONAL": "Informacyjny",
+            "OPTIONAL": "Opcjonalny (legacy)"
+          },
+          "group": "Podstawowe"
+        },
+        {
+          "key": "condition",
+          "persistentKey": "condition",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Kiedy dokument jest wymagany",
+          "type": "string",
+          "group": "Dokumenty",
+          "multiline": true,
+          "maxLength": 1000
+        },
+        {
+          "key": "fulfillment_mode",
+          "persistentKey": "fulfillment_mode",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Źródło / sposób przygotowania",
+          "type": "enum",
+          "options": {
+            "OPERATOR_TEMPLATE": "Wzór udostępniony przez operatora",
+            "WITHOUT_OPERATOR_TEMPLATE": "Dokument dostarczany bez wzoru operatora"
+          },
+          "group": "Podstawowe"
+        },
+        {
+          "key": "delivery_stage",
+          "persistentKey": "delivery_stage",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Etap dostarczenia",
+          "type": "string",
+          "group": "Dokumenty",
+          "maxLength": 60
+        },
+        {
+          "key": "responsibility",
+          "persistentKey": "responsibility",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Odpowiedzialność",
+          "type": "enum",
+          "options": {
+            "FUNDPILOT": "FundPilot",
+            "CLIENT": "Klient",
+            "SHARED": "Wspólna"
+          },
+          "group": "Podstawowe"
+        },
+        {
+          "key": "required_evidence",
+          "persistentKey": "required_evidence",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Co należy dostarczyć",
+          "type": "string",
+          "group": "Dokumenty",
+          "multiline": true,
+          "maxLength": 4000
+        },
+        {
+          "key": "source_url",
+          "persistentKey": "source_url",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Oficjalne źródło",
+          "type": "url",
+          "group": "Źródła"
+        },
+        {
+          "key": "source_description",
+          "persistentKey": "source_description",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Opis źródła",
+          "type": "string",
+          "group": "Dokumenty",
+          "multiline": true,
+          "maxLength": 1000
+        },
+        {
+          "key": "version_label",
+          "persistentKey": "version_label",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Wersja dokumentu (legacy)",
+          "type": "string",
+          "group": "Dokumenty",
+          "maxLength": 255,
+          "hidden": true,
+          "legacy": true
+        },
+        {
+          "key": "signature_requirement",
+          "persistentKey": "signature_requirement",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Podpis",
+          "type": "enum",
+          "options": {
+            "UNKNOWN": "Nie ustalono",
+            "NOT_REQUIRED": "Nie jest wymagany",
+            "REQUIRED_FILE": "Wymagany podpisany plik",
+            "EXTERNAL_OPERATOR": "Dowód / podpis w systemie operatora"
+          },
+          "group": "Podstawowe"
+        },
+        {
+          "key": "auto_fill",
+          "persistentKey": "auto_fill",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Auto-fill (legacy)",
+          "type": "boolean",
+          "legacy": true
+        },
+        {
+          "key": "notes",
+          "persistentKey": "notes",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Notes (legacy)",
+          "type": "string",
+          "group": "Documents",
+          "multiline": true,
+          "legacy": true
+        },
+        {
+          "key": "document_type_key",
+          "persistentKey": "document_type_key",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "Typ dokumentu (legacy)",
+          "type": "string"
+        },
+        {
+          "key": "source_file_source_ids",
+          "persistentKey": "source_file_source_ids",
+          "nullable": true,
+          "cardinality": "many",
+          "label": "Pliki dokumentu",
+          "type": "reference",
+          "references": "file_source"
+        },
+        {
+          "key": "project_owner",
+          "persistentKey": "project_owner",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "project",
+          "references": "project",
+          "type": "reference"
+        },
+        {
+          "key": "recruitment_owner",
+          "persistentKey": "recruitment_owner",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "recruitment",
+          "references": "recruitment",
+          "type": "reference"
+        }
+      ],
+      "parents": [
+        "project",
+        "recruitment"
+      ]
+    }
+  ],
+  "aliases": {
+    "nabor": {
+      "entity": "recruitment",
+      "fields": {
+        "title": "external_number",
+        "operator": "legacy_operator_name",
+        "amount": "legacy_amount",
+        "deadline": "legacy_deadline",
+        "url": "announcement_url"
+      }
+    }
+  },
+  "provenance": {
+    "fieldEvidence": "Extraction FieldObservation and SelectorEvaluation",
+    "importSources": "Sources Source and SourceSnapshot",
+    "localFileBlobs": "SQLite until explicitly registered in the server storage"
+  }
+}

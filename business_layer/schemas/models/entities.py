@@ -102,6 +102,7 @@ class BusinessEntity(SQLModel, table=True):
     __tablename__ = "business_entities"
     __table_args__ = (
         Index("ix_business_entities_model", "business_model_id"),
+        UniqueConstraint("id", "business_model_id", name="uq_business_entity_model_owner"),
         UniqueConstraint("business_model_id", "table_name", name="uq_business_entities_model_table_name"),
         UniqueConstraint("business_model_id", "physical_name", name="uq_business_entities_model_physical_name"),
         # Prevent a pointer to a version of a different entity.
