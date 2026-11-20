@@ -150,6 +150,7 @@ class TaskReferenceType(StrEnum):
     BUSINESS_ENTITY = "business_entity"
     BUSINESS_OBJECT = "business_object"
     BUSINESS_FIELD = "business_field"
+    BUSINESS_OBJECT_FIELD = "business_object_field"
 
 
 # ============================================================

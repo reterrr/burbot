@@ -4,7 +4,7 @@ from datetime import datetime
 from graphlib import CycleError, TopologicalSorter
 from typing import Annotated, Any, Self
 
-from pydantic import Field, StringConstraints, model_validator
+from pydantic import Field, StringConstraints, ValidationInfo, model_validator
 
 from extraction.schemas.api import Identifier, NonBlank, RequestModel, ResponseModel, TokenClassId
 from extraction.schemas.enums import (
@@ -145,8 +145,8 @@ class ValueRequest(RequestModel):
     notes: str | None = None
 
     @model_validator(mode="after")
-    def literal(self) -> Self:
-        if not self.raw_value.strip():
+    def literal(self, info: ValidationInfo) -> Self:
+        if not self.raw_value.strip() and not (info.context or {}).get("selector_evidence"):
             raise ValueError("raw_value must contain explicit source evidence")
         if (self.char_start is None) != (self.char_end is None):
             raise ValueError("char_start and char_end must be supplied together")
@@ -306,6 +306,8 @@ class ObservationResponse(ResponseModel):
     business_object_field_id: int | None
     scope_instance_id: int | None
     concrete_value_id: int | None
+    selector_evaluation_id: int | None = None
+    selector_version_id: int | None = None
     status: ObservationStatus
     confidence: float
     observed_at: datetime

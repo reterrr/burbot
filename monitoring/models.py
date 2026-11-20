@@ -1,0 +1,157 @@
+"""Durable monitoring jobs and references into the existing source/evidence layers."""
+
+from datetime import datetime
+from typing import Any
+from uuid import UUID, uuid4
+
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    CheckConstraint,
+    Column,
+    DateTime,
+    ForeignKey,
+    ForeignKeyConstraint,
+    Index,
+    String,
+    Text,
+    UniqueConstraint,
+    Uuid,
+    text,
+)
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlmodel import Field, SQLModel
+
+from extraction.schemas.common import reference, utc_now
+
+TERMINAL = ("completed", "failed", "cancelled")
+LEASED = ("claimed", "capturing", "uploading")
+READY = ("pending", "retry_pending")
+PROCESSABLE = ("uploaded", "processing")
+ACTIVE = (*READY, *LEASED, *PROCESSABLE)
+
+
+def timestamp(nullable=False):
+    return Column(DateTime(timezone=True), nullable=nullable)
+
+
+class MonitoringSource(SQLModel, table=True):
+    __tablename__ = "monitoring_sources"
+    source_id: int = Field(sa_column=reference("sources.id", primary_key=True))
+    url: str = Field(sa_column=Column(Text, nullable=False))
+    origins: list[str] = Field(sa_column=Column(JSONB, nullable=False))
+    enabled: bool = Field(default=True, sa_column=Column(Boolean, nullable=False))
+    approved_at: datetime = Field(default_factory=utc_now, sa_column=timestamp())
+
+
+class MonitoringAgent(SQLModel, table=True):
+    __tablename__ = "monitoring_agents"
+    id: UUID = Field(default_factory=uuid4, sa_column=Column(Uuid, primary_key=True))
+    name: str = Field(sa_column=Column(String(150), nullable=False))
+    token_digest: str = Field(sa_column=Column(String(64), nullable=False, unique=True))
+    enabled: bool = Field(default=True, sa_column=Column(Boolean, nullable=False))
+    created_at: datetime = Field(default_factory=utc_now, sa_column=timestamp())
+    last_seen_at: datetime | None = Field(default=None, sa_column=timestamp(nullable=True))
+
+
+class MonitoringAgentSource(SQLModel, table=True):
+    __tablename__ = "monitoring_agent_sources"
+    agent_id: UUID = Field(
+        sa_column=Column(Uuid, ForeignKey("monitoring_agents.id"), primary_key=True)
+    )
+    source_id: int = Field(sa_column=reference("monitoring_sources.source_id", primary_key=True))
+
+
+class MonitoringJob(SQLModel, table=True):
+    __tablename__ = "monitoring_jobs"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN (" + ",".join(f"'{state}'" for state in (*ACTIVE, *TERMINAL)) + ")",
+            name="monitoring_job_status",
+        ),
+        CheckConstraint(
+            "attempt_count >= 0 AND processing_attempts >= 0", name="monitoring_job_attempts"
+        ),
+        Index(
+            "uq_monitoring_jobs_active_source",
+            "source_id",
+            unique=True,
+            postgresql_where=text("status NOT IN ('completed','failed','cancelled')"),
+        ),
+        Index("ix_monitoring_jobs_queue", "status", "available_at"),
+    )
+    id: UUID = Field(default_factory=uuid4, sa_column=Column(Uuid, primary_key=True))
+    source_id: int = Field(sa_column=reference("monitoring_sources.source_id"))
+    url: str = Field(sa_column=Column(Text, nullable=False))
+    origins: list[str] = Field(sa_column=Column(JSONB, nullable=False))
+    reason: str = Field(sa_column=Column(String(32), nullable=False))
+    status: str = Field(default="pending", sa_column=Column(String(32), nullable=False))
+    created_at: datetime = Field(default_factory=utc_now, sa_column=timestamp())
+    available_at: datetime = Field(default_factory=utc_now, sa_column=timestamp())
+    agent_id: UUID | None = Field(
+        default=None, sa_column=Column(Uuid, ForeignKey("monitoring_agents.id"))
+    )
+    lease_id: UUID | None = Field(default=None, sa_column=Column(Uuid))
+    claimed_at: datetime | None = Field(default=None, sa_column=timestamp(nullable=True))
+    lease_expires_at: datetime | None = Field(default=None, sa_column=timestamp(nullable=True))
+    completed_at: datetime | None = Field(default=None, sa_column=timestamp(nullable=True))
+    attempt_count: int = 0
+    processing_attempts: int = 0
+    source_snapshot_id: int | None = Field(
+        default=None, sa_column=reference("source_snapshots.id", nullable=True)
+    )
+    extraction_run_id: int | None = Field(
+        default=None,
+        sa_column=Column(BigInteger, ForeignKey("extraction_runs.id"), nullable=True, unique=True),
+    )
+    completion_key: UUID | None = Field(default=None, sa_column=Column(Uuid))
+    completion_digest: str | None = Field(default=None, sa_column=Column(String(64)))
+    completion_json: dict[str, Any] | None = Field(default=None, sa_column=Column(JSONB))
+    error_code: str | None = Field(default=None, sa_column=Column(String(64)))
+
+
+class MonitoringJobSelector(SQLModel, table=True):
+    __tablename__ = "monitoring_job_selectors"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["selector_id", "version_id"],
+            ["selector_versions.selector_id", "selector_versions.id"],
+            name="fk_monitoring_selector_version_owner",
+            ondelete="RESTRICT",
+        ),
+    )
+    job_id: UUID = Field(sa_column=Column(Uuid, ForeignKey("monitoring_jobs.id"), primary_key=True))
+    selector_id: int = Field(sa_column=reference("selectors.id", primary_key=True))
+    version_id: int = Field(sa_column=Column(BigInteger, nullable=False))
+    fingerprint: str = Field(sa_column=Column(String(64), nullable=False))
+
+
+class MonitoringUpload(SQLModel, table=True):
+    __tablename__ = "monitoring_uploads"
+    __table_args__ = (
+        CheckConstraint("content_size > 0", name="monitoring_upload_positive_size"),
+        UniqueConstraint("job_id", "lease_id", name="uq_monitoring_upload_per_attempt"),
+        Index("ix_monitoring_uploads_cleanup", "expires_at", "cleaned_at"),
+    )
+    id: UUID = Field(default_factory=uuid4, sa_column=Column(Uuid, primary_key=True))
+    job_id: UUID = Field(sa_column=Column(Uuid, ForeignKey("monitoring_jobs.id"), nullable=False))
+    lease_id: UUID = Field(sa_column=Column(Uuid, nullable=False))
+    storage_key: str = Field(sa_column=Column(Text, nullable=False, unique=True))
+    content_hash: str = Field(sa_column=Column(String(64), nullable=False))
+    content_size: int = Field(sa_column=Column(BigInteger, nullable=False))
+    expires_at: datetime = Field(sa_column=timestamp())
+    sealed_key: str | None = Field(default=None, sa_column=Column(Text))
+    cleaned_at: datetime | None = Field(default=None, sa_column=timestamp(nullable=True))
+
+
+class SourceCheckRun(SQLModel, table=True):
+    """Check-specific history. The joined job holds lifecycle and snapshot references."""
+
+    __tablename__ = "source_check_runs"
+    job_id: UUID = Field(sa_column=Column(Uuid, ForeignKey("monitoring_jobs.id"), primary_key=True))
+    scheduling_flow_run_id: str | None = Field(default=None, sa_column=Column(String(64)))
+    processing_flow_run_id: str | None = Field(default=None, sa_column=Column(String(64)))
+    acquired_at: datetime | None = Field(default=None, sa_column=timestamp(nullable=True))
+    processed_at: datetime | None = Field(default=None, sa_column=timestamp(nullable=True))
+    change_status: str | None = Field(default=None, sa_column=Column(String(32)))
+    field_results: list[dict[str, Any]] | None = Field(default=None, sa_column=Column(JSONB))

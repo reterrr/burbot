@@ -111,8 +111,11 @@ class TasksService:
     def __init__(
             self,
             session: AsyncSession,
+            *,
+            commit: bool = True,
     ) -> None:
         self._session = session
+        self._commit = commit
 
     # ========================================================
     # Transaction
@@ -122,6 +125,10 @@ class TasksService:
     async def _transaction(
             self,
     ) -> AsyncIterator[None]:
+        if not self._commit:
+            async with self._session.begin_nested():
+                yield
+            return
         try:
             yield
 
@@ -379,6 +386,33 @@ class TasksService:
     # Workflow lifecycle
     # ========================================================
 
+    async def _cancel_stale_tasks(self, workflow_id, now):
+        # Keep open monitoring reviews visible across snapshot generations.
+        open_monitoring = col(Task.metadata_json)["monitoringKey"].as_string().is_not(None)
+        await self._session.execute(
+            update(Task)
+            .where(col(Task.workflow_id) == workflow_id)
+            .where(
+                (col(Task.status) == TaskStatus.FAILED)
+                | (col(Task.status).in_([TaskStatus.PENDING, TaskStatus.IN_PROGRESS])
+                   & ~open_monitoring)
+            )
+            .values(status=TaskStatus.CANCELLED, completed_at=now)
+        )
+
+    async def _carry_monitoring_tasks(self, workflow):
+        if workflow.previous_workflow_id is None:
+            return
+        await self._session.execute(
+            update(Task)
+            .where(
+                col(Task.workflow_id) == workflow.previous_workflow_id,
+                col(Task.status).in_([TaskStatus.PENDING, TaskStatus.IN_PROGRESS]),
+                col(Task.metadata_json)["monitoringKey"].as_string().is_not(None),
+            )
+            .values(workflow_id=workflow.id)
+        )
+
     async def start_source_workflow(
             self,
             source_id: int,
@@ -466,26 +500,7 @@ class TasksService:
 
                 current.superseded_at = now
 
-                # Any task based on the old snapshot is stale.
-                await self._session.execute(
-                    update(Task)
-                    .where(
-                        col(Task.workflow_id)
-                        == current.id,
-
-                        col(Task.status).in_(
-                            [
-                                TaskStatus.PENDING,
-                                TaskStatus.IN_PROGRESS,
-                                TaskStatus.FAILED,
-                            ]
-                        ),
-                    )
-                    .values(
-                        status=TaskStatus.CANCELLED,
-                        completed_at=now,
-                    )
-                )
+                await self._cancel_stale_tasks(current.id, now)
 
             # ------------------------------------------------
             # New generation
@@ -514,6 +529,7 @@ class TasksService:
             )
 
             await self._session.flush()
+            await self._carry_monitoring_tasks(workflow)
 
             if workflow.id is None:
                 raise RuntimeError(
@@ -660,25 +676,7 @@ class TasksService:
                     )
                     workflow.superseded_at = now
 
-                    await self._session.execute(
-                        update(Task)
-                        .where(
-                            col(Task.workflow_id)
-                            == workflow.id,
-
-                            col(Task.status).in_(
-                                [
-                                    TaskStatus.PENDING,
-                                    TaskStatus.IN_PROGRESS,
-                                    TaskStatus.FAILED,
-                                ]
-                            ),
-                        )
-                        .values(
-                            status=TaskStatus.CANCELLED,
-                            completed_at=now,
-                        )
-                    )
+                    await self._cancel_stale_tasks(workflow.id, now)
 
                 workflow = Workflow(
                     key="source_processing",
@@ -698,6 +696,7 @@ class TasksService:
                 self._session.add(workflow)
 
                 await self._session.flush()
+                await self._carry_monitoring_tasks(workflow)
 
             # ====================================================
             # Create task in current generation

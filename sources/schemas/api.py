@@ -286,6 +286,10 @@ class SourceSnapshotCreate(RequestModel):
     content_hash: str | None = Field(default=None, pattern=r"^[a-fA-F0-9]{64}$")
     structure_hash: str | None = Field(default=None, pattern=r"^[a-fA-F0-9]{64}$")
     parser_version: str | None = None
+    representation: str | None = None
+    representation_version: str | None = None
+    structure_hash_version: str | None = None
+    hash_algorithm: str | None = None
 
     @model_validator(mode="after")
     def aware_timestamp(self):
@@ -312,4 +316,8 @@ class SourceSnapshotResponse(ResponseModel):
     content_hash: str | None
     structure_hash: str | None
     parser_version: str | None
+    representation: str | None
+    representation_version: str | None
+    structure_hash_version: str | None
+    hash_algorithm: str | None
     created_at: datetime
