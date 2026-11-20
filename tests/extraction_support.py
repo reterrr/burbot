@@ -15,31 +15,28 @@ from sqlmodel import SQLModel
 
 os.environ.setdefault("DCKR_DATABASE_URL", "postgresql+asyncpg://test:test@localhost/test")
 
+from test_collections_postgres import migrate
+
 from business_layer.schemas.models import (
     BusinessEntity,
     BusinessEntityField,
+    BusinessEntityFieldVersion,
     BusinessModel,
     BusinessModelRevision,
     BusinessObject,
-    BusinessObjectField,
-    BusinessObjectFieldValue,
 )
 from extraction.schemas import capture as dto
 from extraction.schemas.evidence import (
     TokenClass,
 )
-from extraction.schemas.models import (
-    EXTRACTION_TABLES,
-)
 from extraction.services.extraction import ExtractionService
+from migrations.load_models import load_models
 from sources.schemas.enums import SourceState, SourceType
 from sources.schemas.models import (
-    SOURCE_TABLES,
     Source,
     SourceObjectFieldTracking,
     SourceSnapshot,
 )
-from tasks.schemas.models import Workflow
 
 
 @compiles(BigInteger, "sqlite")
@@ -63,10 +60,11 @@ pytestmark = pytest.mark.asyncio
 
 
 @pytest_asyncio.fixture
-async def sessions(tmp_path):
+async def sessions(tmp_path, monkeypatch):
     url = os.environ.get("EXTRACTION_TEST_DATABASE_URL")
     admin = schema = None
     if url:
+        monkeypatch.setenv("HOST_DATABASE_URL", url)
         schema = f"extraction_test_{uuid4().hex}"
         admin = create_async_engine(url)
         async with admin.begin() as connection:
@@ -80,24 +78,22 @@ async def sessions(tmp_path):
         @event.listens_for(engine.sync_engine, "connect")
         def foreign_keys(connection, _record):
             connection.execute("PRAGMA foreign_keys=ON")
+            connection.create_function("num_nonnulls", -1, lambda *v: sum(x is not None for x in v))
 
-    tables = [
-        BusinessModel.__table__,
-        BusinessModelRevision.__table__,
-        BusinessEntity.__table__,
-        BusinessEntityField.__table__,
-        BusinessObject.__table__,
-        BusinessObjectField.__table__,
-        BusinessObjectFieldValue.__table__,
-        Workflow.__table__,
-        *SOURCE_TABLES,
-        *EXTRACTION_TABLES,
-    ]
     try:
         async with engine.begin() as connection:
-            await connection.run_sync(
-                lambda conn: SQLModel.metadata.create_all(conn, tables=tables, checkfirst=False)
-            )
+            if url:
+                await connection.run_sync(lambda conn: migrate(conn, schema, "head"))
+            else:
+                load_models()
+                tables = [
+                    table
+                    for table in SQLModel.metadata.tables.values()
+                    if table.name != "business_collection_item_versions"
+                ]
+                await connection.run_sync(
+                    lambda conn: SQLModel.metadata.create_all(conn, tables=tables)
+                )
         factory = async_sessionmaker(engine, expire_on_commit=False, autoflush=False)
         async with factory() as session:
             session.add(BusinessModel(id=10, key="funding", name="Funding"))
@@ -111,9 +107,9 @@ async def sessions(tmp_path):
             await session.flush()
             session.add_all(
                 [
-                    BusinessEntityField(id=30, business_entity_id=20),
-                    BusinessEntityField(id=31, business_entity_id=20),
-                    BusinessEntityField(id=32, business_entity_id=21),
+                    BusinessEntityField(id=30, business_entity_id=20, persistent_key="amount"),
+                    BusinessEntityField(id=31, business_entity_id=20, persistent_key="name"),
+                    BusinessEntityField(id=32, business_entity_id=21, persistent_key="name"),
                     BusinessObject(id=40, business_entity_id=20),
                     BusinessObject(id=41, business_entity_id=20),
                     BusinessObject(id=42, business_entity_id=21),
@@ -128,7 +124,19 @@ async def sessions(tmp_path):
                 )
             )
             session.add(TokenClass(id="text", name="Text"))
+            session.add(BusinessModelRevision(id=11, business_model_id=10))
             await session.flush()
+            session.add(
+                BusinessEntityFieldVersion(
+                    id=130,
+                    business_entity_field_id=30,
+                    business_model_revision_id=11,
+                    key="amount",
+                    label="Amount",
+                    definition_json={"type": "integer"},
+                    valid_from=datetime(2026, 9, 15, tzinfo=UTC),
+                )
+            )
             session.add(
                 SourceSnapshot(
                     id=100,

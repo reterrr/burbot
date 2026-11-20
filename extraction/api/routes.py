@@ -3,6 +3,7 @@ from typing import Annotated
 from fastapi import APIRouter, Path, Query, status
 
 from extraction.api.dependencies import ExtractionServiceDep
+from extraction.api.selector_routes import router as selector_router
 from extraction.schemas import api as dto
 from extraction.schemas import capture as capture_dto
 
@@ -119,3 +120,6 @@ async def get_capture(
     run_id: PositiveId, service: ExtractionServiceDep
 ) -> capture_dto.CaptureResponse:
     return await service.get_capture(run_id)
+
+
+capture_router.include_router(selector_router)

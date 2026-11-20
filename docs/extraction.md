@@ -1,10 +1,9 @@
 # Extraction service
 
 The backend has one write pipeline: `ExtractionService` → `CaptureService` →
-`CaptureWriter`. Manual discovery teaches reusable field recipes and records the
-current evidence; automatic execution uses those recipes on a later snapshot.
-It records evidence and source-specific tracking state. It never creates BusinessObjects, chooses source trust policy, or
-reads/writes canonical `BusinessObjectFieldValue` rows.
+`CaptureWriter`. SelectorTree is the reusable web definition. Manual capture
+and snapshot execution both record evidence and source tracking through that
+writer. Reconciliation owns the canonical business values.
 
 ## Frontend workflow
 
@@ -50,6 +49,87 @@ when supplied it must be active and reference exactly the run's source/snapshot.
 Errors use 404 for missing resources, 422 for invalid graphs or business bindings,
 409 for state/idempotency conflicts, and 501 when automatic execution has no adapter.
 
+## Unified SelectorTree
+
+The database stores a selector's stable UUID and its versions, independent
+recipes, ordered parts, and alternative locators in normalized tables. Portable
+responses use the extension's camelCase keys. Export orders versions by
+`versionNo` and components by `order`. [Firefox extension contract](https://github.com/reterrr/extension/blob/7dec21ceec4f436a47d7ecbe024feedcc5aacbda/src/shared/types/selectors.ts)
+
+| Method | Path under `/extraction/selectors` | Purpose |
+| --- | --- | --- |
+| POST | `/` | Create a selector with one draft |
+| GET | `/` | Page selector definitions |
+| GET | `/{uuid}`, `/{uuid}/export` | Read the portable tree and its ETag |
+| POST | `/import` | Import a portable tree with its UUIDs and history |
+| GET | `/{uuid}/versions`, `/{uuid}/versions/{version_uuid}` | Inspect version definitions |
+| POST | `/{uuid}/drafts` | Clone the active or latest version with new component UUIDs |
+| PUT | `/{uuid}/drafts/{version_uuid}` | Replace the draft using a portable version object |
+| POST | `/{uuid}/drafts/{version_uuid}/approve`, `/{uuid}/drafts/{version_uuid}/reject` | Review a draft |
+| POST | `/{uuid}/evaluate` | Execute the active version on a run's snapshot |
+| POST | `/{uuid}/evaluations` | Record a client-reported evaluation |
+| GET | `/{uuid}/evaluations` | Page stored evaluations |
+
+Create and import take an object with `tree` and `binding`. The binding names
+the existing backend `businessEntityFieldId`, optional `sourceId`, and optional
+`businessObjectFieldId`. The slot must belong to the field. Portable
+`target.objectId`, `target.field`, and `sourceUuid` are kept as external
+identifiers. Use `snapshotBindings` to explicitly map a
+`createdFromSnapshotUuid` to an existing integer snapshot ID for that source.
+Unmapped snapshot UUIDs remain in the portable metadata. A new installation
+supplies its own backend binding when importing the exported tree.
+
+Send the quoted `ETag` from the response as `If-Match` on draft creation,
+editing, review, and imports that change existing history. A stale token
+returns 409. Importing the same tree and bindings is idempotent. Review seals the
+definition and approval supersedes the previous active version in the same
+transaction. A failed evaluation leaves all version statuses as they were.
+Editing the recipe graph of a draft clears client diagnostics for its previous
+graph.
+
+### Execute a stored HTML snapshot
+
+Register its SourceSnapshot, create an ExtractionRun, and register the token
+class used for raw evidence. Call `POST /extraction/selectors/{uuid}/evaluate`
+with `runId`, `captureKey`, optional `sourceSnapshotId`, and optional
+`tokenClassId` (default `text`). The selector must bind to the same Source as
+the run. There are two ways to provide the saved document.
+
+- Set `api.state.selector_snapshot_reader` to an async function taking the
+  snapshot and its registered StoredFile and returning the recorded bytes.
+  The evaluator verifies recorded SHA-256 hashes when available.
+- Provide UTF-8 `html` whose bytes match the SHA-256 recorded on the snapshot or
+  its StoredFile. Unavailable bytes yield 501 and a digest mismatch yields 422.
+
+The evaluator parses the recorded HTML locally with a 5 MiB limit. It resolves
+CSS, XPath, element ID, and TextQuote over the stored markup. Live page state and
+JavaScript rendering require a serialized rendered DOM snapshot. DOM paths,
+ranges, positions, and text fragments keep their structured payloads and yield
+`unsupported` diagnostics. Position definitions require representation,
+version, units, and digest. Text uses the extension's whitespace rules,
+attribute values retain their contents, and relative href/src resolve against the
+snapshot URL and its base tag. Portable `name` addresses an HTML attribute.
+Legacy `attribute` inputs retain the whitelist below.
+
+Each part checks every locator. Successful locators must agree exactly, and
+all parts must succeed for a recipe to complete. The resolver inserts each
+subsequent part's `joinWith` before its value. Every independent recipe must
+produce the same full string. The evaluation contains every nested diagnostic
+and remains separate from the version.
+
+A successful backend evaluation and its capture commit together. Observations
+link the evaluation and exact version. The existing capture writer stores the
+raw ConcreteValue, binding, and tracking references. Without an explicit object
+slot, the observation remains unresolved. A failed result persists diagnostics
+and a failed run without an observation. Replaying a run and capture key returns
+that attempt's original evaluation and receipt, even after a new approval.
+
+`POST /extraction/selectors/{uuid}/evaluations` accepts `pageUrl`, a
+`SelectorEvaluationResult` in `result`, and an optional explicitly resolved
+`sourceSnapshotId`. These results carry `client_reported` provenance.
+The service validates every referenced recipe, part, and locator against the
+version. Evidence is created by backend execution via `/evaluate`.
+
 ## Copyable requests
 
 The IDs below are illustrative: entity `42` is Recruitment, field `101` belongs to
@@ -88,18 +168,18 @@ configures its execution adapter (see below).
 | Concept | Question | Persisted owner |
 | --- | --- | --- |
 | SourceScope | WHERE is a reusable region/record? | `source_scopes`, e.g. `table tbody tr` |
-| Field locator | WHERE is the field inside that region? | `FieldSelector.selector_type/selector_string` |
-| ExtractionSpec | HOW should the literal be read? | `FieldSelector.extraction_json` |
+| Field locator | WHERE is the field? | SelectorTree locator, or a legacy scope rule |
+| ExtractionSpec | HOW should the literal be read? | SelectorTree part, or `FieldSelector.extraction_json` for legacy rules |
 | ConcreteValue | WHAT was read on this snapshot? | Literal, token class, element, optional runtime offsets |
 | FieldObservation | WHAT DOES IT MEAN? | Entity field, occurrence, optional resolved business object |
 
-`FieldSelector` keeps its database/model name to avoid cosmetic migration churn.
-It now represents the complete field extraction recipe. It is owned by Extraction;
+`FieldSelector` remains the compatibility record for the existing scoped capture
+request and file-oriented recipes. It is owned by Extraction;
 Sources owns Source, SourceSnapshot and the two tracking models. A future
 Investigation orchestrator resolves local identifiers, registers snapshot metadata,
 and passes typed rules to Extraction; it does not write extraction tables itself.
 
-The canonical capture value has one optional **`rule`**:
+The legacy capture value can still teach one optional **`rule`**:
 
 ```json
 {
@@ -327,6 +407,9 @@ elements, occurrences, selectors, bindings, literals and observations;
 
 Implement `SnapshotExtractor` from `extraction/services/adapters.py` and assign it to
 `api.state.snapshot_extractor`, or inject it into `ExtractionService(session, adapter)`.
+This adapter handles existing scoped, page URL, PDF and XLSX rules. After
+approval of a migrated web selector, its legacy rule is omitted from new
+adapter definitions and the SelectorTree is executed through `/evaluate`.
 Its `extract(snapshot, definitions, capture_key=...)` method receives saved snapshot
 metadata and the active definitions, and returns the same `CaptureRequest` graph.
 `definitions.selectors` retains its collection name, but each item is a
@@ -353,8 +436,8 @@ separate responsibilities.
 
 ## Database setup and validation
 
-Run `alembic upgrade head` with `HOST_DATABASE_URL` configured. Three migrations follow
-`c67ac5d0c446`:
+Run `alembic upgrade head` with `HOST_DATABASE_URL` configured. The extraction
+migrations preserve existing data through these changes.
 
 1. `e100_extraction_legacy` registers the three previously unmigrated workflow
    extraction tables. It preserves existing tables created with the old models.
@@ -372,6 +455,23 @@ Run `alembic upgrade head` with `HOST_DATABASE_URL` configured. Three migrations
    Old snapshot URLs stay NULL; pageUrl execution requires a newly registered
    snapshot with a recorded URL. Downgrade refuses if any recipe or snapshot URL
    would be discarded, including historical recipe versions.
+4. `e103_selector_tree` creates the normalized tables and backfills the Sources
+   tracking columns already used by capture. It keeps existing observation
+   pointers and IDs. It groups complete HTML CSS/XPath rules by source, scope
+   name, and business field. Each legacy rule ID maps to a version with
+   deterministic UUIDs for its definition and children. Current rules become
+   drafts with unverified provenance and no assumed snapshot. Closed rules
+   remain available as superseded versions. The same mapping runs when new
+   legacy captures teach a rule. Existing page URL, file, or unknown rules
+   retain their original compatibility records. Downgrade requires the absence
+   of selector history and source tracking changes that the older schema
+   cannot represent.
+
+The earlier per-locator ORM prototype in `extraction/schemas/selector.py` had
+no shipped migration or callers. It is replaced by the normalized models.
+`schemas/core/db/extraction/scopes.py` belongs to the retired fixed-entity
+schema and is outside the application model registry. Historical workflow runs
+and capture receipts continue to read the active evidence tables.
 
 Legacy evidence is retained. No fabricated snapshots or normalized baselines are
 backfilled. Downgrading refuses when captures or workflow-free runs would be lost;
@@ -380,5 +480,8 @@ PostgreSQL enum labels added to existing enum types remain on a downgrade.
 Run `pytest -q` for local SQLite integration checks and PostgreSQL DDL compilation.
 Set `EXTRACTION_TEST_DATABASE_URL=postgresql+asyncpg://...` to also test source locks,
 concurrent captures and the complete migration chain in isolated PostgreSQL schemas.
+Set `COLLECTIONS_TEST_DATABASE_URL` to the disposable PostgreSQL database for the
+SelectorTree API and evidence integration tests. Set `SOURCES_TEST_DATABASE_URL`
+to run the Sources suite against the same migration chain.
 The extraction GitHub Actions workflow provisions PostgreSQL 18 and checks upgrade,
 legacy preservation, capture behavior, downgrade/re-upgrade and linting.

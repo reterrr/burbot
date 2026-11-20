@@ -269,12 +269,9 @@ values and backfills existing decisions from their definition history.
 `b203_value_field_owner` enforces that each validation version belongs to its
 value slot's logical field.
 
-Applying explicit Alembic migrations no longer imports optional application
-models. Autogeneration still imports the full model graph. At the base revision,
-the repository has removed `extraction.schemas.evidence` and source/extraction
-services while legacy modules/tests still import them. Those unrelated imports
-continue to block the complete legacy suite and full application startup; the
-business-router tests do not substitute fake persistence.
+Applying explicit Alembic migrations loads the revision scripts.
+Autogeneration imports the full model graph. The extraction capture services and
+their migrations are described in [Extraction service](extraction.md).
 
 ## Verification and walkthrough
 
