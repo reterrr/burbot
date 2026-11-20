@@ -28,6 +28,13 @@ def canonical_source(url):
     return canonical, origin(canonical, allow_http=True)
 
 
+def source_origin_allowed(policy: dict, site: str | None) -> bool:
+    """Check a validated public origin against the workspace Source policy."""
+    return site is not None and (
+        policy.get("allow_all_public_origins") is True or site in policy.get("origins", [])
+    )
+
+
 async def workspace_for_admin(session, workspace_id):
     workspace = await session.get(SyncWorkspace, workspace_id, with_for_update=True)
     if workspace is None:
@@ -35,7 +42,9 @@ async def workspace_for_admin(session, workspace_id):
     return workspace
 
 
-async def set_policy(session, workspace_id, origins, *, create, grant_existing):
+async def set_policy(
+    session, workspace_id, origins, *, create, grant_existing, allow_all_public_origins=False
+):
     sites = set()
     for url in origins:
         try:
@@ -46,19 +55,16 @@ async def set_policy(session, workspace_id, origins, *, create, grant_existing):
         except (MonitoringError, ValidationError, ValueError) as error:
             raise ValueError("Expected an exact public HTTP(S) origin") from error
         sites.add(site)
-    if (create or grant_existing) and not sites:
-        raise ValueError("Source creation or grants require at least one allowed origin")
+    if (create or grant_existing) and not (sites or allow_all_public_origins):
+        raise ValueError("Source creation or grants require --origin or --allow-all-public-origins")
     workspace = await workspace_for_admin(session, workspace_id)
-    workspace.source_policy = (
-        {
-            "origins": sorted(sites),
-            "create": create,
-            "grant_existing": grant_existing,
-        }
-        if sites
-        else {}
-    )
-    return {"workspaceUuid": str(workspace.id), "sourcePolicy": workspace.source_policy}
+    policy = {}
+    if sites or allow_all_public_origins:
+        policy = {"origins": sorted(sites), "create": create, "grant_existing": grant_existing}
+    if allow_all_public_origins:
+        policy["allow_all_public_origins"] = True
+    workspace.source_policy = policy
+    return {"workspaceUuid": str(workspace.id), "sourcePolicy": policy}
 
 
 async def change_grant(session, workspace_id, source_id, *, revoke):
@@ -107,7 +113,7 @@ class SourceReconciliation:
             "type": entry.type.value,
         }
         policy = self.workspace.source_policy
-        allowed = site in policy.get("origins", [])
+        allowed = source_origin_allowed(policy, site)
         if allowed:
             source = await self.sources.find_by_url(url, lock=apply)
             grant = source is not None and await self.session.get(

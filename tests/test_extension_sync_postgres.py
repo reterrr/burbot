@@ -396,15 +396,23 @@ def source_candidate(key, url=PAGE, kind="HTML", **approval):
     return {"clientKey": key, "url": url, "type": kind, **approval}
 
 
-async def configure_sources(workspace, *, create=False, grant_existing=False, secondary=False):
+async def configure_sources(
+    workspace,
+    *,
+    create=False,
+    grant_existing=False,
+    secondary=False,
+    allow_all_public_origins=False,
+):
     _, factory, namespace, other, *_ = workspace
     async with factory.begin() as session:
         return await set_policy(
             session,
             UUID(other if secondary else namespace),
-            ["https://EXAMPLE.org:443/"],
+            [] if allow_all_public_origins else ["https://EXAMPLE.org:443/"],
             create=create,
             grant_existing=grant_existing,
+            allow_all_public_origins=allow_all_public_origins,
         )
 
 
@@ -529,6 +537,129 @@ async def test_source_permissions_type_availability_and_bad_urls(workspace):
         "status"
     ] == "SOURCE_GRANT_REQUIRED"
     assert (await sources_request(workspace, [entry]))[0]["status"] == "SOURCE_GRANT_REQUIRED"
+
+
+async def test_public_origin_policy_requires_separate_source_capabilities(workspace):
+    _, factory, *_ = workspace
+    async with factory.begin() as session:
+        existing = Source(type="HTML", url="https://records.example.com/listings", state="ACTIVE")
+        session.add(existing)
+    known = source_candidate("existing", existing.url)
+    https = source_candidate("https", "https://archive.example.net/listings#today")
+    http = source_candidate("http", "http://catalog.example.com/listings")
+    new_entries = [https, http]
+
+    await configure_sources(workspace, create=True, allow_all_public_origins=True)
+    assert (await registry(workspace))["sourcePolicy"] == {
+        "origins": [],
+        "create": True,
+        "grant_existing": False,
+        "allow_all_public_origins": True,
+    }
+    preview = await sources_request(workspace, [*new_entries, known])
+    assert all(row["status"] == "SOURCE_MISSING" and row["canCreate"] for row in preview[:2])
+    assert preview[2]["status"] == "SOURCE_GRANT_REQUIRED" and not preview[2]["canGrantExisting"]
+    assert (await sources_request(workspace, [https], apply=True))[0]["status"] == "SOURCE_MISSING"
+    assert (await sources_request(workspace, [https], secondary=True))[0][
+        "status"
+    ] == "SOURCE_ORIGIN_DENIED"
+
+    invalid_urls = [
+        "http://localhost/",
+        "https://intranet.local/",
+        "http://192.168.1.7/",
+        "https://[fd00::1]/",
+        "https://name:password@example.net/",
+        "file:///tmp/document.html",
+    ]
+    registered = await sources_request(
+        workspace,
+        [
+            *(dict(entry, allowCreate=True) for entry in new_entries),
+            dict(known, allowGrantExisting=True),
+            *(
+                source_candidate(f"invalid-{i}", url, allowCreate=True)
+                for i, url in enumerate(invalid_urls)
+            ),
+        ],
+        apply=True,
+    )
+    assert [row["status"] for row in registered] == [
+        "RESOLVED",
+        "RESOLVED",
+        "SOURCE_GRANT_REQUIRED",
+        *(["SOURCE_URL_INVALID"] * len(invalid_urls)),
+    ]
+    assert registered[0]["canonicalUrl"] == "https://archive.example.net/listings"
+    assert registered[1]["canonicalUrl"] == http["url"]
+
+    await configure_sources(workspace, grant_existing=True, allow_all_public_origins=True)
+    new = source_candidate("new", "https://registry.example.org/listings")
+    preview = await sources_request(workspace, [new, known])
+    assert preview[0]["status"] == "SOURCE_MISSING" and not preview[0]["canCreate"]
+    assert preview[1]["status"] == "SOURCE_GRANT_REQUIRED" and preview[1]["canGrantExisting"]
+    denied = await sources_request(workspace, [dict(new, allowCreate=True), known], apply=True)
+    assert [row["status"] for row in denied] == ["SOURCE_MISSING", "SOURCE_GRANT_REQUIRED"]
+    approved = dict(known, allowGrantExisting=True, expectedSourceId=str(existing.id))
+    for _ in range(2):
+        result = (await sources_request(workspace, [approved], apply=True))[0]
+        assert result["status"] == "RESOLVED" and result["sourceId"] == str(existing.id)
+
+    await configure_sources(workspace, create=True)
+    assert "allow_all_public_origins" not in (await registry(workspace))["sourcePolicy"]
+    after = await sources_request(workspace, [new, known])
+    assert [row["status"] for row in after] == ["SOURCE_ORIGIN_DENIED", "EXISTING_SOURCE"]
+    async with factory() as session:
+        for model, count in (
+            (Source, 4),
+            (SyncSourceGrant, 4),
+            (SourceSnapshot, 1),
+            (MonitoringSource, 0),
+            (MonitoringJob, 0),
+            (SourceCheckSchedule, 0),
+        ):
+            assert await session.scalar(select(func.count()).select_from(model)) == count
+        created = await session.get(Source, int(registered[0]["sourceId"]))
+        assert created.state == "UNDISCOVERED"
+
+
+async def test_selector_preview_uses_public_origin_policy_without_granting(workspace):
+    client, factory, namespace, _, token, *_ = workspace
+    await resolve(workspace, action="create")
+    async with factory.begin() as session:
+        public = Source(type="HTML", url="https://outside.example.net/source", state="ACTIVE")
+        private = Source(type="HTML", url="https://192.168.1.7/source", state="ACTIVE")
+        session.add_all([public, private])
+    portable = tree(recipe(part(css("title"))))
+    portable["selector"].update(
+        target={"objectId": "PR_DOL_004", "field": "name"}, pageUrl=public.url
+    )
+    entry = {"identity": identity(), "sourceId": str(public.id), "tree": portable}
+
+    async def preview(source_id):
+        response = await client.post(
+            PREFIX + "/selectors/preview",
+            headers=auth(token),
+            json={"workspaceUuid": namespace, "selectors": [dict(entry, sourceId=str(source_id))]},
+        )
+        assert response.status_code == 200, response.text
+        return response.json()["items"][0]["status"]
+
+    await configure_sources(workspace, create=True, allow_all_public_origins=True)
+    assert await preview(public.id) == "SOURCE_GRANT_REQUIRED"
+    await configure_sources(workspace, grant_existing=True, allow_all_public_origins=True)
+    assert await preview(public.id) == "SELECTOR_REVIEW_REQUIRED"
+    assert await preview(private.id) == "SOURCE_GRANT_REQUIRED"
+    assert await preview(9223372036854775807) == "SOURCE_GRANT_REQUIRED"
+    denied = await client.post(
+        PREFIX + "/selectors",
+        headers=auth(token),
+        json=dict(entry, workspaceUuid=namespace, publishReviewed=True),
+    )
+    assert denied.status_code == 403 and denied.json()["detail"]["code"] == "SOURCE_ACCESS_DENIED"
+    async with factory() as session:
+        assert await session.get(SyncSourceGrant, (UUID(namespace), public.id)) is None
+        assert await session.scalar(select(func.count()).select_from(Selector)) == 0
 
 
 async def test_concurrent_registration_uses_unique_source_and_explicit_grant(workspace):

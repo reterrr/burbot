@@ -13,7 +13,12 @@ from extension_sync.contracts import Id
 from extension_sync.identity import IdentityService, reject
 from extension_sync.models import ExternalObjectBinding, SyncReceipt, SyncSourceGrant
 from extension_sync.schema import local_type, manifest_field
-from extension_sync.sources import UNAVAILABLE, SourceReconciliation, canonical_source
+from extension_sync.sources import (
+    UNAVAILABLE,
+    SourceReconciliation,
+    canonical_source,
+    source_origin_allowed,
+)
 from extraction.schemas import capture as capture_dto
 from extraction.schemas.evidence import TokenClass
 from extraction.schemas.selector import SelectorEvaluation
@@ -280,11 +285,13 @@ class SyncOperations(IdentityService):
             source = await self.session.get(Source, source_id)
             if not granted:
                 try:
-                    _, site = canonical_source(source.url or "") if source else ("", "")
+                    _, site = (
+                        canonical_source(source.url) if source and source.url else (None, None)
+                    )
                 except (MonitoringError, ValidationError, ValueError):
-                    site = ""
+                    site = None
                 policy = self.workspace.source_policy
-                if not policy.get("grant_existing") or site not in policy.get("origins", []):
+                if not policy.get("grant_existing") or not source_origin_allowed(policy, site):
                     reject(403, "SOURCE_ACCESS_DENIED")
             if source is None or source.state in UNAVAILABLE or source.type != "HTML":
                 reject(409, "SOURCE_UNAVAILABLE")
