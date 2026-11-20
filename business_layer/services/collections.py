@@ -314,7 +314,7 @@ class CollectionsService:
                 self.session,
                 slot_id,
                 None,
-                validated_against_field_version_id=field_version.id,
+                field_version=field_version,
                 effective_at=effective_at,
                 recorded_at=recorded_at,
             )
@@ -329,7 +329,7 @@ class CollectionsService:
             slot_id,
             None,
             collection_id=collection.id,
-            validated_against_field_version_id=field_version.id,
+            field_version=field_version,
             effective_at=effective_at,
             recorded_at=recorded_at,
         )
@@ -628,7 +628,10 @@ class CollectionsService:
         if await accept_timeline(
             self.session,
             BusinessObjectFieldValue,
-            {"business_object_field_id": slot.id},
+            {
+                "business_object_field_id": slot.id,
+                "business_entity_field_id": slot.business_entity_field_id,
+            },
             pointer_timeline,
             effective_at=effective_at,
             recorded_at=recorded_at,

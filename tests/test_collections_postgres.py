@@ -443,7 +443,9 @@ async def test_field_rename_evolution_and_definition_history(domain):
     allowed = await domain.call(
         lambda service: service.execute(
             domain.model_id,
-            code=renamed.replace('persistent_key="tags")', 'persistent_key="tags", max_items=5)'),
+            code=renamed.replace(
+                'persistent_key="tags")', 'persistent_key="tags", label="Labels")'
+            ),
         )
     )
     assert allowed.schema_changed
@@ -640,6 +642,7 @@ async def test_postgres_channel_owner_position_and_overlap_constraints(domain):
         session.add(
             BusinessObjectFieldValue(
                 business_object_field_id=slot.object_field_id,
+                business_entity_field_id=slot.business_entity_field_id,
                 validated_against_field_version_id=slot.validated_against_field_version_id,
                 collection_id=slot.collection_id,
                 value_json="invalid",
@@ -656,6 +659,7 @@ async def test_postgres_channel_owner_position_and_overlap_constraints(domain):
         session.add(
             BusinessObjectFieldValue(
                 business_object_field_id=other.object_field_id,
+                business_entity_field_id=other.business_entity_field_id,
                 validated_against_field_version_id=other.validated_against_field_version_id,
                 collection_id=slot.collection_id,
                 value_json=null(),
@@ -740,7 +744,7 @@ async def test_migration_refuses_to_drop_collection_history(domain, database):
     async with engine.connect() as connection:
         assert (
             await connection.scalar(text("SELECT version_num FROM alembic_version"))
-            == "b202_value_field_version"
+            == "b203_value_field_owner"
         )
 
 

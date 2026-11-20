@@ -198,6 +198,9 @@ class BusinessEntityFieldVersion(SQLModel, table=True):
 
     __tablename__ = "business_entity_field_versions"
     __table_args__ = (
+        UniqueConstraint(
+            "id", "business_entity_field_id", name="uq_business_field_versions_field_owner"
+        ),
         CheckConstraint("valid_to IS NULL OR valid_to > valid_from", name="business_entity_field_versions_valid_range"),
         CheckConstraint("transaction_to IS NULL OR transaction_to > transaction_from",
                         name="business_entity_field_versions_transaction_range"),

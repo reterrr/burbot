@@ -181,6 +181,10 @@ class SchemaChangeResponse(BaseModel):
 
     entity: str
     field: str | None = None
+    structural: bool | None = None
+    has_value_history: bool | None = None
+    allowed: bool = True
+    reason: str | None = None
 
 
 class SchemaRegisterResponse(BaseModel):
@@ -206,6 +210,10 @@ def change_response(
         resource=change.resource,
         entity=change.entity,
         field=change.field,
+        structural=change.structural,
+        has_value_history=change.has_value_history,
+        allowed=change.allowed,
+        reason=change.reason,
     )
 
 
@@ -565,12 +573,13 @@ async def get_schema(model_id: int, service: EntitiesServiceDep, revision_id: in
     return await definition_call(service.get_schema(model_id, revision_id=revision_id))
 
 
-@router.post("/models/{model_id}/changes")
+@router.post("/models/{model_id}/changes", response_model=list[SchemaChangeResponse])
 async def preview_schema_changes(
     model_id: int, request: SchemaRegisterRequest, service: EntitiesServiceDep
 ):
     try:
-        return await definition_call(service.find_changes(model_id, request.schema))
+        changes = await definition_call(service.find_changes(model_id, request.schema))
+        return [change_response(change) for change in changes]
     except Sema.SemaException as error:
         raise sema_http_exception(error) from error
 

@@ -121,6 +121,9 @@ class BusinessObjectField(SQLModel, table=True):
             "business_entity_field_id",
             name="uq_business_object_fields_object_entity_field",
         ),
+        UniqueConstraint(
+            "id", "business_entity_field_id", name="uq_business_object_fields_field_owner"
+        ),
         Index(
             "ix_business_object_fields_object",
             "business_object_id",
@@ -206,6 +209,26 @@ class BusinessObjectFieldValue(SQLModel, table=True):
     __tablename__ = "business_object_field_values"
 
     __table_args__ = (
+        # Both the slot and the validating definition must own the same field.
+        ForeignKeyConstraint(
+            ["business_object_field_id", "business_entity_field_id"],
+            ["business_object_fields.id", "business_object_fields.business_entity_field_id"],
+            name="fk_business_values_slot_field",
+        ),
+        ForeignKeyConstraint(
+            ["validated_against_field_version_id", "business_entity_field_id"],
+            [
+                "business_entity_field_versions.id",
+                "business_entity_field_versions.business_entity_field_id",
+            ],
+            ondelete="RESTRICT",
+            name="fk_business_values_validated_field_version",
+        ),
+        Index(
+            "ix_business_values_entity_field_version",
+            "business_entity_field_id",
+            "validated_against_field_version_id",
+        ),
         CheckConstraint(
             "(collection_id IS NULL AND value_json IS NOT NULL) OR "
             "(collection_id IS NOT NULL AND value_json IS NULL)",
@@ -288,23 +311,15 @@ class BusinessObjectFieldValue(SQLModel, table=True):
     )
 
     business_object_field_id: int = Field(
-        sa_column=Column(
-            BigInteger,
-            ForeignKey("business_object_fields.id"),
-            nullable=False,
-        ),
+        sa_column=Column(BigInteger, nullable=False),
+    )
+
+    business_entity_field_id: int = Field(
+        sa_column=Column(BigInteger, nullable=False),
     )
 
     validated_against_field_version_id: int = Field(
-        sa_column=Column(
-            BigInteger,
-            ForeignKey(
-                "business_entity_field_versions.id",
-                ondelete="RESTRICT",
-                name="fk_business_values_validated_field_version",
-            ),
-            nullable=False,
-        ),
+        sa_column=Column(BigInteger, nullable=False),
     )
 
     # Intentionally Any.

@@ -7,6 +7,7 @@ from typing import Any
 from sqlalchemy import null, select
 
 from business_layer.schemas.models.data import BusinessObjectFieldValue
+from business_layer.schemas.models.entities import BusinessEntityFieldVersion
 
 
 def aware(value: datetime) -> datetime:
@@ -135,7 +136,7 @@ async def accept_value(
     field_id,
     value,
     *,
-    validated_against_field_version_id,
+    field_version: BusinessEntityFieldVersion,
     effective_at,
     recorded_at,
     collection_id=None,
@@ -149,7 +150,10 @@ async def accept_value(
     await accept_timeline(
         session,
         BusinessObjectFieldValue,
-        {"business_object_field_id": field_id},
+        {
+            "business_object_field_id": field_id,
+            "business_entity_field_id": field_version.business_entity_field_id,
+        },
         [
             (
                 effective_at,
@@ -157,7 +161,7 @@ async def accept_value(
                 {
                     "value_json": value,
                     "collection_id": collection_id,
-                    "validated_against_field_version_id": validated_against_field_version_id,
+                    "validated_against_field_version_id": field_version.id,
                 },
             )
         ],

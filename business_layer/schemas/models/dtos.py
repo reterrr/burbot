@@ -74,6 +74,7 @@ class FieldDefinitionRead(BaseModel):
     version_id: int
     key: str
     label: str
+    description: str | None = None
     status: BusinessDefinitionStatus
     definition: dict[str, Any]
 

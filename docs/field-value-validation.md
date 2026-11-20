@@ -35,6 +35,11 @@ Apply `python -m alembic upgrade head`. New migration
 enforces `NOT NULL` and an `ON DELETE RESTRICT` foreign key. Earlier migrations
 are unchanged.
 
+`b203_value_field_owner` backfills the logical field ID from each value's slot.
+Composite foreign keys enforce that the slot and the validating definition
+belong to the same field. The backfill preserves the recorded validation version
+and the value payload and fails if an existing version points to another field.
+
 Backfill resolves the active definition at the original decision's recorded
 time. Copied prefixes with the same slot, valid-time start, and payload inherit
 the original decision's definition. It does not attach all old data to today's

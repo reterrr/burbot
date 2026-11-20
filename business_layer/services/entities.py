@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from collections.abc import AsyncIterator
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from hashlib import sha256
 from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import func, select, update
+from fastapi import HTTPException
+from sqlalchemy import func, literal, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from business_layer.schemas.enums import (
@@ -22,12 +24,18 @@ from business_layer.schemas.models import (
     BusinessEntityVersion,
     BusinessModel,
     BusinessModelRevision,
+    BusinessObject,
     BusinessObjectField,
     BusinessObjectFieldValue,
 )
+from business_layer.services.schema_evolution import (
+    field_definition,
+    is_structural_change,
+    structural_field_definition,
+)
 from business_layer.services.schema_language import Sema
 from business_layer.services.transactions import transaction
-from business_layer.services.value_history import aware
+from business_layer.services.value_history import aware, equal_json, temporal_predicates
 
 if TYPE_CHECKING:
     from business_layer.services.schema_parser import Program
@@ -41,7 +49,7 @@ SCHEMA_METADATA_KEY = "schemas"
 SCHEMA_HASH_METADATA_KEY = "schema_hash"
 SCHEMA_HASH_VERSION_METADATA_KEY = "schema_hash_version"
 
-SCHEMA_HASH_VERSION = 4
+SCHEMA_HASH_VERSION = 5
 
 SYSTEM_ID_FIELD = "id"
 
@@ -62,6 +70,10 @@ class SchemaChange:
     entity: str
 
     field: str | None = None
+    structural: bool | None = None
+    has_value_history: bool | None = None
+    allowed: bool = True
+    reason: str | None = None
 
 
 @dataclass(slots=True, frozen=True)
@@ -252,7 +264,10 @@ class EntitiesService:
         try:
             # Serialize concurrent revisions for this model.
             model = await self._session.scalar(
-                select(BusinessModel).where(BusinessModel.id == model_id).with_for_update()
+                select(BusinessModel)
+                .where(BusinessModel.id == model_id)
+                .with_for_update()
+                .execution_options(populate_existing=True)
             )
 
             if model is None:
@@ -319,7 +334,9 @@ class EntitiesService:
                     changes=[],
                 )
 
-            await self._validate_collection_evolution(model_id, current_schema, validated)
+            changes = await self._validate_schema_evolution(
+                model_id, current_schema, validated, changes=changes
+            )
 
             revision_metadata = self._revision_metadata(
                 metadata_json=metadata_json,
@@ -465,20 +482,12 @@ class EntitiesService:
             )
 
             entity_data["fields"] = [
-                field.model_dump(
-                    mode="json",
-                    exclude={
-                        "location",
-                    },
-                )
+                field_definition(field)
                 for field in sorted(
                     entity.fields,
                     key=lambda value: value.persistent_key,
                 )
             ]
-            for field in entity_data["fields"]:
-                if field.get("item"):
-                    field["item"].pop("location", None)
 
             entities.append(entity_data)
 
@@ -663,7 +672,11 @@ class EntitiesService:
 
                     continue
 
-                if self._field_semantics(current_field) != self._field_semantics(desired_field):
+                if not equal_json(
+                    field_definition(current_field), field_definition(desired_field)
+                ) or is_structural_change(
+                    current_field, desired_field, previous_schema=current, desired_schema=desired
+                ):
                     changes.append(
                         SchemaChange(
                             action="update",
@@ -798,35 +811,6 @@ class EntitiesService:
                 "fields",
             },
         )
-
-    @staticmethod
-    def _field_semantics(
-        field: Sema.Field,
-    ) -> dict[str, Any]:
-        """
-        Reference target is represented by the relation layer.
-
-        Therefore changing:
-
-            project_id -> Project
-
-        to:
-
-            project_id -> Geography
-
-        is primarily a relation change.
-        """
-
-        result = field.model_dump(
-            mode="json",
-            exclude={
-                "location",
-                "reference",
-            },
-        )
-        if result.get("item"):
-            result["item"].pop("location", None)
-        return result
 
     # ========================================================
     # Semantic relations
@@ -1451,94 +1435,177 @@ class EntitiesService:
         }
 
     # ========================================================
-    # Diff endpoint
+    # Schema evolution
     # ========================================================
 
-    async def _validate_collection_evolution(self, model_id, previous, desired):
-        """Block incompatible carrier changes and validate current collection contents."""
-        from fastapi import HTTPException
+    async def field_has_value_history(self, entity_field_id: int) -> bool:
+        history = select(BusinessObjectFieldValue.id).where(
+            BusinessObjectFieldValue.business_entity_field_id == entity_field_id
+        )
+        return bool(await self._session.scalar(select(history.exists())))
 
-        from business_layer.services.data import DataService
-        from business_layer.services.validation import validate_value
+    async def _latest_field_schema(self, field_id: int) -> Sema.Schema | None:
+        """Recover the entire definition context, including enum and reference targets."""
+        version = BusinessEntityFieldVersion
+        revision = await self._session.scalar(
+            select(BusinessModelRevision)
+            .join(version, version.business_model_revision_id == BusinessModelRevision.id)
+            .where(
+                version.business_entity_field_id == field_id,
+                version.status == BusinessDefinitionStatus.ACTIVE,
+            )
+            .order_by(version.valid_from.desc(), version.transaction_from.desc(), version.id.desc())
+            .limit(1)
+        )
+        if revision is not None and SCHEMA_METADATA_KEY in (revision.metadata_json or {}):
+            return self._schema_from_revision(revision)
+        return None
 
-        old_entities = {entity.tablename: entity for entity in previous.entities}
-        old_targets = {entity.name: entity.tablename for entity in previous.entities}
-        new_targets = {entity.name: entity.tablename for entity in desired.entities}
-        data = DataService(self._session)
-        for entity in desired.entities:
-            old = old_entities.get(entity.tablename)
-            if old is None:
+    async def _required_field_needs_backfill(self, entity_id: int, field_id: int | None) -> bool:
+        objects = select(BusinessObject.id).where(BusinessObject.business_entity_id == entity_id)
+        if field_id is not None:
+            value = BusinessObjectFieldValue
+            now = func.statement_timestamp()
+            populated = (
+                select(value.id)
+                .join(BusinessObjectField, BusinessObjectField.id == value.business_object_field_id)
+                .where(
+                    BusinessObjectField.business_object_id == BusinessObject.id,
+                    value.business_entity_field_id == field_id,
+                    *temporal_predicates(value, now, now),
+                    or_(
+                        value.collection_id.is_not(None),
+                        value.value_json != literal(None, type_=value.__table__.c.value_json.type),
+                    ),
+                )
+            )
+            objects = objects.where(~populated.exists())
+        return bool(await self._session.scalar(select(objects.exists())))
+
+    async def _assess_schema_evolution(
+        self,
+        model_id: int,
+        current: Sema.Schema,
+        desired: Sema.Schema,
+        changes: list[SchemaChange],
+    ) -> AsyncIterator[tuple[SchemaChange, dict[str, Any] | None]]:
+        """Yield the same assessments for preview and for application under the model lock."""
+        if not any(change.resource == "field" and change.action != "delete" for change in changes):
+            for change in changes:
+                yield change, None
+            return
+
+        rows = await self._session.execute(
+            select(
+                BusinessEntity.table_name,
+                BusinessEntity.id,
+                BusinessEntityField.persistent_key,
+                BusinessEntityField.id,
+            )
+            .outerjoin(
+                BusinessEntityField, BusinessEntityField.business_entity_id == BusinessEntity.id
+            )
+            .where(BusinessEntity.business_model_id == model_id)
+        )
+        entity_ids, field_ids = {}, {}
+        for table, entity_id, key, field_id in rows:
+            entity_ids[table] = entity_id
+            field_ids[table, key] = field_id
+        active = {
+            (entity.tablename, field.persistent_key): field
+            for entity in current.entities
+            for field in entity.fields
+        }
+        requested = {
+            (entity.name, field.name): (entity.tablename, field)
+            for entity in desired.entities
+            for field in entity.fields
+        }
+
+        for change in changes:
+            if change.resource != "field" or change.action == "delete":
+                yield change, None
                 continue
-            old_fields = {field.persistent_key: field for field in old.fields}
-            for field in entity.fields:
-                before = old_fields.get(field.persistent_key)
-                if before is None or Sema.Type.LIST not in (before.type, field.type):
-                    continue
-                field_id = await self._session.scalar(
-                    select(BusinessEntityField.id)
-                    .join(
-                        BusinessEntity, BusinessEntity.id == BusinessEntityField.business_entity_id
+            table, field = requested[change.entity, change.field]
+            identity = (table, field.persistent_key)
+            field_id = field_ids.get(identity)
+            entity_id = entity_ids.get(table)
+            was_active = active.get(identity)
+            previous, previous_schema = was_active, current
+            if previous is None and field_id is not None:
+                previous_schema = await self._latest_field_schema(field_id)
+                if previous_schema is not None:
+                    previous = next(
+                        (
+                            candidate
+                            for entity in previous_schema.entities
+                            if entity.tablename == table
+                            for candidate in entity.fields
+                            if candidate.persistent_key == field.persistent_key
+                        ),
+                        None,
                     )
-                    .where(
-                        BusinessEntity.business_model_id == model_id,
-                        BusinessEntity.table_name == entity.tablename,
-                        BusinessEntityField.persistent_key == field.persistent_key,
-                    )
-                )
-                if field_id is None:
-                    continue
-                history = await self._session.scalar(
-                    select(BusinessObjectFieldValue.id)
-                    .join(
-                        BusinessObjectField,
-                        BusinessObjectField.id == BusinessObjectFieldValue.business_object_field_id,
-                    )
-                    .where(BusinessObjectField.business_entity_field_id == field_id)
-                    .limit(1)
-                )
-                incompatible = before.type != field.type
-                if not incompatible:
-                    incompatible = before.item.type != field.item.type
-                    if before.item.type == field.item.type == Sema.Type.REFERENCE:
-                        incompatible = (
-                            old_targets[before.item.reference] != new_targets[field.item.reference]
-                        )
-                if history is not None and incompatible:
-                    raise HTTPException(
-                        409, "Incompatible collection type change requires an explicit migration"
-                    )
-                if field.type != Sema.Type.LIST:
-                    continue
-                values = (
-                    await self._session.scalars(
-                        select(BusinessObjectFieldValue)
-                        .join(
-                            BusinessObjectField,
-                            BusinessObjectField.id
-                            == BusinessObjectFieldValue.business_object_field_id,
-                        )
-                        .where(
-                            BusinessObjectField.business_entity_field_id == field_id,
-                            BusinessObjectFieldValue.transaction_to.is_(None),
-                            BusinessObjectFieldValue.valid_to.is_(None),
-                        )
-                    )
-                ).all()
-                for value in values:
-                    contents = value.value_json
-                    if value.collection_id is not None:
-                        contents = [
-                            item["value"]
-                            for item in (
-                                await data.collections.get_collection(value.collection_id)
-                            )["items"]
-                        ]
-                    try:
-                        validate_value(contents, field.model_dump(mode="json"))
-                    except (ValueError, TypeError, OverflowError) as error:
-                        raise HTTPException(
-                            409, f"Existing collection violates the new definition: {error}"
-                        ) from error
+
+            has_history = field_id is not None and await self.field_has_value_history(field_id)
+            structural = previous is None or is_structural_change(
+                previous, field, previous_schema=previous_schema, desired_schema=desired
+            )
+            reason = None
+            if has_history and structural:
+                reason = "Field has existing canonical value history"
+            elif (
+                entity_id is not None
+                and not field.nullable
+                and (was_active is None or was_active.nullable)
+                and await self._required_field_needs_backfill(entity_id, field_id)
+            ):
+                reason = "Required field needs a backfill for existing objects"
+
+            detail = None
+            if reason is not None:
+                detail = {
+                    "code": "SCHEMA_MIGRATION_REQUIRED",
+                    "entity": change.entity,
+                    "field": field.name,
+                    "persistent_key": field.persistent_key,
+                    "reason": reason,
+                    "previous_definition": (
+                        structural_field_definition(previous, schema=previous_schema)
+                        if previous is not None
+                        else None
+                    ),
+                    "requested_definition": structural_field_definition(field, schema=desired),
+                }
+            yield (
+                replace(
+                    change,
+                    structural=structural,
+                    has_value_history=has_history,
+                    allowed=detail is None,
+                    reason=detail["code"] if detail else None,
+                ),
+                detail,
+            )
+
+    async def _validate_schema_evolution(
+        self,
+        model_id: int,
+        current: Sema.Schema,
+        desired: Sema.Schema,
+        *,
+        changes: list[SchemaChange] | None = None,
+    ) -> list[SchemaChange]:
+        """Validate under the same model lock as the revision write."""
+        if changes is None:
+            changes = self._find_changes(current=current, desired=desired)
+        result = []
+        async for change, detail in self._assess_schema_evolution(
+            model_id, current, desired, changes
+        ):
+            if detail is not None:
+                raise HTTPException(409, detail)
+            result.append(change)
+        return result
 
     async def find_changes(
         self,
@@ -1547,35 +1614,30 @@ class EntitiesService:
     ) -> list[SchemaChange]:
         desired = Sema().validate(scheme)
 
-        model = await self._session.get(BusinessModel, model_id)
+        model = await self._session.get(BusinessModel, model_id, populate_existing=True)
 
         if model is None:
             raise LookupError(f"BusinessModel {model_id} not found")
 
         current_revision = await self._get_current_revision(model)
 
-        if current_revision is None:
-            return self._find_changes(
-                current=Sema.Schema(entities=[]),
-                desired=desired,
-            )
+        if current_revision is not None:
+            stored_hash = self._trusted_revision_hash(current_revision)
+            if stored_hash is not None and stored_hash == self._schema_hash(desired):
+                return []
 
-        desired_hash = self._schema_hash(desired)
-
-        stored_hash = self._trusted_revision_hash(current_revision)
-
-        if stored_hash == desired_hash:
-            return []
-
-        current = self._schema_from_revision(current_revision)
-
-        if self._schema_hash(current) == desired_hash:
-            return []
-
-        return self._find_changes(
-            current=current,
-            desired=desired,
+        current = (
+            self._schema_from_revision(current_revision)
+            if current_revision is not None
+            else Sema.Schema()
         )
+        changes = self._find_changes(current=current, desired=desired)
+        return [
+            change
+            async for change, _ in self._assess_schema_evolution(
+                model_id, current, desired, changes
+            )
+        ]
 
     # ========================================================
     # Revisions
@@ -1727,6 +1789,7 @@ class EntitiesService:
                     version_id=field.id,
                     key=field.key,
                     label=field.label,
+                    description=field.description,
                     status=field.status,
                     definition=field.definition_json,
                 )
