@@ -8,6 +8,7 @@ from sqlalchemy import (
     Column,
     DateTime,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     Integer,
     String,
@@ -32,6 +33,7 @@ class ExtractionRun(SQLModel, table=True):
 
     __tablename__ = "extraction_runs"
     __table_args__ = (
+        UniqueConstraint("id", "source_snapshot_id", name="uq_extraction_runs_snapshot_owner"),
         Index("ix_extraction_runs_workflow", "workflow_id"),
         Index("ix_extraction_runs_source", "source_id"),
         Index("ix_extraction_runs_snapshot", "source_snapshot_id"),
@@ -92,6 +94,20 @@ class FieldObservation(SQLModel, table=True):
 
     __tablename__ = "field_observations"
     __table_args__ = (
+        ForeignKeyConstraint(
+            ["selector_evaluation_id", "selector_version_id", "extraction_run_id"],
+            [
+                "selector_evaluations.id",
+                "selector_evaluations.selector_version_id",
+                "selector_evaluations.extraction_run_id",
+            ],
+            name="fk_observations_selector_evidence",
+            ondelete="RESTRICT",
+        ),
+        CheckConstraint(
+            "(selector_evaluation_id IS NULL) = (selector_version_id IS NULL)",
+            name="observations_selector_evidence_pair",
+        ),
         Index(
             "uq_field_observations_run_object_field",
             "extraction_run_id",
@@ -154,6 +170,8 @@ class FieldObservation(SQLModel, table=True):
             ),
         ),
     )
+    selector_evaluation_id: int | None = Field(default=None, sa_column=Column(BigInteger))
+    selector_version_id: int | None = Field(default=None, sa_column=Column(BigInteger))
     confidence: float = Field(default=1.0)
     status: ObservationStatus = Field(
         default=ObservationStatus.DETECTED,
@@ -241,9 +259,11 @@ class ConcreteValue(SQLModel, table=True):
 
 
 from extraction.schemas.evidence import EVIDENCE_TABLES  # noqa: E402
+from extraction.schemas.selector import SELECTOR_TABLES  # noqa: E402
 
 EXTRACTION_TABLES = (
     *EVIDENCE_TABLES,
+    *SELECTOR_TABLES,
     ExtractionRun.__table__,
     FieldObservation.__table__,
     ConcreteValue.__table__,

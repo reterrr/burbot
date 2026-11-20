@@ -251,7 +251,7 @@ async def test_recipe_migration_preserves_unknown_rows_and_versions_rediscovery(
             assert old.extraction_json is None and old.version == 7
             assert old.valid_to == new.valid_from and new.version == 8
             assert stored_rule(new).extraction.attribute == "href"
-        with pytest.raises(Exception, match="Cannot downgrade.*recipes"):
+        with pytest.raises(Exception, match="Cannot downgrade SelectorTree"):
             await migrate("e101_extraction_capture", downgrade=True)
         async with engine.connect() as connection:
             assert (

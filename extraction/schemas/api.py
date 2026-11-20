@@ -57,6 +57,8 @@ class FieldObservationResponse(ResponseModel):
     business_object_id: int | None
     business_object_field_id: int | None
     tracking_version_id: int | None
+    selector_evaluation_id: int | None = None
+    selector_version_id: int | None = None
     observed_at: datetime
     concrete_values: list[ConcreteValueResponse]
 
