@@ -22,7 +22,11 @@ async def get_extraction_service(
     request: Request,
 ) -> AsyncIterator[ExtractionService]:
     try:
-        yield ExtractionService(session, getattr(request.app.state, "snapshot_extractor", None))
+        yield ExtractionService(
+            session,
+            getattr(request.app.state, "snapshot_extractor", None),
+            getattr(request.app.state, "selector_snapshot_reader", None),
+        )
     except ExtractionError as error:
         status_code = 500
         if isinstance(error, ExtractionNotConfigured):

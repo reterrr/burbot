@@ -205,7 +205,14 @@ async def test_baseline_compares_source_not_canonical_and_preserves_history(sess
         tracking = await current_tracking(session)
         baseline_id = tracking.baseline_observation_id
         slot = tracking.business_object_field_id
-        session.add(BusinessObjectFieldValue(business_object_field_id=slot, value_json=120000))
+        session.add(
+            BusinessObjectFieldValue(
+                business_object_field_id=slot,
+                business_entity_field_id=30,
+                validated_against_field_version_id=130,
+                value_json=120000,
+            )
+        )
         await session.commit()
         _, same = await run_capture(session, capture(key="same"))
         assert not same.changed_source_object_fields

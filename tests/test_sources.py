@@ -18,14 +18,13 @@ from sqlmodel import SQLModel
 os.environ.setdefault("DCKR_DATABASE_URL", "postgresql+asyncpg://test:test@localhost/test")
 
 from sqlalchemy import BigInteger  # noqa: E402
-from sqlalchemy.dialects.postgresql import JSONB  # noqa: E402
+from sqlalchemy.dialects.postgresql import JSONB, ExcludeConstraint  # noqa: E402
 from sqlalchemy.ext.compiler import compiles  # noqa: E402
 
 from business_layer.schemas.models import (  # noqa: E402
     BusinessEntity,
     BusinessEntityField,
     BusinessModel,
-    BusinessModelRevision,
     BusinessObject,
     BusinessObjectField,
 )
@@ -40,7 +39,6 @@ from sources.schemas.api import (  # noqa: E402
 )
 from sources.schemas.internal import TrackingObservationUpdate  # noqa: E402
 from sources.schemas.models import (  # noqa: E402
-    SOURCE_TABLES,
     Source,
     SourceBusinessObject,
     SourceFieldTracking,
@@ -59,19 +57,27 @@ def sqlite_jsonb(_type, _compiler, **_kwargs):
     return "JSON"
 
 
+@compiles(ExcludeConstraint, "sqlite")
+def sqlite_exclusion(_constraint, _compiler, **_kwargs):
+    return "CHECK (1)"
+
+
+from test_collections_postgres import migrate  # noqa: E402
+
+from extraction.schemas.models import ExtractionRun, FieldObservation  # noqa: E402
+from migrations.load_models import load_models  # noqa: E402
 from sources.services.sources import SourcesService  # noqa: E402
-from extraction.schemas.models import EXTRACTION_TABLES, ExtractionRun, FieldObservation  # noqa: E402
-from tasks.schemas.models import Workflow  # noqa: E402
 
 pytestmark = pytest.mark.asyncio
 
 
 @pytest_asyncio.fixture
-async def sessions(tmp_path):
+async def sessions(tmp_path, monkeypatch):
     url = os.environ.get("SOURCES_TEST_DATABASE_URL")
     admin = None
     schema = None
     if url:
+        monkeypatch.setenv("HOST_DATABASE_URL", url)
         if not url.startswith("postgresql+asyncpg://"):
             raise ValueError("SOURCES_TEST_DATABASE_URL must use postgresql+asyncpg")
         # Isolate tests from existing data, including other Burbot tables and enum types.
@@ -79,34 +85,33 @@ async def sessions(tmp_path):
         admin = create_async_engine(url)
         async with admin.begin() as connection:
             await connection.execute(CreateSchema(schema))
-        engine = create_async_engine(url, connect_args={"server_settings": {"search_path": schema}})
+        engine = create_async_engine(
+            url, connect_args={"server_settings": {"search_path": f"{schema},public"}}
+        )
     else:
         engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'sources.db'}")
 
         @event.listens_for(engine.sync_engine, "connect")
         def enable_foreign_keys(connection, _record):
+            connection.create_function("num_nonnulls", -1, lambda *v: sum(x is not None for x in v))
             cursor = connection.cursor()
             cursor.execute("PRAGMA foreign_keys=ON")
             cursor.close()
 
     try:
         async with engine.begin() as connection:
-            await connection.run_sync(
-                lambda conn: SQLModel.metadata.create_all(
-                    conn,
-                    tables=[
-                        BusinessModel.__table__,
-                        BusinessModelRevision.__table__,
-                        BusinessEntity.__table__,
-                        BusinessEntityField.__table__,
-                        BusinessObject.__table__,
-                        BusinessObjectField.__table__,
-                        *SOURCE_TABLES,
-                        Workflow.__table__,
-                        *EXTRACTION_TABLES,
-                    ],
+            if url:
+                await connection.run_sync(lambda conn: migrate(conn, schema, "head"))
+            else:
+                load_models()
+                tables = [
+                    table
+                    for table in SQLModel.metadata.tables.values()
+                    if table.name != "business_collection_item_versions"
+                ]
+                await connection.run_sync(
+                    lambda conn: SQLModel.metadata.create_all(conn, tables=tables)
                 )
-            )
         yield async_sessionmaker(engine, expire_on_commit=False, autoflush=False)
     finally:
         await engine.dispose()
@@ -468,8 +473,8 @@ async def business(sessions):
         await session.flush()
         session.add_all(
             [
-                BusinessEntityField(id=30, business_entity_id=20),
-                BusinessEntityField(id=31, business_entity_id=20),
+                BusinessEntityField(id=30, business_entity_id=20, persistent_key="name"),
+                BusinessEntityField(id=31, business_entity_id=20, persistent_key="status"),
                 BusinessObject(id=40, business_entity_id=20),
                 BusinessObject(id=41, business_entity_id=20),
                 BusinessObject(id=42, business_entity_id=21),
