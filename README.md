@@ -56,3 +56,9 @@ python -m alembic downgrade -1
 
 The Sources implementation supplies ORM models and model registration; it does not
 include a handwritten Alembic revision or change the database on application startup.
+
+## Automatic Source Monitoring
+
+A Prefect 3 scheduler, PostgreSQL queue and Firefox Browser Agent automate
+checks of approved public HTML Sources. See [Source monitoring](docs/monitoring.md)
+for setup, agent enrollment, protocols and verification.

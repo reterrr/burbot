@@ -85,11 +85,16 @@ class SourcesService:
     schedule execution, start Temporal, or write canonical business field values.
     """
 
-    def __init__(self, session: AsyncSession) -> None:
+    def __init__(self, session: AsyncSession, *, commit: bool = True) -> None:
         self._session = session
+        self._commit = commit
 
     @asynccontextmanager
     async def _transaction(self) -> AsyncIterator[None]:
+        if not self._commit:
+            async with self._session.begin_nested():
+                yield
+            return
         try:
             yield
             await self._session.commit()

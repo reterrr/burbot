@@ -55,7 +55,7 @@ class StoredEvaluation(PortableModel):
     page_url: str
     source_snapshot_id: int | None
     extraction_run_id: int | None
-    provenance: Literal["client_reported", "backend_verified"]
+    provenance: Literal["client_reported", "backend_verified", "browser_agent_reported"]
     result: SelectorEvaluationResult
 
 

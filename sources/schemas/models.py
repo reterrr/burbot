@@ -384,6 +384,10 @@ class SourceSnapshot(CreatedAtMixin, table=True):
     content_hash: str | None = Field(default=None, sa_column=Column(String(64)))
     structure_hash: str | None = Field(default=None, sa_column=Column(String(64)))
     parser_version: str | None = None
+    representation: str | None = None
+    representation_version: str | None = None
+    structure_hash_version: str | None = None
+    hash_algorithm: str | None = None
 
 
 SOURCE_TABLES = (*SOURCE_TABLES, SourceSnapshot.__table__)

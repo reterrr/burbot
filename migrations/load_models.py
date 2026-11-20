@@ -19,6 +19,7 @@ def load_models() -> None:
     _load_sources_models()
     _load_tasks_models()
     _load_extraction_models()
+    from monitoring import models as _monitoring_models  # noqa: F401
 
     # Layer 2 owns the observation pointers but Layer 3 owns the target table.
     # Complete that reference cycle only after all models are registered.

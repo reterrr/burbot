@@ -54,10 +54,25 @@ def definitions_fingerprint(definitions):
 
 
 class CaptureService:
-    def __init__(self, session: AsyncSession, extractor: SnapshotExtractor | None = None):
+    def __init__(
+        self,
+        session: AsyncSession,
+        extractor: SnapshotExtractor | None = None,
+        *,
+        commit: bool = True,
+    ):
         self.session = session
         self.repo = ExtractionRepository(session)
         self.extractor = extractor
+        self.commit = commit
+
+    async def _commit(self):
+        if self.commit:
+            await self.session.commit()
+
+    async def _rollback(self):
+        if self.commit:
+            await self.session.rollback()
 
     @staticmethod
     def run_response(run: ExtractionRun) -> dto.RunResponse:
@@ -96,10 +111,10 @@ class CaptureService:
                 )
             )
             response = self.run_response(run)
-            await self.session.commit()
+            await self._commit()
             return response
         except BaseException:
-            await self.session.rollback()
+            await self._rollback()
             raise
 
     async def get_run(self, run_id: int) -> dto.RunResponse:
@@ -132,6 +147,8 @@ class CaptureService:
         *,
         expected_definitions=None,
         selector_evaluation=None,
+        selector_evaluations=None,
+        observed_at=None,
     ):
         """One run accepts one successful capture. FAILED runs may be retried."""
         try:
@@ -144,7 +161,7 @@ class CaptureService:
                         "Run already captured; retry with the identical key and payload"
                     )
                 response = dto.CaptureResponse.model_validate(existing.result_json)
-                await self.session.commit()
+                await self._commit()
                 return response
             key_owner = await self.repo.capture_for_key(request.capture_key)
             if key_owner is not None:
@@ -167,8 +184,15 @@ class CaptureService:
                 async with self.session.begin_nested():
                     if selector_evaluation is not None:
                         await self.repo.add(selector_evaluation)
+                    for evaluation in (selector_evaluations or {}).values():
+                        await self.repo.add(evaluation)
                     response = await CaptureWriter(
-                        self.repo, run, snapshot, selector_evaluation=selector_evaluation
+                        self.repo,
+                        run,
+                        snapshot,
+                        selector_evaluation=selector_evaluation,
+                        selector_evaluations=selector_evaluations,
+                        observed_at=observed_at,
                     ).write(request)
                     run.status = response.status
                     run.finished_at = utc_now()
@@ -180,7 +204,7 @@ class CaptureService:
                             result_json=response.model_dump(mode="json"),
                         )
                     )
-                await self.session.commit()
+                await self._commit()
                 return response
             except Exception as error:
                 # The savepoint removes all evidence/definitions/bindings. The
@@ -194,7 +218,7 @@ class CaptureService:
                     else "Capture failed while persisting evidence"
                 )
                 run.error_message = public_message[:2000]
-                await self.session.commit()
+                await self._commit()
                 if isinstance(error, IntegrityError):
                     raise ExtractionConflict(
                         "Capture conflicts with existing evidence or a concurrent commit"
@@ -203,7 +227,7 @@ class CaptureService:
                     raise ExtractionConflict(str(error)) from error
                 raise
         except BaseException:
-            await self.session.rollback()
+            await self._rollback()
             raise
 
     async def register_token_class(self, request: dto.TokenClassRequest) -> dto.TokenClassRequest:

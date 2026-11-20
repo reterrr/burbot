@@ -170,7 +170,8 @@ class SelectorEvaluation(SQLModel, table=True):
             "extraction_run_id", "execution_key", name="uq_selector_evaluation_execution"
         ),
         CheckConstraint(
-            "(provenance = 'backend_verified' AND extraction_run_id IS NOT NULL "
+            "(provenance IN ('backend_verified', 'browser_agent_reported') "
+            "AND extraction_run_id IS NOT NULL "
             "AND source_snapshot_id IS NOT NULL AND execution_key IS NOT NULL) OR "
             "(provenance = 'client_reported' AND extraction_run_id IS NULL "
             "AND execution_key IS NULL)",

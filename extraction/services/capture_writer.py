@@ -30,11 +30,22 @@ from sources.services.tracking import as_utc
 
 
 class CaptureWriter:
-    def __init__(self, repo: ExtractionRepository, run, snapshot, *, selector_evaluation=None):
+    def __init__(
+        self,
+        repo: ExtractionRepository,
+        run,
+        snapshot,
+        *,
+        selector_evaluation=None,
+        selector_evaluations=None,
+        observed_at=None,
+    ):
         self.repo = repo
         self.run = run
         self.snapshot = snapshot
+        self.observed_at = observed_at or snapshot.fetched_at
         self.selector_evaluation = selector_evaluation
+        self.selector_evaluations = selector_evaluations or {}
         self.scopes = {}
         self.elements = {}
         self.instances = {}
@@ -290,20 +301,17 @@ class CaptureWriter:
         slot = tracking = None
         if object_id is not None:
             slot, tracking = await self.resolve_binding(field, object_id, source_field)
+        evaluation = self.selector_evaluations.get(request.client_key, self.selector_evaluation)
         observation = await self.repo.add(
             FieldObservation(
                 extraction_run_id=self.run.id,
                 source_field_tracking_id=source_field.id,
                 scope_instance_id=instance.id,
                 concrete_value_id=value.id,
-                selector_evaluation_id=(
-                    self.selector_evaluation.id if self.selector_evaluation is not None else None
-                ),
-                selector_version_id=(
-                    self.selector_evaluation.selector_version_id
-                    if self.selector_evaluation is not None
-                    else None
-                ),
+                selector_evaluation_id=evaluation.id if evaluation is not None else None,
+                selector_version_id=evaluation.selector_version_id
+                if evaluation is not None
+                else None,
                 source_object_field_tracking_id=tracking.id if tracking else None,
                 business_object_id=object_id,
                 business_object_field_id=slot.id if slot else None,
@@ -311,7 +319,7 @@ class CaptureWriter:
                 status=ObservationStatus.VALIDATED
                 if request.confirmed_by_human
                 else ObservationStatus.DETECTED,
-                observed_at=self.snapshot.fetched_at,
+                observed_at=self.observed_at,
                 validated_at=utc_now() if request.confirmed_by_human else None,
                 notes=request.notes,
             )
@@ -429,7 +437,10 @@ class CaptureWriter:
                     )
                 selectors_seen[selector_key] = signature
                 await self.register_selector(scope, source_field, rule)
-            elif self.selector_evaluation is None:
+            elif (
+                self.selector_evaluation is None
+                and value.client_key not in self.selector_evaluations
+            ):
                 existing = await self.repo.current_selector(
                     scope.id, source_field.id, legacy_execution_only=True
                 )

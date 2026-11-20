@@ -282,6 +282,10 @@ def evaluate_part(part, runtime):
     results = [
         evaluate_locator(locator, part.extraction, runtime) for locator in ordered(part.locators)
     ]
+    return summarize_part(part, results)
+
+
+def summarize_part(part, results):
     base = {"part_uuid": part.uuid, "locator_results": results}
     successes = {result.raw_value for result in results if result.status == "success"}
     if not successes:
@@ -300,8 +304,12 @@ def evaluate_part(part, runtime):
 
 
 def evaluate_recipe(recipe, runtime):
+    results = [evaluate_part(part, runtime) for part in ordered(recipe.parts)]
+    return summarize_recipe(recipe, results)
+
+
+def summarize_recipe(recipe, results):
     parts = ordered(recipe.parts)
-    results = [evaluate_part(part, runtime) for part in parts]
     base = {"recipe_uuid": recipe.uuid, "part_results": results}
     if not results or any(result.status != "success" for result in results):
         return RecipeEvaluationResult(
@@ -320,6 +328,10 @@ def evaluate_recipe(recipe, runtime):
 
 def evaluate_selector_version(version, runtime):
     results = [evaluate_recipe(recipe, runtime) for recipe in ordered(version.recipes)]
+    return summarize_version(version, results)
+
+
+def summarize_version(version, results):
     base = {"selector_version_uuid": version.uuid, "recipe_results": results}
     successes = {result.raw_value for result in results if result.status == "success"}
     if len(successes) > 1:

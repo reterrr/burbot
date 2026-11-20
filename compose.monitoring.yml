@@ -1,0 +1,119 @@
+x-burbot: &burbot
+  image: burbot-monitoring-local
+  build:
+    context: .
+    dockerfile: Dockerfile.monitoring
+    target: burbot
+  environment: &burbot-env
+    DCKR_DATABASE_URL: postgresql+asyncpg://burbot:${MONITORING_DB_PASSWORD:?Set MONITORING_DB_PASSWORD}@postgres:5432/burbot
+    HOST_DATABASE_URL: postgresql+asyncpg://burbot:${MONITORING_DB_PASSWORD:?Set MONITORING_DB_PASSWORD}@postgres:5432/burbot
+    MONITORING_S3_INTERNAL_URL: http://minio:9000
+    MONITORING_S3_PUBLIC_URL: ${MONITORING_S3_PUBLIC_URL:-http://127.0.0.1:9000}
+    MONITORING_S3_BUCKET: ${MONITORING_S3_BUCKET:-burbot-monitoring}
+    MONITORING_S3_ACCESS_KEY: ${MONITORING_S3_ACCESS_KEY:?Set MONITORING_S3_ACCESS_KEY}
+    MONITORING_S3_SECRET_KEY: ${MONITORING_S3_SECRET_KEY:?Set MONITORING_S3_SECRET_KEY}
+    PREFECT_API_URL: http://prefect:4200/api
+
+services:
+  postgres:
+    image: postgres:18
+    environment:
+      POSTGRES_DB: burbot
+      POSTGRES_USER: burbot
+      POSTGRES_PASSWORD: ${MONITORING_DB_PASSWORD:?Set MONITORING_DB_PASSWORD}
+    volumes:
+      - postgres:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "burbot", "-d", "burbot"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  minio:
+    image: burbot-monitoring-minio-local
+    platform: linux/amd64
+    build:
+      context: .
+      dockerfile: Dockerfile.monitoring
+      target: minio
+    environment:
+      MINIO_ROOT_USER: ${MONITORING_S3_ACCESS_KEY:?Set MONITORING_S3_ACCESS_KEY}
+      MINIO_ROOT_PASSWORD: ${MONITORING_S3_SECRET_KEY:?Set MONITORING_S3_SECRET_KEY}
+      MINIO_BROWSER: "off"
+    command: ["server", "/data"]
+    ports:
+      - "127.0.0.1:9000:9000"
+    volumes:
+      - minio:/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "from urllib.request import urlopen; urlopen('http://127.0.0.1:9000/minio/health/live', timeout=2)"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  initialize:
+    <<: *burbot
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    command:
+      - /bin/sh
+      - -ec
+      - |
+        alembic upgrade head
+        python -c 'from monitoring.storage import storage_from_env; storage_from_env().ensure_bucket()'
+
+  api:
+    <<: *burbot
+    environment:
+      <<: *burbot-env
+      MONITORING_ADMIN_TOKEN: ${MONITORING_ADMIN_TOKEN:?Set MONITORING_ADMIN_TOKEN}
+    depends_on:
+      initialize:
+        condition: service_completed_successfully
+    command: ["uvicorn", "main:api", "--host", "0.0.0.0", "--port", "8000"]
+    ports:
+      - "127.0.0.1:8000:8000"
+    restart: unless-stopped
+
+  prefect:
+    <<: *burbot
+    environment:
+      PREFECT_HOME: /var/prefect
+      PREFECT_SERVER_ANALYTICS_ENABLED: "false"
+    command: ["prefect", "server", "start", "--host", "0.0.0.0"]
+    ports:
+      - "127.0.0.1:4200:4200"
+    volumes:
+      - prefect:/var/prefect
+    healthcheck:
+      test: ["CMD", "python", "-c", "from urllib.request import urlopen; urlopen('http://127.0.0.1:4200/api/health', timeout=2)"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  worker:
+    <<: *burbot
+    depends_on:
+      prefect:
+        condition: service_healthy
+      initialize:
+        condition: service_completed_successfully
+    command:
+      - /bin/sh
+      - -ec
+      - |
+        if ! prefect work-pool inspect burbot-monitoring >/dev/null 2>&1; then
+          prefect work-pool create --type process burbot-monitoring
+        fi
+        python -m monitoring.deployments
+        exec prefect worker start --pool burbot-monitoring --limit 5
+    restart: unless-stopped
+
+volumes:
+  postgres:
+  minio:
+  prefect:
