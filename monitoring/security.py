@@ -29,30 +29,37 @@ def fingerprint(payload) -> str:
     return hashlib.sha256(canonical.encode()).hexdigest()
 
 
-def origin(url: str) -> str:
-    """Only named, public HTTPS origins on the ordinary HTTPS port."""
+def origin(url: str, *, allow_http: bool = False) -> str:
+    """Named public origins on the scheme’s ordinary port."""
     try:
         if any(ord(char) <= 32 or ord(char) == 127 or char == chr(92) for char in url):
             raise ValueError
         parsed = urlsplit(url)
         host = (parsed.hostname or "").encode("idna").decode("ascii")
         labels = host.split(".")
+        scheme = parsed.scheme
+        default_port = 443 if scheme == "https" else 80
         if (
-            parsed.scheme != "https"
-            or parsed.port not in (None, 443)
+            (scheme != "https" and not (allow_http and scheme == "http"))
+            or parsed.port not in (None, default_port)
             or parsed.username is not None
             or len(labels) < 2
             or not all(HOST.fullmatch(label) for label in labels)
             or labels[-1] in LOCAL_SUFFIXES
             or not re.fullmatch(r"[a-z][a-z0-9-]*", labels[-1])
             or host.endswith(".home.arpa")
-            or any(SECRET_KEY.search(key) for key, _ in parse_qsl(parsed.query))
-            or any(SECRET_KEY.search(key) for key, _ in parse_qsl(parsed.fragment))
+            or any(
+                SECRET_KEY.search(key) for key, _ in parse_qsl(parsed.query, keep_blank_values=True)
+            )
+            or any(
+                SECRET_KEY.search(key)
+                for key, _ in parse_qsl(parsed.fragment, keep_blank_values=True)
+            )
         ):
             raise ValueError
     except (ValueError, UnicodeError) as error:
         raise MonitoringError(422, "URL_NOT_ALLOWED") from error
-    return f"https://{host}"
+    return f"{scheme}://{host}"
 
 
 def approve_origins(url, additional):

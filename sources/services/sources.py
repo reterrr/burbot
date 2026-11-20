@@ -92,8 +92,14 @@ class SourcesService:
     @asynccontextmanager
     async def _transaction(self) -> AsyncIterator[None]:
         if not self._commit:
-            async with self._session.begin_nested():
-                yield
+            try:
+                async with self._session.begin_nested():
+                    yield
+            except IntegrityError as error:
+                message = _unique_conflict(error)
+                if message:
+                    raise SourceConflict(message) from error
+                raise
             return
         try:
             yield
@@ -213,6 +219,12 @@ class SourcesService:
             )
             result = dto.SourceResponse.model_validate(source)
         return result
+
+    async def find_by_url(self, canonical_url: str, *, lock: bool = False) -> Source | None:
+        query = select(Source).where(col(Source.url) == canonical_url)
+        if lock:
+            query = query.with_for_update().execution_options(populate_existing=True)
+        return await self._session.scalar(query)
 
     async def get_source(self, source_id: int) -> dto.SourceResponse:
         return dto.SourceResponse.model_validate(await self._get(source_id))

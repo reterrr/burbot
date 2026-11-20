@@ -4,6 +4,7 @@ from uuid import UUID
 from pydantic import AfterValidator, Field, StringConstraints, model_validator
 
 from extraction.schemas.selector_tree import PortableModel, SelectorEvaluationResult, SelectorTree
+from sources.schemas.enums import SourceType
 
 MAX_ID = 2**63 - 1
 
@@ -15,6 +16,9 @@ def valid_id(value):
 
 
 Id = Annotated[str, StringConstraints(pattern=r"^[1-9][0-9]{0,18}$"), AfterValidator(valid_id)]
+SelectorRevision = Annotated[
+    str, StringConstraints(pattern=r"^(0|[1-9][0-9]{0,18})$"), AfterValidator(valid_id)
+]
 LocalId = Annotated[str, StringConstraints(min_length=1, max_length=200, pattern=r"^[^\x00]+$")]
 FieldKey = Annotated[str, StringConstraints(min_length=1, max_length=150, pattern=r"^[^\x00]+$")]
 
@@ -72,6 +76,48 @@ class SelectorSync(PortableModel):
     tree: SelectorTree
     # Send this only from the explicit selector synchronization action.
     publish_reviewed: bool = False
+    # Bulk operations pin their preview. Omitted fields preserve the single-item contract.
+    expected_revision: SelectorRevision | None = None
+    expected_schema_revision_id: Id | None = None
+    expected_business_object_field_id: Id | None = None
+    source_url: str | None = None
+
+
+SourceClientKey = Annotated[str, StringConstraints(min_length=1, max_length=4096)]
+
+
+class SourceCandidate(PortableModel):
+    client_key: SourceClientKey
+    type: SourceType
+    url: Annotated[str, StringConstraints(max_length=8192)]
+
+
+class ApprovedSource(SourceCandidate):
+    allow_create: bool = False
+    allow_grant_existing: bool = False
+    expected_source_id: Id | None = None
+
+
+class SourcePreview(PortableModel):
+    workspace_uuid: UUID
+    sources: list[SourceCandidate] = Field(min_length=1, max_length=100)
+
+
+class SourceResolve(PortableModel):
+    workspace_uuid: UUID
+    sources: list[ApprovedSource] = Field(min_length=1, max_length=100)
+
+
+class SelectorCandidate(PortableModel):
+    identity: Identity
+    source_id: Id | None = None
+    source_url: str | None = None
+    tree: SelectorTree
+
+
+class SelectorPreview(PortableModel):
+    workspace_uuid: UUID
+    selectors: list[SelectorCandidate] = Field(min_length=1, max_length=50)
 
 
 class ReportCapture(PortableModel):
