@@ -178,7 +178,7 @@ def downgrade():
                            OR structure_hash_version IS NOT NULL
                            OR hash_algorithm IS NOT NULL)
                 OR EXISTS (SELECT 1 FROM task_references
-                           WHERE reference_type = 'business_object_field')
+                           WHERE reference_type::text = 'business_object_field')
             THEN
                 RAISE EXCEPTION 'Cannot downgrade while source monitoring data exists';
             END IF;
