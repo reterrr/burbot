@@ -5,24 +5,30 @@ import json
 from types import SimpleNamespace
 from uuid import uuid4
 
+from fastapi import HTTPException
 from pydantic import TypeAdapter, ValidationError
 from sqlalchemy import select
 
 from extension_sync.contracts import Id
 from extension_sync.identity import IdentityService, reject
-from extension_sync.models import ExternalObjectBinding, SyncReceipt
+from extension_sync.models import ExternalObjectBinding, SyncReceipt, SyncSourceGrant
 from extension_sync.schema import local_type, manifest_field
+from extension_sync.sources import UNAVAILABLE, SourceReconciliation, canonical_source
 from extraction.schemas import capture as capture_dto
 from extraction.schemas.evidence import TokenClass
 from extraction.schemas.selector import SelectorEvaluation
 from extraction.schemas.selector_api import SelectorBinding
-from extraction.schemas.selector_tree import validate_selector_evaluation
+from extraction.schemas.selector_tree import (
+    validate_selector_evaluation,
+    validate_selector_transition,
+)
 from extraction.services.capture import CaptureService
 from extraction.services.selector_execution import SelectorExecutionService
 from extraction.services.selectors import SelectorService
 from monitoring.queue import sanitize_diagnostics
 from monitoring.report import validate_consensus
-from sources.schemas.models import SourceSnapshot
+from monitoring.security import MonitoringError
+from sources.schemas.models import Source, SourceSnapshot
 
 parse_id = TypeAdapter(Id)
 
@@ -162,12 +168,16 @@ class SyncOperations(IdentityService):
             },
         )
 
-    async def sync_selector(self, request):
-        model = await self.model()
+    async def preview_sources(self, request):
+        return await SourceReconciliation(self.session, self.workspace).resolve(
+            request, apply=False
+        )
+
+    async def resolve_sources(self, request):
+        return await SourceReconciliation(self.session, self.workspace).resolve(request, apply=True)
+
+    async def selector_target(self, model, request):
         binding, entity = await self.require_binding(model, request.identity)
-        source = await self.source(int(request.source_id))
-        if source.type != "HTML":
-            reject(422, "HTML_SOURCE_REQUIRED")
         target = request.tree.selector.target
         identity = request.identity
         if target.object_id != identity.local_object_id or (
@@ -182,42 +192,156 @@ class SyncOperations(IdentityService):
         field = current["objectFields"].get(config["persistentKey"]) if config else None
         if field is None:
             reject(409, "SELECTOR_FIELD_UNRESOLVED")
-        selectors = SelectorService(self.session)
-        row = await selectors.selector(request.tree.selector.uuid, lock=True, required=False)
-        wanted = SelectorBinding(
+        return binding, field
+
+    @staticmethod
+    def selector_binding(field, source_id):
+        return SelectorBinding(
             business_entity_field_id=int(field["businessEntityFieldId"]),
             business_object_field_id=int(field["businessObjectFieldId"]),
-            source_id=source.id,
+            source_id=source_id,
         )
-        if row is not None and any(
-            getattr(row, name) != value for name, value in wanted.model_dump().items()
-        ):
-            reject(409, "SELECTOR_SERVER_TARGET_MISMATCH")
-        existing = {}
+
+    async def compare_selector(self, selectors, row, wanted, incoming):
+        previous = None
         if row is not None:
-            tree, _ = await selectors.tree(row)
-            existing = {version.uuid: version.status for version in tree.versions}
-        if (
-            any(
-                version.status != "draft" and existing.get(version.uuid, "draft") == "draft"
-                for version in request.tree.versions
+            if any(getattr(row, name) != value for name, value in wanted.model_dump().items()):
+                reject(409, "SELECTOR_SERVER_TARGET_MISMATCH")
+            previous, _ = await selectors.tree(row)
+        desired = incoming.canonical_order()
+        if previous and previous.selector.migration is not None:
+            if desired.selector.migration not in (None, previous.selector.migration):
+                reject(409, "SELECTOR_MIGRATION_CONFLICT")
+            desired.selector.migration = previous.selector.migration
+        same = previous is not None and previous.portable() == desired.portable()
+        if previous and not same:
+            try:
+                validate_selector_transition(previous, desired)
+            except ValueError as error:
+                reject(409, "SELECTOR_VERSION_CONFLICT", message=str(error))
+        existing = (
+            {version.uuid: version.status for version in previous.versions} if previous else {}
+        )
+        needs_review = any(
+            version.status != "draft" and existing.get(version.uuid, "draft") == "draft"
+            for version in desired.versions
+        )
+        return same, needs_review
+
+    @staticmethod
+    def selector_receipt(tree, revision, source_id, field, binding):
+        return {
+            "status": "SYNCED",
+            "selectorUuid": str(tree.selector.uuid),
+            "revision": str(revision),
+            "sourceId": str(source_id),
+            "field": field,
+            "businessObjectId": str(binding.business_object_id),
+        }
+
+    async def preview_selectors(self, request):
+        model = await self.model()
+        selectors = SelectorService(self.session)
+        keys = [item.tree.selector.uuid for item in request.selectors]
+        if len(set(keys)) != len(keys):
+            reject(422, "DUPLICATE_SELECTOR_UUID")
+        results = {}
+        for entry in sorted(request.selectors, key=lambda item: item.tree.selector.uuid):
+            key = entry.tree.selector.uuid
+            try:
+                results[key] = await self.preview_selector(model, selectors, entry)
+            except HTTPException as error:
+                reason = error.detail["code"]
+                statuses = {
+                    "OBJECT_IDENTITY_UNRESOLVED": "OBJECT_UNRESOLVED",
+                    "PARENT_IDENTITY_UNRESOLVED": "OBJECT_UNRESOLVED",
+                    "SELECTOR_FIELD_UNRESOLVED": "FIELD_UNRESOLVED",
+                    "SOURCE_UNAVAILABLE": "SOURCE_UNAVAILABLE",
+                    "SOURCE_ACCESS_DENIED": "SOURCE_GRANT_REQUIRED",
+                }
+                results[key] = {
+                    "selectorUuid": str(key),
+                    "status": statuses.get(reason, "SELECTOR_CONFLICT"),
+                    "reason": reason,
+                }
+        return {
+            "schemaRevisionId": str(model.current_revision_id),
+            "items": [results[key] for key in keys],
+        }
+
+    async def preview_selector(self, model, selectors, entry):
+        binding, field = await self.selector_target(model, entry)
+        source_id = int(entry.source_id) if entry.source_id is not None else None
+        granted = False
+        if source_id is not None:
+            granted = (
+                await self.session.get(SyncSourceGrant, (self.workspace.id, source_id)) is not None
             )
-            and not request.publish_reviewed
+            source = await self.session.get(Source, source_id)
+            if not granted:
+                try:
+                    _, site = canonical_source(source.url or "") if source else ("", "")
+                except (MonitoringError, ValidationError, ValueError):
+                    site = ""
+                policy = self.workspace.source_policy
+                if not policy.get("grant_existing") or site not in policy.get("origins", []):
+                    reject(403, "SOURCE_ACCESS_DENIED")
+            if source is None or source.state in UNAVAILABLE or source.type != "HTML":
+                reject(409, "SOURCE_UNAVAILABLE")
+            if entry.source_url is not None and source.url != entry.source_url:
+                reject(409, "SOURCE_CHANGED")
+        row = await selectors.selector(entry.tree.selector.uuid, required=False)
+        wanted = self.selector_binding(field, source_id)
+        same, needs_review = await self.compare_selector(selectors, row, wanted, entry.tree)
+        return {
+            "selectorUuid": str(entry.tree.selector.uuid),
+            "status": "ALREADY_SYNCED"
+            if same and granted
+            else ("SELECTOR_REVIEW_REQUIRED" if needs_review else "READY"),
+            "revision": str(row.revision) if row is not None else None,
+            "businessObjectFieldId": field["businessObjectFieldId"],
+            "binding": self.selector_receipt(entry.tree, row.revision, source_id, field, binding)
+            if same and granted
+            else None,
+        }
+
+    async def sync_selector(self, request):
+        model = await self.model()
+        if request.expected_schema_revision_id is not None and (
+            request.expected_schema_revision_id != str(model.current_revision_id)
         ):
+            reject(409, "SCHEMA_REVISION_CHANGED")
+        binding, field = await self.selector_target(model, request)
+        if request.expected_business_object_field_id is not None and (
+            request.expected_business_object_field_id != field["businessObjectFieldId"]
+        ):
+            reject(409, "FIELD_BINDING_CHANGED")
+        source = await self.source(int(request.source_id), lock=request.source_url is not None)
+        if source.type != "HTML":
+            reject(422, "HTML_SOURCE_REQUIRED")
+        if request.source_url is not None and (
+            source.url != request.source_url or source.state in UNAVAILABLE
+        ):
+            reject(409, "SOURCE_CHANGED")
+        selectors = SelectorService(self.session)
+        row = await selectors.selector(request.tree.selector.uuid, lock=True, required=False)
+        wanted = self.selector_binding(field, source.id)
+        same, needs_review = await self.compare_selector(selectors, row, wanted, request.tree)
+        revision = str(row.revision) if row is not None else None
+        if (
+            "expected_revision" in request.model_fields_set
+            and revision != request.expected_revision
+            and not same
+        ):
+            reject(409, "SELECTOR_REVISION_CHANGED")
+        if needs_review and not request.publish_reviewed:
             reject(409, "SELECTOR_REVIEW_CONFIRMATION_REQUIRED")
         tree, revision = await selectors.import_tree(
             request.tree,
             binding=wanted,
             revision=row.revision if row else None,
         )
-        return {
-            "status": "SYNCED",
-            "selectorUuid": str(tree.selector.uuid),
-            "revision": str(revision),
-            "sourceId": request.source_id,
-            "field": field,
-            "businessObjectId": str(binding.business_object_id),
-        }
+        return self.selector_receipt(tree, revision, source.id, field, binding)
 
     async def capture(self, request):
         key, replay = await self.receipt("capture", request)

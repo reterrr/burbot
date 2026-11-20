@@ -744,7 +744,7 @@ async def test_migration_refuses_to_drop_collection_history(domain, database):
     async with engine.connect() as connection:
         assert (
             await connection.scalar(text("SELECT version_num FROM alembic_version"))
-            == "x100_extension_identity"
+            == "x101_bulk_source_sync"
         )
 
 

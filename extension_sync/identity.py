@@ -23,14 +23,13 @@ def token_digest(value):
     return hashlib.sha256(value.encode()).hexdigest()
 
 
-async def authenticate(session, token, workspace_uuid=None):
+async def authenticate(session, token, workspace_uuid=None, *, lock=True):
     if not token or len(token) != 43:
         reject(401, "INVALID_SYNC_TOKEN")
-    workspace = await session.scalar(
-        select(SyncWorkspace)
-        .where(SyncWorkspace.token_digest == token_digest(token), SyncWorkspace.enabled.is_(True))
-        .with_for_update()
+    query = select(SyncWorkspace).where(
+        SyncWorkspace.token_digest == token_digest(token), SyncWorkspace.enabled.is_(True)
     )
+    workspace = await session.scalar(query.with_for_update() if lock else query)
     if workspace is None:
         reject(401, "INVALID_SYNC_TOKEN")
     if workspace_uuid is not None and workspace.id != workspace_uuid:
@@ -111,10 +110,16 @@ class IdentityService:
             reject(409, "SCHEMA_UNAVAILABLE")
         return model
 
-    async def source(self, source_id):
+    async def source(self, source_id, *, lock=False):
         if await self.session.get(SyncSourceGrant, (self.workspace.id, source_id)) is None:
             reject(403, "SOURCE_ACCESS_DENIED")
-        source = await self.session.get(Source, source_id)
+        source = (
+            await self.session.scalar(
+                select(Source).where(Source.id == source_id).with_for_update(read=True)
+            )
+            if lock
+            else await self.session.get(Source, source_id)
+        )
         if source is None or source.state == "ARCHIVED":
             reject(409, "SOURCE_UNAVAILABLE")
         return source
@@ -185,7 +190,7 @@ class IdentityService:
         model = await self.model()
         sources = (
             await self.session.execute(
-                select(Source.id, Source.url)
+                select(Source.id, Source.url, Source.type)
                 .join(SyncSourceGrant, SyncSourceGrant.source_id == Source.id)
                 .where(
                     SyncSourceGrant.workspace_id == self.workspace.id, Source.state != "ARCHIVED"
@@ -200,7 +205,10 @@ class IdentityService:
             "revisionId": str(model.current_revision_id),
             "entities": list((await self.registry(model)).values()),
             "aliases": ALIASES,
-            "sources": [{"sourceId": str(row.id), "url": row.url} for row in sources],
+            "sources": [
+                {"sourceId": str(row.id), "url": row.url, "type": row.type} for row in sources
+            ],
+            "sourcePolicy": self.workspace.source_policy,
             "permissions": {
                 "create": self.workspace.can_create,
                 "bindExisting": self.workspace.can_bind_existing,

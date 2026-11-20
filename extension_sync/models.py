@@ -39,6 +39,10 @@ class SyncWorkspace(SQLModel, table=True):
     can_create: bool = Field(default=False, sa_column=Column(Boolean, nullable=False))
     can_bind_existing: bool = Field(default=False, sa_column=Column(Boolean, nullable=False))
     can_commit: bool = Field(default=False, sa_column=Column(Boolean, nullable=False))
+    source_policy: dict[str, Any] = Field(
+        default_factory=dict,
+        sa_column=Column(JSONB, nullable=False, server_default="{}"),
+    )
     created_at: datetime = Field(
         default_factory=utc_now,
         sa_column=Column(DateTime(timezone=True), nullable=False),

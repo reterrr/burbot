@@ -8,7 +8,15 @@ from fastapi.routing import APIRoute
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from extension_sync.contracts import Commit, ReportCapture, Resolve, SelectorSync
+from extension_sync.contracts import (
+    Commit,
+    ReportCapture,
+    Resolve,
+    SelectorPreview,
+    SelectorSync,
+    SourcePreview,
+    SourceResolve,
+)
 from extension_sync.identity import authenticate
 from extension_sync.operations import SyncOperations
 from extraction.exceptions import ExtractionConflict, ExtractionNotFound, ExtractionValidationError
@@ -54,11 +62,13 @@ Session = Annotated[AsyncSession, Depends(get_session)]
 Credentials = Annotated[HTTPAuthorizationCredentials | None, Depends(HTTPBearer(auto_error=False))]
 
 
-async def execute(session, credentials, operation, request=None):
+async def execute(session, credentials, operation, request=None, *, readonly=False):
     token = credentials.credentials if credentials else None
     try:
         async with session.begin():
-            workspace = await authenticate(session, token, getattr(request, "workspace_uuid", None))
+            workspace = await authenticate(
+                session, token, getattr(request, "workspace_uuid", None), lock=not readonly
+            )
             service = SyncOperations(session, workspace)
             method = getattr(service, operation)
             return await (method(request) if request is not None else method())
@@ -72,7 +82,7 @@ async def execute(session, credentials, operation, request=None):
 @router.get("/schema")
 async def schema(session: Session, credentials: Credentials, response: Response):
     response.headers["Cache-Control"] = "no-store"
-    return await execute(session, credentials, "schema")
+    return await execute(session, credentials, "schema", readonly=True)
 
 
 @router.post("/objects/resolve")
@@ -83,6 +93,21 @@ async def resolve(request: Resolve, session: Session, credentials: Credentials):
 @router.post("/commits")
 async def commit(request: Commit, session: Session, credentials: Credentials):
     return await execute(session, credentials, "commit", request)
+
+
+@router.post("/sources/preview")
+async def preview_sources(request: SourcePreview, session: Session, credentials: Credentials):
+    return await execute(session, credentials, "preview_sources", request, readonly=True)
+
+
+@router.post("/sources/resolve")
+async def resolve_sources(request: SourceResolve, session: Session, credentials: Credentials):
+    return await execute(session, credentials, "resolve_sources", request)
+
+
+@router.post("/selectors/preview")
+async def preview_selectors(request: SelectorPreview, session: Session, credentials: Credentials):
+    return await execute(session, credentials, "preview_selectors", request, readonly=True)
 
 
 @router.post("/selectors")

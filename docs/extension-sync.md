@@ -7,7 +7,7 @@ distinct operations.
 
 ## Register the schema
 
-Apply the Alembic migrations through `x100_extension_identity`, then run the
+Apply the Alembic migrations through `x101_bulk_source_sync`, then run the
 bootstrap command with the backend database configured.
 
 ```bash
@@ -95,6 +95,65 @@ The server checks the snapshot, source, slot, version and diagnostic consensus.
 CaptureService stores the literal as a `DETECTED` observation. Approved bound
 selectors are available to the existing monitoring worker.
 
+## Synchronize Sources and SelectorTrees in bulk
+
+The backend migration adds a Source policy to each existing workspace. The
+policy starts empty, and separately granted Sources remain available. Business
+identity creation permission applies only to business objects.
+
+An administrator can authorize URL-based registration and grants on exact
+origins. An origin includes the scheme and hostname, such as
+`https://example.org`. Use another `--origin` flag for each additional site.
+The two flags below authorize registration of missing Sources and granting
+access to existing Sources respectively. Choose the flags independently.
+
+```bash
+python -m extension_sync source-policy WORKSPACE_UUID \
+  --origin https://example.org --allow-create --allow-grant-existing
+python -m extension_sync source-grant WORKSPACE_UUID 15
+python -m extension_sync source-grant WORKSPACE_UUID 15 --revoke
+```
+
+`source-policy` replaces the workspace's origin list and capabilities. Run it
+with the workspace UUID alone to clear automatic registration and grant
+capabilities. Use `source-grant` to administer specific existing grants. Both
+commands preserve the workspace bearer token.
+
+In Firefox Options, open **Bulk Source & Selector Synchronization**.
+
+1. **Scan local sources** reads the committed SQLite revision. Discovery uses
+   imported Sources, SelectorTree and evaluation URLs, and local provenance.
+   A file's URL identifies the file. Its source-page URL identifies an
+   independent HTML candidate. URL identity drops fragments and preserves
+   queries. Both clients apply the public-host URL policy without fetching
+   any page or resolving DNS during planning.
+2. **Preview synchronization** checks candidates and targets against the
+   current server registry. The preview reports registrations, required
+   grants, missing business bindings and conflicts. Choose a discovered Source
+   or enter a corrected URL for an ambiguous selector and preview again.
+   Bind missing parent and nested business objects through **Preview bindings**
+   before preparing their selectors. Resolve conflicting Source types or
+   selector ownership before attempting a new preview.
+3. Select the Sources and selectors to synchronize. Approve publication of
+   locally reviewed selector versions if any selected item requires it, then
+   confirm **Synchronize selected**. Execution saves the approval in SQLite
+   first. It checks grants and Source identity, then pins the business field,
+   schema and selector revisions when uploading the existing SelectorTree.
+4. **Retry failed** follows the saved operation after a connection drop or
+   restart. It uses the original approvals and rechecks the server for an
+   accepted selector before resending. A changed selector, schema or ownership
+   needs a fresh preview. **Export report** downloads the per-item results and
+   pending-evidence count as JSON.
+
+SQLite schema version 16 adds Source bindings and per-item progress through
+the normal service startup. Backend IDs are decimal strings throughout.
+Source registration creates an `UNDISCOVERED` identity. Monitoring approval,
+scheduling and agent assignment still use the monitoring workflow. Historic
+captures stay pending until a genuine matching server snapshot is registered.
+The bulk workflow leaves local evidence, portable selector history and canonical
+business values intact. The setting for sending future approved commits controls
+canonical values independently.
+
 ## Nested records and provenance
 
 | Local structure | Backend representation |
@@ -114,8 +173,8 @@ the parent before its nested records and reconcile referenced records before
 sending their values. The initial sync transports these typed values and
 references. Local file bytes, import provenance and legacy document selectors
 whose target cannot be matched to a row remain available in SQLite and portable
-exports. Source and snapshot registration for those artifacts is a separate
-operator action.
+exports. Bulk synchronization can register eligible remote Source identities.
+Snapshot registration remains a separate operator action.
 
 ## API and verification
 
@@ -127,10 +186,14 @@ decimal strings for database identifiers and revision identities.
 | GET | `/schema` |
 | POST | `/objects/resolve` |
 | POST | `/commits` |
+| POST | `/sources/preview` |
+| POST | `/sources/resolve` |
+| POST | `/selectors/preview` |
 | POST | `/selectors` |
 | POST | `/captures` |
 
 Run `pytest -q tests/test_extension_sync_postgres.py` with
 `COLLECTIONS_TEST_DATABASE_URL` set to a disposable PostgreSQL database. The
-extension tests exercise the generated manifest, SQLite migration, BIGINT
-transport and durable offline queue with `node --test tests/backend-sync-contracts.test.mjs`.
+extension tests exercise discovery, read-only preview, SQLite migration,
+BIGINT transport and durable retries with
+`node --test tests/backend-sync-contracts.test.mjs`.

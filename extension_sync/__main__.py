@@ -10,6 +10,7 @@ from fastapi import HTTPException
 from extension_sync.identity import provision
 from extension_sync.models import SyncWorkspace
 from extension_sync.schema import bootstrap
+from extension_sync.sources import change_grant, set_policy
 from shared.database import session_factory
 
 
@@ -18,6 +19,21 @@ async def run(args):
         if args.command == "bootstrap":
             return await bootstrap(
                 session, apply=args.apply, expected_revision=args.expected_revision
+            )
+        if args.command == "source-policy":
+            return await set_policy(
+                session,
+                args.workspace,
+                args.origin,
+                create=args.allow_create,
+                grant_existing=args.allow_grant_existing,
+            )
+        if args.command == "source-grant":
+            return await change_grant(
+                session,
+                args.workspace,
+                args.source_id,
+                revoke=args.revoke,
             )
         if args.command == "revoke":
             workspace = await session.get(SyncWorkspace, args.workspace, with_for_update=True)
@@ -50,6 +66,15 @@ def main():
     grant.add_argument("--commit", action="store_true")
     grant.add_argument("--rotate", action="store_true")
     grant.add_argument("--source", action="append", type=int, default=[])
+    policy = commands.add_parser("source-policy")
+    policy.add_argument("workspace", type=UUID)
+    policy.add_argument("--origin", action="append", default=[])
+    policy.add_argument("--allow-create", action="store_true")
+    policy.add_argument("--allow-grant-existing", action="store_true")
+    source = commands.add_parser("source-grant")
+    source.add_argument("workspace", type=UUID)
+    source.add_argument("source_id", type=int)
+    source.add_argument("--revoke", action="store_true")
     revoke = commands.add_parser("revoke")
     revoke.add_argument("workspace", type=UUID)
     try:
