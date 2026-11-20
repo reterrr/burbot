@@ -114,7 +114,23 @@ python -m extension_sync source-grant WORKSPACE_UUID 15
 python -m extension_sync source-grant WORKSPACE_UUID 15 --revoke
 ```
 
-`source-policy` replaces the workspace's origin list and capabilities. Run it
+For a trusted workspace, an administrator can opt in to all public HTTP(S)
+origins, including domains that have never been registered in Burbot.
+
+```bash
+python -m extension_sync source-policy WORKSPACE_UUID \
+  --allow-all-public-origins --allow-create --allow-grant-existing
+```
+
+The flag expands the origin scope of the selected capabilities. Each
+registration or grant still requires approval in the synchronization request.
+The same public-host URL validation applies to both modes. Registration is
+database-only. Page acquisition still requires separate monitoring approval
+and follows the Firefox DNS and redirect checks. See the monitoring guide for
+deploying the agent behind a network boundary that blocks private addresses.
+[Monitoring source access](monitoring.md#source-access)
+
+`source-policy` replaces the workspace's origin scope and capabilities. Run it
 with the workspace UUID alone to clear automatic registration and grant
 capabilities. Use `source-grant` to administer specific existing grants. Both
 commands preserve the workspace bearer token.

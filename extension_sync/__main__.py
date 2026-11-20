@@ -27,6 +27,7 @@ async def run(args):
                 args.origin,
                 create=args.allow_create,
                 grant_existing=args.allow_grant_existing,
+                allow_all_public_origins=args.allow_all_public_origins,
             )
         if args.command == "source-grant":
             return await change_grant(
@@ -69,6 +70,11 @@ def main():
     policy = commands.add_parser("source-policy")
     policy.add_argument("workspace", type=UUID)
     policy.add_argument("--origin", action="append", default=[])
+    policy.add_argument(
+        "--allow-all-public-origins",
+        action="store_true",
+        help="Allow every valid public HTTP(S) origin for a trusted workspace",
+    )
     policy.add_argument("--allow-create", action="store_true")
     policy.add_argument("--allow-grant-existing", action="store_true")
     source = commands.add_parser("source-grant")
