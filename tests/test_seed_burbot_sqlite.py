@@ -19,14 +19,14 @@ from business_layer.schemas.models import BusinessObject, BusinessObjectFieldVal
 from business_layer.services.data import DataService
 from extension_sync.identity import IdentityService
 from extension_sync.models import ExternalObjectBinding, SyncReceipt, SyncWorkspace
-from extension_sync.schema import bootstrap
+from extension_sync.schema import DEFINITIONS, bootstrap
 from extraction.schemas.models import FieldObservation
 from extraction.schemas.selector import Selector, SelectorEvaluation
 from extraction.schemas.selector_tree import SelectorTree
 from extraction.services.selector_resolver import HtmlSelectorRuntime, evaluate_selector_version
 from extraction.services.selectors import SelectorService
 from monitoring.models import MonitoringJob, MonitoringSource
-from scripts.burbot_sqlite_import import seed
+from scripts.burbot_sqlite_import import operator_website_list, seed
 from scripts.seed_burbot_sqlite import main
 from sources.schemas.api import SourceCreateRequest
 from sources.schemas.models import Source, SourceBusinessObject, SourceSnapshot, StoredFile
@@ -132,7 +132,7 @@ def file_body():
     return buffer.getvalue()
 
 
-def insert_tree(db, graph, evaluation):
+def insert_tree(db, graph, evaluation=None, *, legacy_rule="rule"):
     header = graph["selector"]
     db.execute(
         "INSERT INTO selectors VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -146,7 +146,7 @@ def insert_tree(db, graph, evaluation):
             header["activeVersionUuid"],
             header["createdAt"],
             None,
-            "rule",
+            legacy_rule,
         ),
     )
     for version in graph["versions"]:
@@ -201,16 +201,17 @@ def insert_tree(db, graph, evaluation):
                             ),
                         ),
                     )
-    db.execute(
-        "INSERT INTO selector_evaluations VALUES (?, ?, ?, ?, ?)",
-        (
-            evaluation["uuid"],
-            evaluation["result"]["selectorVersionUuid"],
-            evaluation["evaluatedAt"],
-            evaluation["pageUrl"],
-            json.dumps(evaluation["result"]),
-        ),
-    )
+    if evaluation is not None:
+        db.execute(
+            "INSERT INTO selector_evaluations VALUES (?, ?, ?, ?, ?)",
+            (
+                evaluation["uuid"],
+                evaluation["result"]["selectorVersionUuid"],
+                evaluation["evaluatedAt"],
+                evaluation["pageUrl"],
+                json.dumps(evaluation["result"]),
+            ),
+        )
 
 
 def make_fixture(path, *, ddl=DDL):
@@ -686,7 +687,7 @@ async def test_import_preserves_records_and_reuses_canonical_ids(database, fixtu
         metadata = {
             row.result["businessObjectId"]: row.result["metadata"]
             for row in receipt_rows
-            if "businessObjectId" in row.result
+            if "metadata" in row.result
         }
         assert metadata[str(project)]["importKey"] == "project:original"
         assert metadata[str(project)]["geographyGroupId"] == 5
@@ -795,3 +796,298 @@ def test_report_cannot_overwrite_sqlite(fixture):
     with pytest.raises(SystemExit, match="1"):
         main(["--sqlite-file", str(path), "--report", str(path)])
     assert path.read_bytes() == original
+
+
+DOCX_BLOB = "1775845a-52e5-4b47-9b70-bcae89a6dcbe"
+OPERATOR_URLS = "https://one.example/terms;v=1; https://two.example/help?item=a;b=2"
+
+
+def add_dry_run_regressions(path, *, ddl=DDL):
+    state, _, _ = make_fixture(path, ddl=ddl)
+    roots = {row["id"]: row for row in state["objects"]}
+    roots["operator-a"]["values"]["website"] = OPERATOR_URLS
+    roots["operator-b"]["values"]["website"] = "https://SAME.example/; https://same.example"
+    other_project = {"id": "other-project", "type": "project", "values": {"name": "Other project"}}
+    state["objects"].append(other_project)
+    state["serviceCategories"].append(nested("other-category", "other-project", label="Other"))
+    funding = nested(
+        "inherited-funding",
+        "recruitment",
+        variant_no=1,
+        service_category_id="category",
+        max_amount_pln="234.56",
+    )
+    state["financingRules"].append(funding)
+
+    operator_file = nested(
+        "operator-file",
+        "operator-a",
+        fileType="DOCX",
+        name="template.docx",
+        url=f"http://127.0.0.1:9876/files/{DOCX_BLOB}/template.docx",
+        sourcePageUrl=PAGE,
+        addedAt=STAMP,
+        importKey="operator-template",
+    )
+    state["fileSources"].append(operator_file)
+    attachment = {
+        "id": "captured-operator-file",
+        "importKey": "operator-template-capture",
+        "type": "DOCX",
+        "url": operator_file["url"],
+        "snapshot": {"text": "Sample template text"},
+        "importedAt": STAMP,
+    }
+    state["importSources"].append(attachment)
+    state["documentRequirements"][0]["document_type_key"] = "msp_application_form"
+    state["documentRequirements"][0]["auto_fill"] = False
+    legacy_graphs = []
+    for owner in ("project", "recruitment"):
+        graph = tree()
+        graph["selector"]["target"] = {
+            "objectId": owner,
+            "field": "auto_fill",
+            "target": {"kind": "document", "id": "msp_application_form"},
+        }
+        graph["selector"]["pageUrl"] = PAGE
+        legacy_graphs.append(graph)
+
+    with closing(sqlite3.connect(path)) as db, db:
+        db.execute("PRAGMA foreign_keys = ON")
+        db.execute(
+            "INSERT INTO workspace_objects(db_id, object_id, object_type, values_json) "
+            "VALUES (99, ?, ?, ?)",
+            (other_project["id"], other_project["type"], json.dumps(other_project["values"])),
+        )
+        db.execute(
+            "INSERT INTO projects(id, object_id, name, status) VALUES "
+            "(99, 'other-project', 'Other project', 'PLANOWANY')"
+        )
+        for identifier in ("operator-a", "operator-b"):
+            db.execute(
+                "UPDATE workspace_objects SET values_json = ? WHERE object_id = ?",
+                (json.dumps(roots[identifier]["values"]), identifier),
+            )
+        db.execute(
+            "INSERT INTO financing_rules VALUES (?, ?, ?, ?)",
+            ("funding:inherited", funding["objectId"], 9, json.dumps(funding)),
+        )
+        db.execute(
+            "UPDATE document_requirements SET payload_json = ? WHERE row_key = ?",
+            (json.dumps(state["documentRequirements"][0]), "document_requirements:0"),
+        )
+        db.execute(
+            "INSERT INTO file_sources VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                operator_file["id"],
+                operator_file["objectId"],
+                operator_file["fileType"],
+                operator_file["url"],
+                operator_file["name"],
+                PAGE,
+                STAMP,
+            ),
+        )
+        db.execute(
+            "INSERT INTO import_sources VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                attachment["id"],
+                attachment["importKey"],
+                attachment["type"],
+                attachment["url"],
+                json.dumps(attachment["snapshot"]),
+                STAMP,
+            ),
+        )
+        for file_id, name, mime, body in report_fixture_blobs():
+            db.execute(
+                "INSERT INTO local_file_blobs VALUES (?, ?, ?, ?, ?, ?)",
+                (file_id, name, mime, len(body), body, STAMP),
+            )
+        for graph in legacy_graphs:
+            insert_tree(db, graph, legacy_rule=None)
+        db.execute("UPDATE workspace_state SET state_json = ? WHERE id = 1", (json.dumps(state),))
+    return state, legacy_graphs
+
+
+def report_fixture_blobs():
+    buffer = io.BytesIO()
+    with ZipFile(buffer, "w") as archive:
+        archive.writestr(ZipInfo("[Content_Types].xml"), "<Types/>")
+        archive.writestr(ZipInfo("word/document.xml"), "<document/>")
+    return (
+        (
+            DOCX_BLOB,
+            "template.docx",
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            buffer.getvalue(),
+        ),
+        (
+            "c9331984-a243-4a23-a646-b4e30de99006",
+            "legacy.doc",
+            "application/msword",
+            b"\xd0\xcf\x11\xe0 Example Word document",
+        ),
+        ("5028f78a-c6eb-4556-bab4-0a10d72f1687", "archive.zip", "application/zip", file_body()),
+    )
+
+
+def outcome(report, reason):
+    return [record for record in report.entries if record.get("reason") == reason]
+
+
+@pytest.mark.asyncio
+async def test_dry_run_report_regressions(database, tmp_path, monkeypatch):
+    _, factory, schema = database
+    path = tmp_path / "report-fixture.sqlite"
+    _, (resolved, unresolved) = add_dry_run_regressions(path)
+    file_definition = DEFINITIONS["file_source"]
+    with monkeypatch.context() as original:
+        original.setitem(
+            DEFINITIONS,
+            "file_source",
+            {
+                **file_definition,
+                "fields": [f for f in file_definition["fields"] if f["key"] != "operator_owner"],
+                "parents": ["project", "recruitment"],
+            },
+        )
+        await initialize(factory)
+
+    storage, namespace = MemoryStorage(), uuid4()
+    before = await snapshot(factory, schema)
+    input_bytes = path.read_bytes()
+    preview = await seed(factory, path, workspace_uuid=namespace, storage=storage)
+    assert preview.exit_code == 0, preview.as_dict()["summary"]
+    pending = outcome(preview, "OPERATOR_FILE_OWNER_FIELD_UNREGISTERED")
+    assert [record["localObjectId"] for record in pending] == ["operator-a"]
+    assert pending[0]["storedFile"]["localFileId"] == DOCX_BLOB
+    assert await snapshot(factory, schema) == before
+    assert not storage.calls
+
+    async with factory.begin() as session:
+        schema_preview = await bootstrap(session)
+        assert schema_preview["changes"]
+        await bootstrap(session, apply=True, expected_revision=int(schema_preview["revisionId"]))
+
+    preview = await seed(factory, path, workspace_uuid=namespace, storage=storage)
+    assert preview.exit_code == 0, preview.as_dict()["summary"]
+    assert not outcome(preview, "OPERATOR_FILE_OWNER_FIELD_UNREGISTERED")
+    assert preview.as_dict()["byInput"]["stored_files"] == {"would_import": 4}
+    pending = outcome(preview, "LEGACY_DOCUMENT_TARGET_UNRESOLVED")
+    assert [record["payload"] for record in pending] == [unresolved]
+
+    applied = await seed(factory, path, apply=True, workspace_uuid=namespace, storage=storage)
+    assert applied.exit_code == 0, applied.as_dict()["summary"]
+    indexed = await objects(factory, namespace)
+    project_category, _ = indexed["project", "service_category", "category"]
+    _, funding = indexed["recruitment", "funding", "inherited-funding"]
+    assert funding["service_category_id"].value == project_category.id
+    assert sum(key[1] == "service_category" for key in indexed) == 2
+    operator, website = indexed["operator-a", None, None]
+    assert website["website"].value_id is None
+    assert indexed["operator-b", None, None][1]["website"].value == "https://SAME.example/"
+    file_object, file_slots = indexed["operator-a", "file_source", "operator-file"]
+    assert file_slots["operator_owner"].value == operator.id
+    assert (
+        file_slots["project_owner"].value is None and file_slots["recruitment_owner"].value is None
+    )
+    assert file_slots["source"].value is None
+    document, document_slots = indexed["project", "document", "document"]
+    assert document_slots["document_type_key"].value == "msp_application_form"
+
+    async with factory() as session:
+        receipt_rows = list(await session.scalars(select(SyncReceipt)))
+        original = next(
+            row.result["operatorWebsite"]
+            for row in receipt_rows
+            if row.result.get("businessObjectId") == str(operator.id)
+            and "operatorWebsite" in row.result
+        )
+        assert original == {
+            "original": OPERATOR_URLS,
+            "urls": OPERATOR_URLS.split("; https://")[0:1]
+            + ["https://two.example/help?item=a;b=2"],
+            "primary": None,
+        }
+        receipt = next(
+            row.result
+            for row in receipt_rows
+            if row.result.get("businessObjectId") == str(file_object.id)
+            and "storedFile" in row.result
+        )
+        assert receipt["storedFile"]["localFileId"] == DOCX_BLOB
+        for file_id, _, mime, body in report_fixture_blobs():
+            entries = [
+                row
+                for row in applied.entries
+                if row["input"] == "stored_files" and row["localId"] == file_id
+            ]
+            assert len(entries) == 1 and entries[0]["status"] == "imported"
+            stored = await session.get(StoredFile, int(entries[0]["storedFileId"]))
+            assert stored.mime_type == mime and storage.files[stored.storage_key][0] == body
+            assert await session.scalar(select(Source).where(Source.file_id == stored.id)) is None
+        legacy_selector = await SelectorService(session).selector(
+            UUID(resolved["selector"]["uuid"])
+        )
+        saved, _ = await SelectorService(session).tree(legacy_selector)
+        assert saved.portable() == SelectorTree.model_validate(resolved).portable()
+        assert (
+            legacy_selector.business_object_field_id == document_slots["auto_fill"].object_field_id
+        )
+        assert (
+            await SelectorService(session).selector(
+                UUID(unresolved["selector"]["uuid"]),
+                required=False,
+            )
+            is None
+        )
+        assert document.id != file_object.id
+
+    preserved_count, pending_count = (3, 1)
+    assert (
+        sum(
+            row["input"] == "local_file_blobs"
+            for row in outcome(applied, "UNSUPPORTED_DOCUMENT_FORMAT")
+        )
+        == preserved_count
+    )
+    assert len(outcome(applied, "FILE_BYTES_NOT_IN_SQLITE")) == pending_count
+    after = await snapshot(factory, schema)
+    repeat = await seed(factory, path, apply=True, workspace_uuid=namespace, storage=storage)
+    assert repeat.exit_code == 0 and "imported" not in repeat.as_dict()["summary"]
+    assert await snapshot(factory, schema) == after
+    assert path.read_bytes() == input_bytes
+
+    # A change to the canonical parent cannot authorize the same SQLite category again.
+    recruitment, slots = indexed["recruitment", None, None]
+    other, _ = indexed["other-project", None, None]
+    slot = slots["project_id"]
+    async with factory.begin() as session:
+        await DataService(session).assign_object_fields_values(
+            recruitment.id,
+            {slot.object_field_id: other.id},
+            expected_value_ids={slot.object_field_id: slot.value_id},
+        )
+    conflict = await seed(factory, path, workspace_uuid=namespace, storage=storage)
+    assert "project_id" in {row["field"] for row in outcome(conflict, "CANONICAL_VALUE_DIFFERS")}
+    assert [
+        row["localId"]
+        for row in outcome(
+            conflict,
+            "service_category_id: UNRESOLVED_SERVICE_CATEGORY_REFERENCE",
+        )
+    ] == ["inherited-funding"]
+
+
+def test_operator_website_parsing_preserves_semicolons_in_url_components():
+    assert operator_website_list("https://example.org/page;format=small") is None
+    assert (
+        operator_website_list("https://example.org/?urls=https://a.example;https://b.example")
+        is None
+    )
+    assert operator_website_list("https://a.example/p;https://b.example/")["primary"] is None
+    assert (
+        operator_website_list("https://a.example; https://a.example/")["primary"]
+        == "https://a.example"
+    )
