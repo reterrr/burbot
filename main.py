@@ -11,8 +11,9 @@ from tasks.api.routes import router as task_router
 
 api = FastAPI()
 
-api.include_router(business_router)
-api.include_router(source_router)
+
+api.include_router(business_router, prefix="/api/v1")
+api.include_router(source_router, prefix="/api/v1")
 api.include_router(task_router)
 api.include_router(extraction_router)
 api.include_router(capture_router)
