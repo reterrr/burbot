@@ -17,11 +17,17 @@ from test_collections_postgres import domain as domain
 from test_selector_tree import css, part, recipe, tree
 
 from business_layer.schemas.models import BusinessObject, BusinessObjectFieldValue
+from extraction.schemas import capture as capture_dto
 from extraction.schemas.common import utc_now
+from extraction.schemas.enums import ObservationStatus
+from extraction.schemas.evidence import ExtractionIssue, GroundTruth, TokenClass
 from extraction.schemas.models import ConcreteValue, FieldObservation
 from extraction.schemas.selector import SelectorEvaluation
 from extraction.schemas.selector_tree import SelectorVersionDefinition
+from extraction.services.capture import CaptureService
+from extraction.services.repositories import ExtractionRepository
 from extraction.services.selector_resolver import HtmlSelectorRuntime, evaluate_selector_version
+from extraction.services.tracking import update_tracking_from_observation
 from monitoring.models import MonitoringJob, MonitoringUpload
 from monitoring.processing import MonitoringProcessor
 from monitoring.queue import MonitoringQueue
@@ -33,7 +39,7 @@ from sources.schemas.models import (
     SourceSnapshot,
     StoredFile,
 )
-from tasks.schemas.models import Task, TaskStatus, Workflow
+from tasks.schemas.models import Task, TaskReason, TaskReference, TaskStatus, Workflow
 
 pytestmark = pytest.mark.asyncio
 PAGE = "https://example.org/projects"
@@ -127,6 +133,12 @@ async def claim(client, headers):
 
 async def history(client, source_id):
     response = await client.get(f"/monitoring/sources/{source_id}/history", headers=OPERATOR)
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+async def review(client, task_id):
+    response = await client.get(f"/monitoring/reviews/{task_id}", headers=OPERATOR)
     assert response.status_code == 200, response.text
     return response.json()
 
@@ -349,41 +361,44 @@ async def add_tree(client, domain, source_id, slot, definition, etag=None):
 
 async def test_detected_evidence_baseline_version_pins_and_review_carry(domain, client, minio):
     row = await source(domain, client)
-    obj = await domain.make(name="Canonical")
+    obj = await domain.make(name="B2B")
     slot = domain.slot(obj, "name")
     initial = tree(recipe(part(css("#name"))))
     etag = await add_tree(client, domain, row.id, slot, initial)
     headers, _ = await agent(client, row.id)
-    content = b'<p id="name">Baseline</p>'
+    original_evidence = "W projekcie mogą uczestniczyć przedsiębiorstwa MŚP"
+    content = f'<meta charset="utf-8"><p id="name">{original_evidence}</p>'.encode()
     first = await monitor(client, domain, headers, row.id, content)
-    old_observation_id = first["fields"][0]["observationId"]
-    assert first["fields"][0]["status"] == "FIELD_NEW"
+    first_field = first["fields"][0]
+    old_observation_id = first_field["observationId"]
+    assert first_field["status"] == "FIELD_NEW"
+    assert first_field["evidenceStatus"] == "INITIAL_EVIDENCE"
+    assert first_field["evidenceChanged"] is None
+    initial_review = await review(client, first_field["taskId"])
+    assert initial_review["canonicalValue"] == "B2B"
+    assert initial_review["previousEvidence"] is None
+    assert initial_review["currentEvidence"] == original_evidence
 
-    # A human acceptance is represented by advancing the existing evidence
-    # tracking baseline, through the same tracking service used by capture.
-    from extraction.services.repositories import ExtractionRepository
-
+    # Accept the same observation already recorded as the latest check.
     async with domain.factory.begin() as session:
         repo = ExtractionRepository(session)
         obs = await repo.get(FieldObservation, old_observation_id)
-        assert obs.status == "DETECTED"
+        assert obs.status == ObservationStatus.DETECTED
         row_tracking = await repo.current_tracking(
             obs.source_field_tracking_id, obs.business_object_field_id
         )
         assert row_tracking.baseline_observation_id is None
-        obs.status = "ACCEPTED"
-        from sources.services.tracking import append_tracking_version
-
-        await append_tracking_version(
-            session,
-            row_tracking,
-            changes={"baseline_observation_id": obs.id},
-            reason="test acceptance",
-        )
+        assert row_tracking.last_observation_id == obs.id
+        obs.status = ObservationStatus.ACCEPTED
+        advanced, changed = await update_tracking_from_observation(repo, row_tracking, obs)
+        assert advanced.baseline_observation_id == obs.id and not changed
+        assert (await update_tracking_from_observation(repo, advanced, obs)) == (advanced, False)
 
     unchanged = await monitor(client, domain, headers, row.id, content)
     assert unchanged["fields"][0]["status"] == "FIELD_UNCHANGED"
     assert unchanged["fields"][0]["taskId"] is None
+    assert unchanged["fields"][0]["comparison"] == "accepted_baseline"
+    assert unchanged["fields"][0]["previousObservationId"] == old_observation_id
     assert unchanged["sourceSnapshotId"] == first["sourceSnapshotId"]
 
     await enqueue(client, row.id)
@@ -417,6 +432,17 @@ async def test_detected_evidence_baseline_version_pins_and_review_carry(domain, 
     assert fields[0]["selectorVersionUuid"] == version["uuid"]
     assert fields[0]["status"] == "FIELD_CHANGED"
     assert fields[0]["baselineObservationId"] == old_observation_id
+    changed_review = await review(client, fields[0]["taskId"])
+    assert {
+        "businessObjectFieldId": slot.object_field_id,
+        "canonicalValueId": slot.value_id,
+        "canonicalValue": "B2B",
+        "previousEvidence": original_evidence,
+        "currentEvidence": "New",
+        "evidenceStatus": "CHANGED",
+        "evidenceChanged": True,
+        "requiresReview": True,
+    }.items() <= changed_review.items()
 
     repeated = await monitor(client, domain, headers, row.id, html + b" ")
     assert repeated["fields"][0]["selectorVersionUuid"] == next_version["uuid"]
@@ -424,8 +450,20 @@ async def test_detected_evidence_baseline_version_pins_and_review_carry(domain, 
     missing = await monitor(client, domain, headers, row.id, b"<p>no match</p>")
     assert missing["fields"][0]["status"] == "FIELD_MISSING"
     assert missing["fields"][0]["observationId"] is None
+    missing_task = missing["fields"][0]["taskId"]
+    missing_review = await review(client, missing_task)
+    assert missing_review["evidenceStatus"] == "MISSING"
+    assert missing_review["previousEvidence"] == original_evidence
+    assert missing_review["currentEvidence"] is None
+    assert missing_review["evidenceChanged"] is None
+    assert missing_review["canonicalValue"] == "B2B"
+    again = await monitor(client, domain, headers, row.id, b"<p>still no match</p>")
+    assert again["fields"][0]["taskId"] == missing_task
+    assert await domain.count(ExtractionIssue, code="VALUE_NOT_FOUND") == 2
     assert await domain.count(FieldObservation) == await domain.count(ConcreteValue) == 4
-    assert await domain.count(SelectorEvaluation, provenance="browser_agent_reported") == 5
+    assert await domain.count(SelectorEvaluation, provenance="browser_agent_reported") == 6
+    assert await domain.count(SourceSnapshot, source_id=row.id) == 5
+    assert await domain.count(Task) == 3
     assert await domain.count(BusinessObject) == 1
     async with domain.factory() as session:
         canonical = await session.scalar(
@@ -433,18 +471,231 @@ async def test_detected_evidence_baseline_version_pins_and_review_carry(domain, 
                 BusinessObjectFieldValue.business_object_field_id == slot.object_field_id,
             )
         )
-        assert canonical.value_json == "Canonical"
+        assert canonical.id == slot.value_id and canonical.value_json == "B2B"
         tracking = await session.scalar(
             select(SourceObjectFieldTracking).where(SourceObjectFieldTracking.valid_to.is_(None))
         )
         assert tracking.baseline_observation_id == old_observation_id
-        review = await session.get(Task, fields[0]["taskId"])
-        workflow = await session.get(Workflow, review.workflow_id)
-        assert review.status == TaskStatus.PENDING
-        assert (
-            workflow.status == "active"
-            and workflow.source_snapshot_id == missing["sourceSnapshotId"]
+        review_task = await session.get(Task, fields[0]["taskId"])
+        refs = await session.scalars(
+            select(TaskReference).where(
+                TaskReference.task_id == review_task.id,
+                TaskReference.reference_type == "observation",
+            )
         )
+        assert {ref.reference_id for ref in refs} == {
+            old_observation_id,
+            fields[0]["observationId"],
+        }
+        workflow = await session.get(Workflow, review_task.workflow_id)
+        assert review_task.status == TaskStatus.PENDING
+        assert (
+            workflow.status == "active" and workflow.source_snapshot_id == again["sourceSnapshotId"]
+        )
+
+    # A review reads the live canonical value after an explicit business edit.
+    await domain.call(
+        lambda service: service.data.assign_object_fields_values(
+            obj.id,
+            {slot.object_field_id: "B2C"},
+            expected_value_ids={slot.object_field_id: slot.value_id},
+        )
+    )
+    updated_review = await review(client, fields[0]["taskId"])
+    assert updated_review["canonicalValue"] == "B2C"
+    assert updated_review["previousEvidence"] == original_evidence
+    assert updated_review["currentEvidence"] == "New"
+
+    back = await monitor(client, domain, headers, row.id, html)
+    assert back["fields"][0]["taskId"] == fields[0]["taskId"]
+    async with domain.factory.begin() as session:
+        done = await session.get(Task, back["fields"][0]["taskId"])
+        done.status = TaskStatus.COMPLETED
+        done.completed_at = utc_now()
+    for _ in range(2):
+        same = await monitor(client, domain, headers, row.id, html)
+        assert same["fields"][0]["taskId"] == done.id
+        assert same["fields"][0]["requiresReview"] is False
+    assert await domain.count(Task) == 3
+    assert (await review(client, done.id))["requiresReview"] is False
+
+
+async def test_initial_evidence_uses_only_previous_observation_of_same_selector(
+    domain,
+    client,
+    minio,
+):
+    row = await source(domain, client)
+    obj = await domain.make(name="B2B")
+    slot = domain.slot(obj, "name")
+    primary = tree(recipe(part(css("#primary"))))
+    secondary = tree(recipe(part(css("#secondary"))))
+    await add_tree(client, domain, row.id, slot, primary)
+    await add_tree(client, domain, row.id, slot, secondary)
+    headers, _ = await agent(client, row.id)
+    original = b'<p id="primary">Business participants</p><p id="secondary">Source conditions</p>'
+    first = await monitor(client, domain, headers, row.id, original)
+    assert len(first["fields"]) == 2
+    assert {field["evidenceStatus"] for field in first["fields"]} == {"INITIAL_EVIDENCE"}
+    assert all(field["requiresReview"] for field in first["fields"])
+    assert await domain.count(Task, reason=TaskReason.MANUAL) == 2
+    initial = {field["selectorUuid"]: field for field in first["fields"]}
+
+    repeated = await monitor(client, domain, headers, row.id, original)
+    assert {field["status"] for field in repeated["fields"]} == {"FIELD_UNCHANGED"}
+    for field in repeated["fields"]:
+        assert field["previousObservationId"] == initial[field["selectorUuid"]]["observationId"]
+        assert field["comparison"] == "previous_observation"
+        assert field["taskId"] is None and field["evidenceChanged"] is False
+        assert field["baselineObservationId"] is None
+
+    modified = original.replace(b"Business participants", b"New eligibility text")
+    changed = await monitor(client, domain, headers, row.id, modified)
+    assert {field["evidenceStatus"] for field in changed["fields"]} == {"CHANGED", "UNCHANGED"}
+    pending = next(field for field in changed["fields"] if field["requiresReview"])
+    assert pending["comparison"] == "previous_observation"
+    detail = await review(client, pending["taskId"])
+    assert detail["canonicalValue"] == "B2B"
+    assert detail["previousEvidence"] == "Business participants"
+    assert detail["currentEvidence"] == "New eligibility text"
+    assert await domain.count(Task) == 3
+
+    async with domain.factory() as session:
+        tracking = await session.scalar(
+            select(SourceObjectFieldTracking).where(SourceObjectFieldTracking.valid_to.is_(None))
+        )
+        assert tracking.baseline_observation_id is None
+        assert tracking.last_checked_at.isoformat() == changed["acquiredAt"].replace("Z", "+00:00")
+    assert await domain.count(FieldObservation, status=ObservationStatus.DETECTED) == 6
+    assert (
+        await domain.count(BusinessObjectFieldValue, business_object_field_id=slot.object_field_id)
+        == 1
+    )
+
+
+async def test_first_monitoring_compares_the_raw_human_confirmed_baseline(domain, client, minio):
+    row = await source(domain, client)
+    obj = await domain.make(name="B2B")
+    slot = domain.slot(obj, "name")
+    agent_headers, _ = await agent(client, row.id)
+    selected = "Business participants"
+    html = f'<p id="evidence">{selected}</p>'.encode()
+    snapshot = (await monitor(client, domain, agent_headers, row.id, html))["sourceSnapshotId"]
+    await add_tree(client, domain, row.id, slot, tree(recipe(part(css("#evidence")))))
+
+    async with domain.factory.begin() as session:
+        service = CaptureService(session, commit=False)
+        await service.repo.get_or_create(TokenClass, {"id": "text"}, {"name": "Text"})
+        run = await service.create_run(
+            capture_dto.CreateRunRequest(snapshot_id=snapshot, extractor_version="manual")
+        )
+        accepted = await service.register_capture(
+            run.id,
+            capture_dto.CaptureRequest.model_validate(
+                {
+                    "capture_key": "human-confirmed",
+                    "scopes": [
+                        {
+                            "client_key": "document",
+                            "name": "ROOT",
+                            "selector": {
+                                "type": "CSS",
+                                "value": "html",
+                                "discovered_by": "AUTOMATIC",
+                            },
+                        }
+                    ],
+                    "scope_instances": [
+                        {
+                            "client_key": "document",
+                            "scope_client_key": "document",
+                            "root_element_client_key": "document",
+                        }
+                    ],
+                    "elements": [
+                        {
+                            "client_key": "document",
+                            "element_from": "HTML",
+                            "html": {"tag_name": "html"},
+                        }
+                    ],
+                    "values": [
+                        {
+                            "client_key": "selected",
+                            "scope_instance_client_key": "document",
+                            "element_client_key": "document",
+                            "business_entity_field_id": domain.fields["name"],
+                            "business_object_id": obj.id,
+                            "token_class_id": "text",
+                            "raw_value": selected,
+                            "normalized_value": "B2B",
+                            "confirmed_by_human": True,
+                        }
+                    ],
+                }
+            ),
+        )
+    evidence = (await monitor(client, domain, agent_headers, row.id, html))["fields"][0]
+    assert evidence["status"] == "FIELD_UNCHANGED"
+    assert evidence["comparison"] == "accepted_baseline"
+    assert evidence["baselineObservationId"] == accepted.observation_ids_by_client_key["selected"]
+    assert evidence["requiresReview"] is False and evidence["taskId"] is None
+    assert await domain.count(GroundTruth) == 1
+    assert (
+        await domain.count(BusinessObjectFieldValue, business_object_field_id=slot.object_field_id)
+        == 1
+    )
+
+
+async def test_monitoring_preserves_success_for_evidence_in_different_formats(
+    domain, client, minio
+):
+    row = await source(domain, client)
+    fields = [
+        ("PROG.07.09-IP.01", "PROG.07.09-IP.01-0014/23-00"),
+        ("Program Kompetencji 3.0", "Program Kompetencji 3.0"),
+        ("region|miasto|Przykład", "Regulamin projektu.pdf"),
+        ("https://example.org/announcement", None),
+        ("2027-12-31", "31.12.2027"),
+        ("https://example.org/application", None),
+        ("03/SEED/2026", "03/SEED/2026 IV kwartał 2026 Listopad 2026 Styczeń 2027"),
+        ("B2B", "Opis grupy docelowej przedsiębiorstw MŚP"),
+        ("2024-01-01", "01.01.2024"),
+    ]
+    snippets, expected = ['<meta charset="utf-8">'], {}
+    for position, (canonical, raw) in enumerate(fields):
+        obj = await domain.make(name=canonical)
+        slot = domain.slot(obj, "name")
+        element_id = f"field-{position}"
+        definition = tree(recipe(part(css(f"#{element_id}"))))
+        await add_tree(client, domain, row.id, slot, definition)
+        expected[definition["selector"]["uuid"]] = (slot, raw)
+        if raw is not None:
+            snippets.append(f'<p id="{element_id}">{raw}</p>')
+
+    headers, _ = await agent(client, row.id)
+    check = await monitor(client, domain, headers, row.id, "".join(snippets).encode())
+    assert len(check["fields"]) == 9
+    async with domain.factory() as session:
+        repo = ExtractionRepository(session)
+        for result in check["fields"]:
+            slot, raw = expected[result["selectorUuid"]]
+            evaluation = await session.get(SelectorEvaluation, result["evaluationId"])
+            canonical = await session.get(BusinessObjectFieldValue, slot.value_id)
+            assert canonical.value_json == slot.value
+            assert evaluation.provenance == "browser_agent_reported"
+            if raw is None:
+                assert result["evidenceStatus"] == "MISSING"
+                assert evaluation.result_json["status"] == "not_found"
+                assert result["observationId"] is None
+            else:
+                assert result["evidenceStatus"] == "INITIAL_EVIDENCE"
+                assert evaluation.result_json["status"] == "success"
+                evidence = await repo.get(FieldObservation, result["observationId"])
+                assert evidence.status == ObservationStatus.DETECTED
+                assert (await repo.observation_value(evidence)).raw_value == raw
+    assert await domain.count(FieldObservation) == 7
+    assert await domain.count(ExtractionIssue, code="VALUE_NOT_FOUND") == 2
 
 
 async def test_selector_failure_and_terminal_processing_failure_create_reviews(
@@ -452,7 +703,6 @@ async def test_selector_failure_and_terminal_processing_failure_create_reviews(
 ):
     from extraction.schemas.models import ExtractionRun
     from monitoring.queue import PROCESSING_LIMIT
-    from tasks.schemas.models import TaskReason
 
     row = await source(domain, client)
     definition = tree(recipe(part(css("#first"), css("#second", order=1))))

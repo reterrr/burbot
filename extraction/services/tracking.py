@@ -6,6 +6,12 @@ from extraction.schemas.models import FieldObservation
 from extraction.services.repositories import ExtractionRepository
 from sources.services.tracking import append_tracking_version, as_utc
 
+BASELINE_STATUSES = {
+    ObservationStatus.VALIDATED,
+    ObservationStatus.BOUND,
+    ObservationStatus.ACCEPTED,
+}
+
 
 def comparable_value(value):
     if value.is_semantic_null:
@@ -32,20 +38,25 @@ async def update_tracking_from_observation(repo: ExtractionRepository, tracking,
         raise ExtractionValidationError("Observation belongs to a different tracking binding")
     if observation.status in {ObservationStatus.REJECTED, ObservationStatus.SUPERSEDED}:
         return tracking, False
-    if tracking.last_observation_id is not None:
+    same_observation = observation.id == tracking.last_observation_id
+    if tracking.last_observation_id is not None and not same_observation:
         latest = await repo.get(FieldObservation, tracking.last_observation_id)
-        if (as_utc(observation.observed_at), observation.id) <= (
+        if (as_utc(observation.observed_at), observation.id) < (
             as_utc(latest.observed_at),
             latest.id,
         ):
             return tracking, False
-    changes = {"last_observation_id": observation.id, "last_checked_at": observation.observed_at}
+    # A reviewer can accept the same observation that monitoring already recorded.
+    changes = (
+        {}
+        if same_observation
+        else {
+            "last_observation_id": observation.id,
+            "last_checked_at": observation.observed_at,
+        }
+    )
     changed = False
-    if observation.status in {
-        ObservationStatus.VALIDATED,
-        ObservationStatus.BOUND,
-        ObservationStatus.ACCEPTED,
-    }:
+    if observation.status in BASELINE_STATUSES:
         value = await repo.observation_value(observation)
         if value is None:
             raise ExtractionValidationError(
@@ -63,6 +74,8 @@ async def update_tracking_from_observation(repo: ExtractionRepository, tracking,
             if differs:
                 changes["last_changed_at"] = observation.observed_at
                 changed = True
+    if not changes:
+        return tracking, False
     successor = await append_tracking_version(
         repo.session, tracking, changes, "Extraction observation"
     )

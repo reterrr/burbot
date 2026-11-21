@@ -22,6 +22,7 @@ from monitoring.contracts import (
     UploadURL,
 )
 from monitoring.queue import MonitoringQueue, status
+from monitoring.review import review_detail
 from monitoring.security import MonitoringError, authenticate_agent, authorize_admin
 from shared.database import get_session
 
@@ -134,6 +135,14 @@ async def history(
     limit: Annotated[int, Query(ge=1, le=100)] = 50,
 ):
     return await MonitoringQueue(session).history(source_id, offset, limit)
+
+
+@router.get("/reviews/{task_id}", dependencies=[Depends(operator)])
+async def get_review(task_id: int, session: Session):
+    try:
+        return await review_detail(session, task_id)
+    except MonitoringError as error:
+        raise as_http(error) from error
 
 
 async def agent_operation(session, credentials, action, *, job_id=None, payload=None):
