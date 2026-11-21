@@ -68,3 +68,8 @@ for setup, agent enrollment, protocols and verification.
 The Burbot business schema and workspace identity API connect the Firefox
 extension to Business Layer definitions, objects, selectors and reviewed
 commits. [Schema bootstrap and workspace setup](docs/extension-sync.md)
+
+## One-time Firefox SQLite import
+
+Use the [SQLite seeder](docs/sqlite-seed.md) to preview and import an existing
+Firefox database into the registered Burbot PostgreSQL schema.
