@@ -2,17 +2,19 @@
 
 import hashlib
 import json
+import re
 import sqlite3
 from collections import defaultdict
 from dataclasses import dataclass
 from itertools import batched
 from pathlib import Path
+from urllib.parse import urlsplit
 from uuid import NAMESPACE_URL, uuid5
 
 from alembic.runtime.migration import MigrationContext
 from alembic.script import ScriptDirectory
 from fastapi import HTTPException
-from pydantic import ValidationError
+from pydantic import AnyHttpUrl, ValidationError
 from sqlalchemy import func, select, text
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import SQLAlchemyError
@@ -52,10 +54,16 @@ ROOT = Path(__file__).resolve().parents[1]
 BATCH_SIZE = 50
 UNNAMED_WORKSPACE = uuid5(NAMESPACE_URL, "https://github.com/reterrr/burbot#legacy-sqlite-seed")
 READ_ONLY = "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY"
+WEBSITE_SEPARATOR = re.compile(r"\s*;\s*(?=https?://)", re.IGNORECASE)
 
 
 class SeedError(ValueError):
     """An unresolved mapping or import precondition."""
+
+
+@dataclass(frozen=True)
+class PlannedReference:
+    local_id: str
 
 
 @dataclass
@@ -63,11 +71,7 @@ class Binding:
     business_object_id: int | None
     fields: dict
     slots: dict
-
-
-@dataclass(frozen=True)
-class PlannedReference:
-    local_id: str
+    project_reference: int | PlannedReference | None = None
 
 
 def message(error):
@@ -121,6 +125,35 @@ def compatible_field(config, field):
     return definition["type"] == expected
 
 
+def website_url(value):
+    if any(
+        character.isspace() or ord(character) < 32 or ord(character) == 127 for character in value
+    ):
+        return None
+    try:
+        url = AnyHttpUrl(value)
+    except ValidationError:
+        return None
+    return str(url) if url.username is None and url.password is None else None
+
+
+def operator_website_list(value):
+    if not isinstance(value, str):
+        return None
+    separators = list(WEBSITE_SEPARATOR.finditer(value))
+    if not separators:
+        return None
+    if all(match.group() == ";" for match in separators) and website_url(value):
+        # An unspaced semicolon in a query or fragment can be part of a single URL.
+        url = urlsplit(value)
+        if WEBSITE_SEPARATOR.search(url.query) or WEBSITE_SEPARATOR.search(url.fragment):
+            return None
+    urls = [item.strip() for item in WEBSITE_SEPARATOR.split(value)]
+    canonical = {website_url(item) for item in urls}
+    primary = urls[0] if len(canonical) == 1 and None not in canonical else None
+    return {"original": value, "urls": urls, "primary": primary}
+
+
 class Seeder:
     def __init__(self, factory, workspace, namespace, *, apply, storage):
         self.factory = factory
@@ -133,10 +166,13 @@ class Seeder:
         self.versions = {}
         self.rules_by_selector = dict(workspace.tree_rule_ids)
         self.by_local_id = defaultdict(list)
+        self.projects_by_import_key = defaultdict(list)
         self.links = set()
         self.catalog.discover()
         for item in workspace.objects.values():
             self.by_local_id[item.entity_type, item.ref].append(item)
+            if item.entity_type == "project" and item.payload.get("importKey"):
+                self.projects_by_import_key[item.payload["importKey"]].append(item)
         for rule, row in workspace.rules.items():
             tree = row.get("selectorTree")
             if isinstance(tree, dict) and isinstance(tree.get("selector"), dict):
@@ -237,6 +273,13 @@ class Seeder:
         await self.run_stages()
 
     async def run_stages(self, read_session=None):
+        await self.stage(
+            "stored_files",
+            sorted(self.workspace.blobs.items()),
+            self.catalog.preserve_file,
+            lambda entry: entry,
+            read_session,
+        )
         await self.stage(
             "sources",
             sorted(self.catalog.groups.items()),
@@ -389,6 +432,31 @@ class Seeder:
         if entry is None:
             raise SeedError("ENTITY_NOT_REGISTERED")
         fields = {field["persistentKey"]: field for field in entry["fields"]}
+        artifact = (
+            self.catalog.artifact(("file_sources", item.ref))
+            if item.kind == "file_source"
+            else None
+        )
+        if item.kind == "file_source" and item.root_type == "operator":
+            owner_field = fields.get("operator_owner")
+            if (
+                owner_field is None
+                or not compatible_field(
+                    manifest_field("file_source", "operator_owner"), owner_field
+                )
+                or owner_field["reference"] != self.registry["operator"]["key"]
+            ):
+                self.report.add(
+                    "pending",
+                    item.table,
+                    item.ref,
+                    "OPERATOR_FILE_OWNER_FIELD_UNREGISTERED",
+                    localObjectId=item.owner,
+                    requiredField="DocumentFile.operator_owner",
+                    payload=item.payload,
+                    storedFile=artifact.reference() if artifact else None,
+                )
+                return
         entity_id = int(entry["businessEntityId"])
         key = external_key(identity(item))
         bound, key, assignment = await self.object_binding(session, item, key)
@@ -403,7 +471,13 @@ class Seeder:
             if existing is not None
             else {}
         )
-        changes, metadata = self.plan_fields(item, fields, slots)
+        project_owner = await self.funding_project_owner(service, item)
+        changes, metadata = self.plan_fields(item, fields, slots, project_owner)
+        project_reference = (
+            self.business_field_value(fields, slots, "project_id", changes)
+            if (item.entity_type == "recruitment")
+            else None
+        )
         created = bound is None
         object_id = bound.business_object_id if bound else None
         created_at = None
@@ -463,7 +537,9 @@ class Seeder:
             "externalObjectId": key,
             "identity": identity(item).portable(),
             "businessObjectId": str(object_id) if object_id is not None else None,
-            "metadata": metadata,
+            "metadata": {
+                name: value for name, value in metadata.items() if name != "operatorWebsite"
+            },
         }
         receipt_id = (
             await self.receipt(
@@ -475,8 +551,37 @@ class Seeder:
             if object_id is not None
             else None
         )
+        websites = metadata.get("operatorWebsite")
+        if websites and object_id is not None:
+            await self.receipt(
+                session,
+                "operator_websites",
+                key,
+                {
+                    "externalObjectId": key,
+                    "businessObjectId": str(object_id),
+                    "operatorWebsite": websites,
+                },
+            )
+        stored_file = artifact.reference() if artifact else None
+        if stored_file and object_id is not None:
+            url_field = fields.get("url")
+            url_field_id = int(url_field["businessEntityFieldId"]) if url_field else None
+            slot = slots.get(url_field_id)
+            if url_field_id in changes or (slot and slot.value == item.values.get("url")):
+                await self.receipt(
+                    session,
+                    "file_artifact",
+                    key,
+                    {
+                        "externalObjectId": key,
+                        "businessObjectId": str(object_id),
+                        "originalUrl": item.values["url"],
+                        "storedFile": stored_file,
+                    },
+                )
         await session.flush()
-        self.bindings[item.key] = Binding(object_id, fields, slot_ids)
+        self.bindings[item.key] = Binding(object_id, fields, slot_ids, project_reference)
         status = self.created_status if created or changes else "reused"
         self.report.add(
             status,
@@ -491,9 +596,70 @@ class Seeder:
             fieldWrites=len(changes),
             provenanceReceipt=receipt_id,
             preservedMetadata=metadata,
+            **({"storedFile": stored_file} if stored_file else {}),
         )
 
-    def plan_fields(self, item, fields, slots):
+    def project_record(self, value):
+        if value in (None, ""):
+            return None
+        key = str(value)
+        exact = self.workspace.objects.get((key, None, None))
+        if exact is not None and exact.entity_type == "project":
+            return exact
+        candidates = self.projects_by_import_key.get(key, [])
+        return candidates[0] if len(candidates) == 1 else None
+
+    @staticmethod
+    def business_field_value(fields, slots, key, changes=None):
+        field = fields.get(key)
+        if field is None:
+            return None
+        field_id = int(field["businessEntityFieldId"])
+        if changes is not None and field_id in changes:
+            return changes[field_id]
+        slot = slots.get(field_id)
+        return slot.value if slot else None
+
+    def object_reference(self, item):
+        destination = self.bindings[item.key].business_object_id
+        return destination if destination is not None else PlannedReference(item.ref)
+
+    async def funding_project_owner(self, service, item):
+        category_id = item.values.get("service_category_id")
+        if item.kind != "funding" or not category_id:
+            return None
+        owner = self.workspace.objects[(item.owner, None, None)]
+        if owner.entity_type != "recruitment":
+            return None
+        project = self.project_record(owner.values.get("project_id"))
+        if project is None or project.key not in self.bindings:
+            return None
+        category = self.bindings.get((project.owner, "service_category", str(category_id)))
+        if category is None:
+            return None
+        expected_project = self.object_reference(project)
+        bound_owner = self.bindings[owner.key]
+        if not self.apply:
+            return project.owner if bound_owner.project_reference == expected_project else None
+
+        # The batch holds the model lock used by canonical field writes.
+        actual = await service.get_object(bound_owner.business_object_id)
+        if actual.archived_at is not None:
+            raise SeedError("PARENT_OBJECT_UNRESOLVED")
+        slots = {field.business_entity_field_id: field for field in actual.fields}
+        if self.business_field_value(bound_owner.fields, slots, "project_id") != expected_project:
+            return None
+        actual_category = await service.get_object(category.business_object_id)
+        slots = {field.business_entity_field_id: field for field in actual_category.fields}
+        if (
+            actual_category.archived_at is None
+            and self.business_field_value(category.fields, slots, "project_owner")
+            == expected_project
+        ):
+            return project.owner
+        return None
+
+    def plan_fields(self, item, fields, slots, project_owner):
         metadata = {
             key: value
             for key, value in item.payload.items()
@@ -506,6 +672,21 @@ class Seeder:
                 if old in values:
                     values.setdefault(new, values[old])
                     metadata[old] = values.pop(old)
+            websites = operator_website_list(values.get("website"))
+            if websites is not None:
+                metadata["operatorWebsite"] = websites
+                values.pop("website")
+                if websites["primary"] is not None:
+                    values["website"] = websites["primary"]
+                self.report.add(
+                    "preserved",
+                    item.table,
+                    item.ref,
+                    "OPERATOR_WEBSITE_LIST",
+                    field="website",
+                    urlCount=len(websites["urls"]),
+                    primarySelected=websites["primary"] is not None,
+                )
         if item.kind:
             owner_name = self.workspace.objects[(item.owner, None, None)].entity_type + "_owner"
             for key in fields:
@@ -545,10 +726,16 @@ class Seeder:
                 continue
             persistent = config["persistentKey"]
             if persistent not in fields or not compatible_field(config, fields[persistent]):
+                retained = raw.local_id if isinstance(raw, PlannedReference) else raw
                 self.report.add(
-                    "unsupported", item.table, item.ref, "FIELD_UNAVAILABLE", field=key, value=raw
+                    "unsupported",
+                    item.table,
+                    item.ref,
+                    "FIELD_UNAVAILABLE",
+                    field=key,
+                    value=retained,
                 )
-                metadata.setdefault("unmappedValues", {})[key] = raw
+                metadata.setdefault("unmappedValues", {})[key] = retained
                 continue
             if persistent in selected and selected[persistent] != raw:
                 self.report.add(
@@ -581,7 +768,7 @@ class Seeder:
             definition = field["definition"]
             identifier = int(field["businessEntityFieldId"])
             try:
-                value = self.transform(item, field, definition, raw)
+                value = self.transform(item, field, definition, raw, project_owner)
             except (ValueError, TypeError) as error:
                 if key in required:
                     raise SeedError(f"{key}: {error}") from error
@@ -608,13 +795,16 @@ class Seeder:
                 changes[identifier] = value
         return changes, metadata
 
-    def transform(self, item, field, definition, value):
+    def transform(self, item, field, definition, value, project_owner):
         kind = definition["type"]
         if value == "" and kind not in {"string", "text"}:
             value = None  # The extension uses an empty control to clear typed fields.
         if value is not None:
             if kind == "list" and isinstance(value, list):
-                value = [self.transform(item, field, definition["item"], entry) for entry in value]
+                value = [
+                    self.transform(item, field, definition["item"], entry, project_owner)
+                    for entry in value
+                ]
                 if any(isinstance(entry, PlannedReference) for entry in value):
                     if len(value) != len(set(value)):
                         raise SeedError("DUPLICATE_COLLECTION_REFERENCE")
@@ -622,12 +812,21 @@ class Seeder:
             elif kind == "reference":
                 target = field["references"]
                 candidates = self.by_local_id.get((target, str(value)), [])
+                if item.entity_type == "recruitment" and field["persistentKey"] == "project_id":
+                    project = self.project_record(value)
+                    candidates = [project] if project is not None else []
                 if target in NESTED:
-                    candidates = [entry for entry in candidates if entry.owner == item.owner]
+                    owners = {item.owner}
+                    if (
+                        project_owner
+                        and item.kind == "funding"
+                        and field["persistentKey"] == "service_category_id"
+                    ):
+                        owners.add(project_owner)
+                    candidates = [entry for entry in candidates if entry.owner in owners]
                 if len(candidates) != 1 or candidates[0].key not in self.bindings:
                     raise SeedError(f"UNRESOLVED_{target.upper()}_REFERENCE")
-                destination = self.bindings[candidates[0].key].business_object_id
-                value = destination if destination is not None else PlannedReference(str(value))
+                value = self.object_reference(candidates[0])
             elif kind == "source" and field["persistentKey"] != "source":
                 raise SeedError("UNMAPPED_SOURCE_REFERENCE")
             elif kind == "enum":
@@ -654,12 +853,48 @@ class Seeder:
         target = header.target
         nested = target.target if target.target and target.target.kind != "object" else None
         key = (target.object_id, nested.kind if nested else None, nested.id if nested else None)
-        binding, item = self.bindings.get(key), self.workspace.objects.get(key)
+        item = self.workspace.objects.get(key)
+        legacy_document = nested and nested.kind == "document" and item is None
+        resolved_target = {}
+        if legacy_document:
+            # Firefox's legacy capture path locates a document by owner and type key.
+            candidates = [
+                row
+                for row in self.workspace.objects.values()
+                if row.kind == "document"
+                and row.owner == target.object_id
+                and row.values.get("document_type_key") == nested.id
+            ]
+            if len(candidates) == 1:
+                item = candidates[0]
+                key = item.key
+                resolved_target = {"documentTypeKey": nested.id, "resolvedDocumentId": item.ref}
+            if key not in self.bindings:
+                self.report.add(
+                    "pending",
+                    "selectors",
+                    identifier,
+                    "LEGACY_DOCUMENT_TARGET_UNRESOLVED",
+                    candidateDocumentIds=sorted(row.ref for row in candidates),
+                    payload=payload,
+                )
+                return
+        binding = self.bindings.get(key)
         if binding is None:
             raise SeedError("SELECTOR_TARGET_OBJECT_UNRESOLVED")
         config = manifest_field(item.kind or item.root_type, target.field)
         field = binding.fields.get(config["persistentKey"]) if config is not None else None
         if field is None or not compatible_field(config, field):
+            if legacy_document:
+                self.report.add(
+                    "pending",
+                    "selectors",
+                    identifier,
+                    "LEGACY_DOCUMENT_TARGET_FIELD_UNAVAILABLE",
+                    payload=payload,
+                    **resolved_target,
+                )
+                return
             raise SeedError("SELECTOR_TARGET_FIELD_UNRESOLVED")
         entity_field_id = int(field["businessEntityFieldId"])
         object_field_id = binding.slots.get(entity_field_id)
@@ -731,6 +966,7 @@ class Seeder:
             activeVersionUuid=str(header.active_version_uuid)
             if header.active_version_uuid
             else None,
+            **resolved_target,
         )
 
     async def find_snapshots(self, session, source_id, tree):
@@ -798,13 +1034,16 @@ class Seeder:
         object_sources = defaultdict(set)
         linked_rules = {rule for rule in self.rules_by_selector.values()}
         for identifier, item in self.workspace.imports.items():
+            key = ("import_sources", identifier)
+            artifact = self.catalog.artifact(key)
             self.report.add(
                 "pending",
                 "import_sources",
                 identifier,
                 "IMPORT_CAPTURE_IS_NOT_A_SOURCE_SNAPSHOT",
-                sourceId=self.catalog.source_id(("import_sources", identifier)),
+                sourceId=self.catalog.source_id(key),
                 payload=item,
+                **({"storedFile": artifact.reference()} if artifact else {}),
             )
         for identifier, rule in self.workspace.rules.items():
             if identifier not in linked_rules:

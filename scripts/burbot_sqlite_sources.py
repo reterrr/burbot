@@ -3,9 +3,11 @@
 import asyncio
 import hashlib
 import io
+import mimetypes
 import re
 from collections import defaultdict
 from contextlib import closing
+from dataclasses import dataclass
 from pathlib import PurePosixPath
 from urllib.parse import urlsplit
 from uuid import UUID
@@ -63,9 +65,30 @@ def extension(path):
 
 def local_blob(url):
     parsed = urlsplit(url)
-    if parsed.hostname in {"localhost", "127.0.0.1", "::1"} and parsed.path.startswith("/files/"):
+    if (
+        parsed.scheme in {"http", "https"}
+        and parsed.hostname in {"localhost", "127.0.0.1", "::1"}
+        and parsed.path.startswith("/files/")
+    ):
         return str(UUID(parsed.path.split("/", 3)[2]))
     return None
+
+
+@dataclass(frozen=True)
+class PreservedFile:
+    local_id: str
+    stored_file_id: int | None
+    storage_key: str
+    sha256: str
+    extraction_type: SourceType | None
+
+    def reference(self):
+        return {
+            "localFileId": self.local_id,
+            "storedFileId": str(self.stored_file_id) if self.stored_file_id else None,
+            "storageKey": self.storage_key,
+            "sha256": self.sha256,
+        }
 
 
 class SourceCatalog:
@@ -79,11 +102,20 @@ class SourceCatalog:
         self.keys = {}
         self.ids = {}
         self.import_keys = defaultdict(set)
+        self.file_links = {}
+        self.stored_files = {}
+
+    def artifact(self, key):
+        return self.stored_files.get(self.file_links.get(key))
 
     def add(self, key, raw_url, declared=None):
+        blob_id = None
         try:
             if not isinstance(raw_url, str) or not raw_url:
                 raise ValueError("MISSING_SOURCE_URL")
+            blob_id = local_blob(raw_url)
+            if blob_id in self.workspace.blobs:
+                self.file_links[key] = blob_id
             suffix = extension(urlsplit(raw_url).path)
             if suffix in UNSUPPORTED_EXTENSIONS:
                 raise ValueError("UNSUPPORTED_DOCUMENT_FORMAT")
@@ -92,10 +124,17 @@ class SourceCatalog:
             kind = SourceType(declared) if declared is not None else EXTENSIONS.get(suffix)
             if kind is not None and suffix in EXTENSIONS and EXTENSIONS[suffix] != kind:
                 raise ValueError("SOURCE_FORMAT_MISMATCH")
-            blob_id = local_blob(raw_url)
             if blob_id is not None:
                 if blob_id not in self.workspace.blobs:
-                    self.report.add("failed", key[0], key[1], "LOCAL_BLOB_UNRESOLVED", url=raw_url)
+                    self.report.add(
+                        "pending",
+                        "file_preservation",
+                        key[1],
+                        "LOCAL_BLOB_UNRESOLVED",
+                        inputCategory=key[0],
+                        url=raw_url,
+                        localFileId=blob_id,
+                    )
                     return
                 canonical = ("blob", blob_id)
             else:
@@ -104,7 +143,31 @@ class SourceCatalog:
                 canonical = ("url", str(URL.validate_python(raw_url)))
         except (ValueError, TypeError) as error:
             reason = str(error) if str(error).isupper() else "INVALID_SOURCE_URL_OR_FORMAT"
-            self.report.add("unsupported", key[0], key[1], reason, url=raw_url, type=declared)
+            format_issue = reason in {
+                "UNSUPPORTED_DOCUMENT_FORMAT",
+                "UNSUPPORTED_SOURCE_TYPE",
+                "SOURCE_FORMAT_MISMATCH",
+            }
+            self.report.add(
+                "unsupported",
+                key[0],
+                key[1],
+                reason,
+                url=raw_url,
+                type=declared,
+                capability="extraction" if format_issue else "source_registration",
+            )
+            if format_issue and key[0] in {"file_sources", "import_sources"}:
+                if key not in self.file_links:
+                    self.report.add(
+                        "pending",
+                        "file_preservation",
+                        key[1],
+                        "LOCAL_BLOB_UNRESOLVED" if blob_id else "FILE_BYTES_NOT_IN_SQLITE",
+                        inputCategory=key[0],
+                        url=raw_url,
+                        localFileId=blob_id,
+                    )
             return
         self.keys[key] = canonical
         self.groups[canonical][key] = kind
@@ -112,19 +175,20 @@ class SourceCatalog:
     def discover(self):
         for identifier, item in self.workspace.blobs.items():
             kind = EXTENSIONS.get(extension(item["name"]))
-            if kind is None:
+            if kind is not None:
+                key = ("local_file_blobs", identifier)
+                canonical = ("blob", identifier)
+                self.groups[canonical][key] = kind
+                self.keys[key] = canonical
+            else:
                 self.report.add(
                     "unsupported",
                     "local_file_blobs",
                     identifier,
                     "UNSUPPORTED_DOCUMENT_FORMAT",
+                    capability="extraction",
                     payload=item,
                 )
-                continue
-            key = ("local_file_blobs", identifier)
-            canonical = ("blob", identifier)
-            self.groups[canonical][key] = kind
-            self.keys[key] = canonical
         for identifier, item in self.workspace.imports.items():
             key = ("import_sources", identifier)
             self.add(key, item.get("url"), item.get("type"))
@@ -174,6 +238,78 @@ class SourceCatalog:
         key = next(iter(keys))
         return self.ids.get(key), key in self.ids
 
+    async def preserve_file(self, session, entry):
+        identifier, item = entry
+        body = self.workspace.db.execute(
+            "SELECT content FROM local_file_blobs WHERE file_id = ?", (identifier,)
+        ).fetchone()[0]
+        if not isinstance(body, bytes) or len(body) != item["size_bytes"]:
+            raise ValueError("FILE_CONTENT_SIZE_MISMATCH")
+        kind = EXTENSIONS.get(extension(item["name"]))
+        mime = (item["mime_type"] or "").split(";", 1)[0].strip().lower()
+        if not mime or mime == "application/octet-stream":
+            mime = (
+                MIME_TYPES[kind]
+                if kind
+                else mimetypes.guess_file_type(item["name"])[0] or "application/octet-stream"
+            )
+        if kind is not None and not extractable_file(kind, mime, body):
+            self.report.add(
+                "unsupported",
+                "local_file_blobs",
+                identifier,
+                "FILE_CONTENT_OR_MEDIA_TYPE_MISMATCH",
+                capability="extraction",
+                payload=item,
+            )
+            kind = None
+        digest = hashlib.sha256(body).hexdigest()
+        key = f"sqlite-seed/{self.namespace}/{UUID(identifier)}"
+        request = StoredFileCreateRequest(
+            storage_key=key,
+            original_name=item["name"],
+            mime_type=mime,
+            size_bytes=len(body),
+            sha256=digest,
+        )
+        previous = await session.scalar(select(StoredFile).where(StoredFile.storage_key == key))
+        if previous is not None and any(
+            getattr(previous, field) != value for field, value in request.model_dump().items()
+        ):
+            raise SourceConflict("Stored file identity already has different metadata")
+        if self.storage is None:
+            self.report.add(
+                "pending",
+                "stored_files",
+                identifier,
+                "OBJECT_STORAGE_UNAVAILABLE",
+                capability="file_preservation",
+                payload={**item, "sha256": digest},
+            )
+            return
+        uploaded_at = timestamp(item["uploaded_at"])
+        status = "reused" if previous is not None else "would_import"
+        if self.apply:
+            await asyncio.to_thread(self.storage.ensure_file, key, body, mime, digest)
+            if previous is None:
+                service = SourcesService(session, commit=False)
+                response = await service.register_file(request)
+                previous = await session.get(StoredFile, response.id)
+                previous.created_at = uploaded_at
+                await session.flush()
+                status = "imported"
+        artifact = PreservedFile(identifier, previous.id if previous else None, key, digest, kind)
+        self.stored_files[identifier] = artifact
+        self.report.add(
+            status,
+            "stored_files",
+            identifier,
+            capability="file_preservation",
+            mimeType=mime,
+            sizeBytes=len(body),
+            **artifact.reference(),
+        )
+
     async def register(self, session, canonical, refs):
         locator, value = canonical
         report_key = "local_file_blobs" if locator == "blob" else "sources"
@@ -192,35 +328,47 @@ class SourceCatalog:
         kind = next(iter(types), None)
         service = SourcesService(session, commit=False)
         if locator == "blob":
-            if kind is None:
-                raise ValueError("UNKNOWN_STORED_FILE_FORMAT")
-            source, usable, created_file_source = await self.local_file(
-                session, service, value, kind
-            )
-            if not usable:
+            artifact = self.stored_files.get(value)
+            if artifact is None or artifact.extraction_type is None:
                 return
+            if kind is not None and artifact.extraction_type != kind:
+                self.report.add(
+                    "unsupported",
+                    report_key,
+                    value,
+                    "SOURCE_FORMAT_MISMATCH",
+                    capability="extraction",
+                    type=kind,
+                    **details,
+                )
+                return
+            kind = artifact.extraction_type
+            file_id = artifact.stored_file_id
+            source = await self.file_source(session, file_id) if file_id is not None else None
+            request = SourceCreateRequest(type=kind, file_id=file_id) if self.apply else None
         else:
             source = await service.find_by_url(value, lock=self.apply)
             kind = kind or (source.type if source else SourceType.HTML)
-            if source is None and self.apply:
-                try:
-                    created = await service.create_source(SourceCreateRequest(type=kind, url=value))
-                except SourceConflict:
-                    source = await service.find_by_url(value, lock=True)
-                    if source is None:
-                        raise
-                else:
-                    await session.flush()
-                    self.ids[canonical] = created.id
-                    self.report.add(
-                        "imported",
-                        report_key,
-                        value,
-                        sourceId=str(created.id),
-                        type=kind,
-                        **details,
-                    )
-                    return
+            request = SourceCreateRequest(type=kind, url=value) if self.apply else None
+        if source is None and self.apply:
+            try:
+                created = await service.create_source(request)
+            except SourceConflict:
+                source = await service.find_by_url(value, lock=True) if locator == "url" else None
+                if source is None:
+                    raise
+            else:
+                await session.flush()
+                self.ids[canonical] = created.id
+                self.report.add(
+                    "imported",
+                    report_key,
+                    value,
+                    sourceId=str(created.id),
+                    type=kind,
+                    **details,
+                )
+                return
         if source is not None and (source.type != kind or source.state in UNAVAILABLE):
             self.report.add(
                 "conflict",
@@ -235,13 +383,9 @@ class SourceCatalog:
             )
             return
         identifier = source.id if source is not None else None
-        await session.flush()
         self.ids[canonical] = identifier
-        status = "would_import" if source is None else "reused"
-        if locator == "blob" and created_file_source:
-            status = "imported"
         self.report.add(
-            status,
+            "reused" if source is not None else "would_import",
             report_key,
             value,
             sourceId=str(identifier) if identifier else None,
@@ -249,78 +393,21 @@ class SourceCatalog:
             **details,
         )
 
-    async def local_file(self, session, service, identifier, kind):
-        item = self.workspace.blobs[identifier]
-        body = self.workspace.db.execute(
-            "SELECT content FROM local_file_blobs WHERE file_id = ?", (identifier,)
-        ).fetchone()[0]
-        mime = (item["mime_type"] or "").split(";", 1)[0].strip().lower()
-        if not mime or mime == "application/octet-stream":
-            mime = MIME_TYPES[kind]
-        if kind == SourceType.HTML and mime == "application/xhtml+xml":
-            expected_mime = mime
-        else:
-            expected_mime = MIME_TYPES[kind]
-        if mime != expected_mime or not valid_file(kind, body, item["size_bytes"]):
-            self.report.add(
-                "failed",
-                "local_file_blobs",
-                identifier,
-                "FILE_CONTENT_OR_MEDIA_TYPE_MISMATCH",
-                payload=item,
-            )
-            return None, False, False
-        digest = hashlib.sha256(body).hexdigest()
-        key = f"sqlite-seed/{self.namespace}/{UUID(identifier)}"
-        request = StoredFileCreateRequest(
-            storage_key=key,
-            original_name=item["name"],
-            mime_type=mime,
-            size_bytes=len(body),
-            sha256=digest,
-        )
-        previous = await session.scalar(select(StoredFile).where(StoredFile.storage_key == key))
-        if previous is not None and any(
-            getattr(previous, field) != value for field, value in request.model_dump().items()
-        ):
-            raise SourceConflict("Stored file identity already has different metadata")
-        if self.storage is None:
-            self.report.add(
-                "pending",
-                "local_file_blobs",
-                identifier,
-                "OBJECT_STORAGE_UNAVAILABLE",
-                payload={**item, "sha256": digest},
-            )
-            return None, False, False
-        uploaded_at = timestamp(item["uploaded_at"])
-        if self.apply:
-            await asyncio.to_thread(self.storage.ensure_file, key, body, mime, digest)
-        if previous is None:
-            if not self.apply:
-                return None, True, False
-            response = await service.register_file(request)
-            previous = await session.get(StoredFile, response.id)
-            previous.created_at = uploaded_at
-            await session.flush()
+    async def file_source(self, session, stored_file_id):
         matches = list(
             await session.scalars(
-                select(Source).where(
-                    Source.file_id == previous.id,
-                    Source.url.is_(None),
-                )
+                select(Source).where(Source.file_id == stored_file_id, Source.url.is_(None))
             )
         )
         if len(matches) > 1:
             raise SourceConflict("Multiple stored-file-only Sources already reference this file")
-        if matches or not self.apply:
-            return (matches[0] if matches else None), True, False
-        created = await service.create_source(SourceCreateRequest(type=kind, file_id=previous.id))
-        return await session.get(Source, created.id), True, True
+        return matches[0] if matches else None
 
 
-def valid_file(kind, body, declared_size):
-    if not isinstance(body, bytes) or len(body) != declared_size or not body:
+def extractable_file(kind, mime, body):
+    if not body or (
+        mime != MIME_TYPES[kind] and (kind, mime) != (SourceType.HTML, "application/xhtml+xml")
+    ):
         return False
     if kind == SourceType.PDF:
         return b"%PDF-" in body[:1024]

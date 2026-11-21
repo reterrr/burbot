@@ -1992,11 +1992,21 @@
           "label": "recruitment",
           "references": "recruitment",
           "type": "reference"
+        },
+        {
+          "key": "operator_owner",
+          "persistentKey": "operator_owner",
+          "nullable": true,
+          "cardinality": "one",
+          "label": "operator",
+          "references": "operator",
+          "type": "reference"
         }
       ],
       "parents": [
         "project",
-        "recruitment"
+        "recruitment",
+        "operator"
       ]
     },
     {

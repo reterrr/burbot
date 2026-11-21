@@ -2,9 +2,9 @@
 
 Run the seeder from the backend checkout with Python 3.13+ and the backend's
 `DCKR_DATABASE_URL`. The command checks PostgreSQL's Alembic heads and the
-registered `burbot` BusinessModel before importing. The current checkout expects
-`x101_bulk_source_sync`. A target must already have the Burbot business schema
-registered. Schema registration and Alembic upgrades are separate administrative steps.
+registered `burbot` BusinessModel before importing. It reads the expected Alembic
+heads from the checkout. Schema registration and Alembic upgrades are separate
+administrative steps.
 
 ## Docker Compose
 
@@ -68,6 +68,15 @@ namespace when needed to store external keys and idempotent import receipts.
 Pre-existing objects without an external binding are counted in the preview for
 review. Adoption requires a verified external identity.
 
+## Operator-owned files
+
+The Burbot business schema supports an optional `DocumentFile.operator_owner`
+reference. A dry run on a revision without that field marks those records
+`OPERATOR_FILE_OWNER_FIELD_UNREGISTERED`, retains their local owner and provenance,
+and still plans eligible file bytes. Preview the additive business schema change
+with `python -m extension_sync bootstrap` in the backend environment. Register
+that revision through the existing schema workflow after reviewing the preview.
+
 ## SQLite to PostgreSQL mapping
 
 The extension writes overlapping projections in one SQLite transaction.
@@ -86,16 +95,16 @@ explicit owner reference.
 | --- | --- |
 | `workspace_objects.object_id`, `object_type` and `values_json`; `workspace_state.objects` | `Operator`, `Project` and `Recruitment` BusinessObjects. Legacy `nabor` uses the manifest's Recruitment aliases such as `title` → `external_number` and `amount` → `legacy_amount`. `ExternalObjectBinding` stores the scoped identity. |
 | `workspace_objects.created_at`, `updated_at`, `import_key`, `label`, `creation_note`, `source_url`, manual fields | Original creation time populates newly created `BusinessObject.created_at`. The original timestamp strings, import key, label, note, URL and metadata are retained in the object provenance receipt. `last_checked_at` is a typed business field. |
-| `operators`, `projects`, `recruitments` | Matching registered fields. Numeric `recruitments.project_id` and `operator_id` first resolve to SQLite object IDs and then to BusinessObjects. `start_low_date`, `start_ceil_date`, `end_low_date`, `end_ceil_date`, `start_time`, `end_time` map to the corresponding `dataRozpoczecia*`, `dataZakonczenia*` and `godzina*` fields. `closed_status`, `status_reason`, `announcement_url` project to `statusZakonczenia`, `powodStatusu`, `urlOgloszenia`. Legacy planned calendar columns map to `planowanyStart*` and `planowanyKoniec*`. |
+| `operators`, `projects`, `recruitments` | Matching registered fields. Semicolon-separated Operator websites are retained in provenance. The `website` field is set only when the list resolves to one valid distinct URL. Numeric `recruitments.project_id` and `operator_id` first resolve to SQLite object IDs and then to BusinessObjects. `start_low_date`, `start_ceil_date`, `end_low_date`, `end_ceil_date`, `start_time`, `end_time` map to the corresponding `dataRozpoczecia*`, `dataZakonczenia*` and `godzina*` fields. `closed_status`, `status_reason`, `announcement_url` project to `statusZakonczenia`, `powodStatusu`, `urlOgloszenia`. Legacy planned calendar columns map to `planowanyStart*` and `planowanyKoniec*`. |
 | `projects_operators`, `recruitment_operators`, `workspace_state.operatorAssignments` | `OperatorAssignment.operatorId`, `operatorType` and `project_owner` or `recruitment_owner`. Serialized assignment IDs take precedence. The owner/operator pair is the stable key for join-only legacy rows. |
 | `operator_contacts` and `workspace_state.operatorContacts` | `OperatorContact` with `operator_owner`, `kind`, `variant_no` and `value`. |
 | `geographies`, `geography_groups`, geography dictionaries and `workspace_state.geographies` | `Geography.type`, `role`, `value`, owner reference and `operatorId`. The owner groups the rows. The legacy group ID and original `copiedFromProjectId`, `copiedFromGeographyId` and `copiedAt` remain in provenance. Inherited recruitment geographies are stored as independent copies. |
-| `workspace_state.serviceCategories`, `financing_rules.payload_json`, `workspace_state.financingRules` | `ServiceCategory` and every `FundingVariant`, with owner and `service_category_id` references. The registered variants, percentages, amounts, company sizes and contribution forms are preserved. |
-| `file_sources` and `workspace_state.fileSources` | `DocumentFile` with original URL, name, file type, owner and workflow metadata. Its `source` slot references the canonical Source when supported. Discovery page, import keys and copy metadata are preserved in provenance. |
+| `workspace_state.serviceCategories`, `financing_rules.payload_json`, `workspace_state.financingRules` | `ServiceCategory` and every `FundingVariant`, with owner and `service_category_id` references. A recruitment variant can reuse a category owned by its verified parent project. The registered variants, percentages, amounts, company sizes and contribution forms are preserved. |
+| `file_sources` and `workspace_state.fileSources` | `DocumentFile` with original URL, name, file type, Project, Recruitment or Operator owner, and workflow metadata. The `source` slot references the canonical Source when supported. A file receipt records the stored bytes even for formats without a Source. Discovery page, import keys and copy metadata are preserved in provenance. |
 | `document_requirements.payload_json` and `workspace_state.documentRequirements` | `DocumentRequirement` fields and owning Project or Recruitment. `source_file_source_ids` stays in source order. An additional `original_file_source_id` is included in the collection if absent and retained as the original-file marker in provenance. |
-| `import_sources`, object Source URLs, file URLs and discovery pages, and selector and evidence URLs | Layer 2 `Source` and `SourceBusinessObject` provenance links. The Sources layer canonicalizes URLs and strips fragments while preserving query parameters. Original URLs remain in their business fields, selectors, receipts or pending report entries. HTML, PDF and XLSX are supported. DOC, DOCX, ZIP and other unsupported formats keep their file business records when present. |
-| `local_file_blobs` | `StoredFile` with SHA-256, size, name, media type and upload timestamp, using a stable object-storage key. A supported blob gets a file-only `Source`; the original Firefox loopback URL remains on the file record. The seeder reports missing storage, invalid content, and unsupported types and identifies the original SQLite row. |
-| `selectors`, `selector_versions`, `selector_recipes`, `selector_parts`, `selector_locators` | Existing `SelectorService.import_tree` and normalized extraction models. The portable selectors retain UUIDs, version numbers and statuses, active references, extraction payloads, recipes, parts and locators. A selector binds to the concrete object field through its registered persistent key and to a Source when its local provenance identifies one. |
+| `import_sources`, object Source URLs, file URLs and discovery pages, and selector and evidence URLs | Layer 2 `Source` and `SourceBusinessObject` provenance links. The Sources layer canonicalizes URLs and strips fragments while preserving query parameters. Original URLs remain in their business fields, selectors, receipts or pending report entries. HTML, PDF and XLSX can register as Sources. DOC, DOCX, ZIP and other formats keep their file business records when present. For an unsupported remote file with no bytes in SQLite, the report records the location and the file preservation status. |
+| `local_file_blobs` | `StoredFile` with SHA-256, size, name, media type and upload timestamp, using a stable object-storage key. An extractable blob can also get a file-only `Source`. The original Firefox loopback URL remains on the file record. The `stored_files` report category tracks byte preservation independently of extraction capability. |
+| `selectors`, `selector_versions`, `selector_recipes`, `selector_parts`, `selector_locators` | Existing `SelectorService.import_tree` and normalized extraction models. The portable selectors retain UUIDs, version numbers and statuses, active references, extraction payloads, recipes, parts and locators. A selector binds through its registered persistent field key and local Source provenance. A legacy document type key binds only when exactly one document under the same owner matches. Unresolved or ambiguous targets stay pending with their full SelectorTree. |
 | `selector_evaluations` and serialized evaluations | Validated `SelectorEvaluation` with original UUID, timestamp, page URL and result, using `client_reported` provenance. |
 | `field_evidence`, `workspace_objects.evidence_json`, `workspace_state.importTargetEvidence`, `import_sources.snapshot_json`, legacy rules without a portable tree | Full pending payloads and any resolvable source associations in the JSON report. These historical captures lack the acquisition context needed to create a canonical snapshot or observation. A selector's portable snapshot UUID is retained and bound only when an existing mapping identifies a matching backend snapshot. |
 | SQLite `backend_*` tables | The workspace UUID selects the scope. Cached server IDs, previous operation queues and sync jobs are report-only bookkeeping. |
@@ -130,6 +139,25 @@ and pending evidence remain visible. The import writes business values, Source
 registrations and provenance, selector definitions and client-reported
 evaluations. A registered Source starts in the Sources service's normal
 undiscovered state.
+
+To compare a revised dry run, keep the original `dry-run.json` and use
+`--report /seed-reports/dry-run-after.json` with the same backup and PostgreSQL
+target. The following query groups both reports by status, input category and reason.
+
+```bash
+jq -s '
+  def counts:
+    .records
+    | group_by(.status, (.inputCategory // .input), .reason)
+    | map({
+        status: .[0].status,
+        category: (.[0].inputCategory // .[0].input),
+        reason: .[0].reason,
+        count: length
+      });
+  {before: (.[0] | counts), after: (.[1] | counts)}
+' "$seed_dir/reports/dry-run.json" "$seed_dir/reports/dry-run-after.json"
+```
 
 ## Automated verification
 
