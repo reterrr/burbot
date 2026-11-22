@@ -1,17 +1,22 @@
-# One Python image for Burbot API, migration initializer, Prefect Server and Worker.
-# Unlike Dockerfile.monitoring, MinIO uses the existing Chainguard image in Compose.
 FROM python:3.13-slim
 
 WORKDIR /app
-ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
 
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+# 1. Dependencies — cached independently from source code
 COPY requirements.txt ./
-COPY pyproject.toml ./
+
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install -r requirements.txt
+
+# 2. Application source
 COPY . .
 
-# Keep legacy dependencies and add Prefect 3 + boto3 from the project extras.
-RUN pip install --no-cache-dir -r requirements.txt \
-    && pip install --no-cache-dir -e '.[monitoring]' debugpy
+# 3. Project installation with monitoring extras
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install -e '.[monitoring]' debugpy
 
 EXPOSE 8000 5678
