@@ -9,12 +9,12 @@ from sqlalchemy.exc import SQLAlchemyError
 from business_layer.schemas.models import BusinessObjectField
 from extraction.schemas import capture as capture_dto
 from extraction.schemas.common import utc_now
-from extraction.schemas.enums import ExtractionRunStatus
+from extraction.schemas.enums import ExtractionRunStatus, ObservationStatus
 from extraction.schemas.evidence import TokenClass
 from extraction.schemas.models import ExtractionRun, FieldObservation
-from extraction.schemas.selector import SelectorEvaluation
+from extraction.schemas.selector import SelectorEvaluation, SelectorVersion
 from extraction.services.capture import CaptureService
-from extraction.services.tracking import comparable_value
+from extraction.services.tracking import BASELINE_STATUSES, comparable_value
 from monitoring.models import (
     PROCESSABLE,
     MonitoringJob,
@@ -23,9 +23,15 @@ from monitoring.models import (
     SourceCheckRun,
 )
 from monitoring.queue import PROCESSING_LIMIT, MonitoringQueue, retry_delay
+from monitoring.review import (
+    EVIDENCE_STATUS,
+    OPEN_REVIEW_STATUSES,
+    REVIEW_TITLES,
+    evidence_changed,
+)
 from monitoring.security import MonitoringError, fingerprint
 from sources.schemas import api as source_dto
-from sources.schemas.models import SourceCheckSchedule, SourceSnapshot
+from sources.schemas.models import SourceCheckSchedule, SourceFieldTracking, SourceSnapshot
 from sources.services.sources import SourcesService
 from tasks.api.dto import TaskCreateRequest, TaskReferenceCreate, WorkflowStartRequest
 from tasks.exceptions.exceptions import TaskError
@@ -294,8 +300,33 @@ class MonitoringProcessor:
         ), evaluations
 
     async def review_task(
-        self, job, outcome, reason, *, selector=None, observation=None, values=()
+        self,
+        job,
+        outcome,
+        reason,
+        *,
+        selector=None,
+        observation=None,
+        previous=None,
+        values=(),
+        legacy_values=None,
+        previous_task_id=None,
     ):
+        slot_id = selector.business_object_field_id if selector is not None else None
+        target = [job.source_id, slot_id or str(selector.uuid if selector else ""), outcome]
+        key = fingerprint([*target, values])
+        keys = [key]
+        if legacy_values is not None:
+            keys.append(fingerprint([*target, legacy_values]))
+        if previous_task_id is not None:
+            previous_task = await self.session.get(Task, previous_task_id)
+            if (
+                previous_task is not None
+                and previous_task.status in (TaskStatus.COMPLETED, TaskStatus.CANCELLED)
+                and (previous_task.metadata_json or {}).get("monitoringKey") in keys
+            ):
+                return previous_task
+
         workflow = await self.tasks._get_current_workflow(job.source_id, for_update=True)
         if workflow is None or workflow.source_snapshot_id != job.source_snapshot_id:
             workflow = (
@@ -305,17 +336,14 @@ class MonitoringProcessor:
                 )
             ).workflow
 
-        slot_id = selector.business_object_field_id if selector is not None else None
-        key = fingerprint(
-            [job.source_id, slot_id or str(selector.uuid if selector else ""), outcome, values]
-        )
         existing = await self.session.scalar(
-            select(Task.id)
+            select(Task)
             .where(
                 Task.workflow_id == workflow.id,
-                Task.status.in_([TaskStatus.PENDING, TaskStatus.IN_PROGRESS]),
-                Task.metadata_json["monitoringKey"].as_string() == key,
+                Task.status.in_(OPEN_REVIEW_STATUSES),
+                Task.metadata_json["monitoringKey"].as_string().in_(keys),
             )
+            .order_by(Task.id)
             .limit(1)
         )
         if existing is not None:
@@ -334,7 +362,16 @@ class MonitoringProcessor:
             for kind, row_id in reference_ids.items()
             if row_id is not None
         ]
-        task = await self.tasks.create_task(
+        if previous is not None:
+            references.append(
+                TaskReferenceCreate(
+                    role="context",
+                    reference_type="observation",
+                    reference_id=previous.id,
+                    metadata_json={"evidencePosition": "previous"},
+                )
+            )
+        return await self.tasks.create_task(
             TaskCreateRequest(
                 source_id=job.source_id,
                 source_snapshot_id=job.source_snapshot_id,
@@ -344,37 +381,89 @@ class MonitoringProcessor:
                     else TaskType.REVIEW_SOURCE_CHANGE
                 ),
                 reason=reason,
-                title=outcome.replace("_", " ").capitalize(),
-                metadata_json={"monitoringKey": key, "monitoringJobId": str(job.id)},
+                title=(
+                    "Resolve unbound evidence"
+                    if reason == TaskReason.POSSIBLE_NEW_OBJECT
+                    else REVIEW_TITLES[outcome]
+                ),
+                metadata_json={
+                    "monitoringKey": key,
+                    "monitoringJobId": str(job.id),
+                    "evidenceStatus": EVIDENCE_STATUS[outcome],
+                },
                 references=references,
             )
         )
-        return task.id
 
-    async def _outcome(self, job, selector, evaluation, observation_id):
-        observed, baseline = None, None
-        reason, values = None, ()
+    async def _comparison_evidence(self, job, selector, observed_at):
+        slot_id = selector.business_object_field_id
+        if slot_id is None:
+            return None, None, None, None
+        repo = self.capture.repo
+        source_field = await self.session.scalar(
+            select(SourceFieldTracking.id).where(
+                SourceFieldTracking.source_id == job.source_id,
+                SourceFieldTracking.business_entity_field_id == selector.business_entity_field_id,
+            )
+        )
+        if source_field is None:
+            return None, None, None, None
+        tracking = await repo.current_tracking(source_field, slot_id)
+        baseline_id = None
+        if tracking is not None and tracking.baseline_observation_id is not None:
+            baseline = await repo.get(FieldObservation, tracking.baseline_observation_id)
+            if (
+                baseline.status in BASELINE_STATUSES
+                and baseline.business_object_field_id == slot_id
+                and baseline.source_field_tracking_id == source_field
+                and baseline.observed_at <= observed_at
+            ):
+                baseline_id = baseline.id
+                value = await repo.observation_value(baseline)
+                if value is not None:
+                    return baseline_id, baseline, value, "accepted_baseline"
+
+        # The tracking's last pointer already includes this capture. Compare the
+        # previous observation of this selector across its versions and snapshots.
+        previous = await self.session.scalar(
+            select(FieldObservation)
+            .join(SelectorVersion, SelectorVersion.id == FieldObservation.selector_version_id)
+            .where(
+                SelectorVersion.selector_id == selector.id,
+                FieldObservation.source_field_tracking_id == source_field,
+                FieldObservation.business_object_field_id == slot_id,
+                FieldObservation.extraction_run_id != job.extraction_run_id,
+                FieldObservation.observed_at <= observed_at,
+                FieldObservation.concrete_value_id.is_not(None),
+                FieldObservation.status.not_in(
+                    [ObservationStatus.REJECTED, ObservationStatus.SUPERSEDED]
+                ),
+            )
+            .order_by(FieldObservation.observed_at.desc(), FieldObservation.id.desc())
+            .limit(1)
+        )
+        if previous is None:
+            return baseline_id, None, None, None
+        return baseline_id, previous, await repo.observation_value(previous), "previous_observation"
+
+    async def _outcome(
+        self, job, selector, evaluation, observation_id, observed_at, previous_task_id
+    ):
+        baseline_id, previous, prior_value, comparison = await self._comparison_evidence(
+            job, selector, observed_at
+        )
+        observed = None
+        reason, values, legacy_values = None, (), None
         if observation_id is None:
             outcome, _, reason = FAILURES[evaluation.result_json["status"]]
         else:
             observed = await self.capture.repo.get(FieldObservation, observation_id)
             current = await self.capture.repo.observation_value(observed)
-            if observed.business_object_field_id is not None:
-                tracking = await self.capture.repo.current_tracking(
-                    observed.source_field_tracking_id,
-                    observed.business_object_field_id,
-                )
-                if tracking.baseline_observation_id is not None:
-                    baseline = await self.capture.repo.get(
-                        FieldObservation,
-                        tracking.baseline_observation_id,
-                    )
-            previous = await self.capture.repo.observation_value(baseline) if baseline else None
-            values = (comparable_value(previous) if previous else None, comparable_value(current))
-            if values[0] is None:
+            values = (prior_value.raw_value if prior_value else None, current.raw_value)
+            if prior_value is None:
                 outcome = "FIELD_NEW"
                 reason = (
-                    TaskReason.VALUE_CHANGED
+                    TaskReason.MANUAL
                     if observed.business_object_field_id is not None
                     else TaskReason.POSSIBLE_NEW_OBJECT
                 )
@@ -382,14 +471,24 @@ class MonitoringProcessor:
                 outcome = "FIELD_UNCHANGED"
             else:
                 outcome, reason = "FIELD_CHANGED", TaskReason.VALUE_CHANGED
-        task_id = (
+            if comparison in (None, "accepted_baseline"):
+                # Pending reviews created by older versions retain their deduplication key.
+                legacy_values = (
+                    comparable_value(prior_value) if prior_value else None,
+                    comparable_value(current),
+                )
+
+        task = (
             await self.review_task(
                 job,
                 outcome,
                 reason,
                 selector=selector,
                 observation=observed,
+                previous=previous,
                 values=values,
+                legacy_values=legacy_values,
+                previous_task_id=previous_task_id,
             )
             if reason is not None
             else None
@@ -400,9 +499,29 @@ class MonitoringProcessor:
             "selectorVersionUuid": evaluation.result_json["selectorVersionUuid"],
             "evaluationId": evaluation.id,
             "status": outcome,
+            "evidenceStatus": EVIDENCE_STATUS[outcome],
+            "evidenceChanged": evidence_changed(outcome),
+            "requiresReview": task is not None and task.status in OPEN_REVIEW_STATUSES,
+            "businessObjectFieldId": selector.business_object_field_id,
             "observationId": observation_id,
-            "baselineObservationId": baseline.id if baseline else None,
-            "taskId": task_id,
+            "previousObservationId": previous.id if previous else None,
+            "baselineObservationId": baseline_id,
+            "comparison": comparison,
+            "taskId": task.id if task else None,
+        }
+
+    async def _previous_tasks(self, source_id):
+        fields = await self.session.scalar(
+            select(SourceCheckRun.field_results)
+            .join(MonitoringJob, MonitoringJob.id == SourceCheckRun.job_id)
+            .where(MonitoringJob.source_id == source_id, MonitoringJob.status == "completed")
+            .order_by(SourceCheckRun.processed_at.desc(), MonitoringJob.id.desc())
+            .limit(1)
+        )
+        return {
+            row["selectorUuid"]: row["taskId"]
+            for row in fields or []
+            if row.get("selectorUuid") and row.get("taskId") is not None
         }
 
     async def process(self, job_id):
@@ -412,6 +531,7 @@ class MonitoringProcessor:
         pins = await self.queue._pins(job)
         results = []
         if pins:
+            previous_tasks = await self._previous_tasks(job.source_id)
             request, evaluations = await self._payload(job, pins)
             capture = await self.capture.register_capture(
                 job.extraction_run_id,
@@ -427,6 +547,8 @@ class MonitoringProcessor:
                         selector,
                         evaluations[key],
                         capture.observation_ids_by_client_key.get(key),
+                        check.acquired_at,
+                        previous_tasks.get(str(selector.uuid)),
                     )
                 )
         check.field_results = results
@@ -458,11 +580,12 @@ class MonitoringProcessor:
             outcome = {"status": "FIELD_EXTRACTION_FAILED"}
             try:
                 async with self.session.begin_nested():
-                    outcome["taskId"] = await self.review_task(
+                    task = await self.review_task(
                         job,
                         "FIELD_EXTRACTION_FAILED",
                         TaskReason.EXTRACTION_FAILED,
                     )
+                    outcome["taskId"] = task.id
             except (TaskError, SQLAlchemyError):
                 outcome["taskErrorCode"] = "REVIEW_TASK_FAILED"
             check.field_results = [outcome]

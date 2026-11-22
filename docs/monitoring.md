@@ -115,14 +115,37 @@ it when monitoring is disabled. HTML stays out of the outbox.
   `browser_agent_reported` provenance. CaptureWriter saves successful raw
   literals as `DETECTED` observations. Failed selectors retain their evaluation
   and an extraction issue.
-- Field comparison uses the current accepted source baseline and compares token
-  class, semantic-null flag and normalized-or-raw value. The agent supplies raw
-  text. Canonical values, baseline pointers and BusinessObjects stay under the
-  existing human review workflow.
-- Review tasks use the existing workflow generation and reference the Source,
-  Snapshot, run, observation and field as available. Pending and in-progress
-  monitoring reviews move to the active workflow on supersession. The same
-  pending outcome for a target and baseline/value pair reuses its task.
+- Monitoring compares the raw literal against a comparable accepted observation
+  for the tracked Source and object field. When that baseline is missing, it uses
+  the previous observation of the same SelectorTree, Source and concrete field.
+  A changed selector version can continue the history of the same tree.
+- Selector sync registers the tree and its field binding. Firefox's workspace
+  keeps `rawValue` and `valueAtCapture` separate. A capture reported for an existing
+  backend snapshot supplies an observed literal. A human-confirmed capture uses
+  the existing validation and evidence baseline rules.
+- The history retains `FIELD_NEW`, `FIELD_UNCHANGED`, `FIELD_CHANGED`, and
+  `FIELD_MISSING` for existing consumers. `evidenceStatus` makes their meaning
+  explicit as `INITIAL_EVIDENCE`, `UNCHANGED`, `CHANGED`, and `MISSING`. Ambiguous,
+  conflicting, and failed evaluations also have evidence statuses. The legacy
+  `value_changed` task reason refers to a change in the source literal.
+  `evidenceChanged` is true or false for a comparison between two literals and
+  null when that comparison was unavailable. `comparison` identifies
+  `accepted_baseline` or `previous_observation` when available.
+- The first bound observation without prior comparable evidence can create an
+  initial evidence review. A repeat of the same literal updates the evidence
+  history and check time. The existing acceptance workflow controls the baseline.
+  An extraction issue and missing evidence review carry the evaluation for a
+  `not_found` result.
+- Monitoring reviews retain the Source, snapshot, run, field, and available
+  previous and current evidence references. Pending and in-progress reviews move
+  to the active workflow on supersession. Repeated comparisons with the same
+  outcome for a target and evidence pair reuse the open task. A consecutive
+  identical result can also reference its completed or cancelled review.
+- Operators can request `GET /monitoring/reviews/{task_id}` for the original review
+  context. It shows raw previous and current evidence when available, their
+  observation IDs, the evaluation and baseline IDs, and the current canonical
+  field value and its value ID. The canonical value is read through the Business
+  Layer at request time. The review task uses the existing workflow lifecycle.
 - Acquisition commits before evidence processing. A technical processing
   failure retries against the same snapshot and extraction run, with up to five
   attempts. A check's history shows acquisition and processing times, Prefect
