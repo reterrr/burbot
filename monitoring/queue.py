@@ -5,7 +5,7 @@ import math
 from datetime import timedelta
 from uuid import uuid4
 
-from sqlalchemy import or_, select
+from sqlalchemy import or_, select, tuple_
 
 from extraction.schemas.common import utc_now
 from extraction.schemas.selector import Selector, SelectorVersion
@@ -559,18 +559,17 @@ class MonitoringQueue:
         await self._retry(job, request.code)
         return status(job)
 
-    async def processable(self, limit=50):
-        return (
-            await self.session.execute(
-                select(MonitoringJob.id, SourceCheckRun.processing_flow_run_id)
-                .join(SourceCheckRun, SourceCheckRun.job_id == MonitoringJob.id)
-                .where(
-                    MonitoringJob.status.in_(PROCESSABLE), MonitoringJob.available_at <= utc_now()
-                )
-                .order_by(MonitoringJob.available_at)
-                .limit(limit)
-            )
-        ).all()
+    async def processable(self, limit=50, *, after=None):
+        position = tuple_(MonitoringJob.available_at, MonitoringJob.id)
+        query = (
+            select(MonitoringJob.available_at, MonitoringJob.id)
+            .where(MonitoringJob.status.in_(PROCESSABLE), MonitoringJob.available_at <= utc_now())
+            .order_by(MonitoringJob.available_at, MonitoringJob.id)
+            .limit(limit)
+        )
+        if after is not None:
+            query = query.where(position > tuple_(*after))
+        return (await self.session.execute(query)).all()
 
     async def cleanup_uploads(self, limit=50):
         rows = list(
