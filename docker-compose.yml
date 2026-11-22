@@ -128,20 +128,16 @@ services:
 
   worker:
     <<: *burbot-app
+    # This worker exclusively owns the two monitoring queues. Its flow processes
+    # share its container lifetime, including on a forced container stop.
+    container_name: burbot-monitoring-worker
+    init: true
     depends_on:
       initialize:
         condition: service_completed_successfully
       prefect:
         condition: service_healthy
-    command:
-      - /bin/sh
-      - -ec
-      - |
-        if ! prefect work-pool inspect burbot-monitoring >/dev/null 2>&1; then
-          prefect work-pool create --type process burbot-monitoring
-        fi
-        python -m monitoring.deployments
-        exec prefect worker start --pool burbot-monitoring --limit 5
+    command: ["python", "-m", "monitoring.worker"]
     restart: unless-stopped
 
 volumes:
