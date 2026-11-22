@@ -73,6 +73,7 @@ pytestmark = pytest.mark.asyncio
 
 @pytest_asyncio.fixture
 async def sessions(tmp_path, monkeypatch):
+    load_models()
     url = os.environ.get("SOURCES_TEST_DATABASE_URL")
     admin = None
     schema = None
@@ -103,7 +104,6 @@ async def sessions(tmp_path, monkeypatch):
             if url:
                 await connection.run_sync(lambda conn: migrate(conn, schema, "head"))
             else:
-                load_models()
                 tables = [
                     table
                     for table in SQLModel.metadata.tables.values()
@@ -543,6 +543,20 @@ async def test_metadata_and_source_level_schedule(client, business):
     # Demand does not create per-field fetch jobs or overwrite the source cadence.
     assert (await client.get(path + "/check-schedule")).json()["interval_seconds"] == 1800
     assert (await client.get(path)).json()["state"] == "UNDISCOVERED"
+    timestamps = {
+        "last_checked_at": "2026-09-09T11:00:00Z",
+        "next_check_at": "2026-09-09T12:00:00Z",
+    }
+    configured = await client.put(
+        path + "/check-schedule",
+        json={"interval_seconds": 1800, "enabled": False, **timestamps},
+    )
+    assert configured.status_code == 200
+    saved = (await client.get(path + "/check-schedule")).json()
+    changed = await client.put(path + "/check-schedule", json={"interval_seconds": 3600})
+    assert changed.status_code == 200
+    assert changed.json()["interval_seconds"] == 3600 and not changed.json()["enabled"]
+    assert all(changed.json()[field] == saved[field] for field in timestamps)
 
 
 async def test_warnings_have_scoped_lifecycle(client):

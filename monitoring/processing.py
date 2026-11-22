@@ -174,17 +174,7 @@ class MonitoringProcessor:
                 hashes_updated_at=now,
             ),
         )
-        schedule = await self.session.get(SourceCheckSchedule, job.source_id)
-        if schedule is not None:
-            await self.sources.set_schedule(
-                job.source_id,
-                source_dto.SourceCheckScheduleWrite(
-                    interval_seconds=schedule.interval_seconds,
-                    enabled=schedule.enabled,
-                    last_checked_at=now,
-                    next_check_at=now + timedelta(seconds=schedule.interval_seconds),
-                ),
-            )
+        await self.sources.record_check(job.source_id, now)
         job.source_snapshot_id = snapshot_id
         if data["evaluations"]:
             run = await self.capture.create_run(

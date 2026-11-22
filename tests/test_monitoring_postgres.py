@@ -159,6 +159,8 @@ async def test_scheduler_concurrency_access_and_expired_lease(domain, client):
         async with domain.factory.begin() as session:
             return await MonitoringQueue(session).schedule_due("scheduler-run")
 
+    assert await schedule() == []
+    assert (await client.post("/monitoring/agents/heartbeat", headers=first)).status_code == 200
     planned = [job for batch in await asyncio.gather(schedule(), schedule()) for job in batch]
     assert [job.source_id for job in planned] == [due.id]
     assert await enqueue(client, due.id) == str(planned[0].id)
@@ -166,7 +168,6 @@ async def test_scheduler_concurrency_access_and_expired_lease(domain, client):
     base = "/monitoring/jobs"
     assert (await client.post(base + "/claim", headers=other)).status_code == 204
     assert (await client.post(base + "/claim")).status_code == 401
-    assert (await client.post("/monitoring/agents/heartbeat", headers=first)).status_code == 200
     assert (await client.get(f"/monitoring/agents/{first_id}", headers=OPERATOR)).json()[
         "connected"
     ]

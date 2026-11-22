@@ -206,14 +206,18 @@ async def test_scheduler_coalesces_and_processing_bypasses_legacy_backlog(prefec
 
         # Legacy runs keep their original queue after a deployment moves.
         for start in range(0, 240, 80):
-            await api.request(
+            entries = [
+                {"work_queue_name": "default", "idempotency_key": f"legacy:{n}"}
+                for n in range(start, start + 80)
+            ]
+            response = await api.request(
                 "POST",
                 f"/deployments/{scheduler.id}/create_flow_run/bulk",
-                json=[
-                    {"work_queue_name": "default", "idempotency_key": f"legacy:{n}"}
-                    for n in range(start, start + 80)
-                ],
+                json=entries,
             )
+            for entry, result in zip(entries, response.json()["results"], strict=True):
+                if result["status"] == "FAILED":
+                    await api.create_flow_run_from_deployment(scheduler.id, **entry)
         await schedule_tick(api, scheduler.id, queue.id, minute=109)
         waiting = await api.get_scheduled_flow_runs_for_work_pool(POOL, list(QUEUES))
         assert len(waiting) == 2 and waiting[0].flow_run.id == process_run.id
@@ -373,6 +377,7 @@ async def test_uploaded_job_finishes_automatically(
     row = await source(domain, client)
     await add_tree(client, domain, row.id, None, tree(recipe(part(css("#evidence")))))
     headers, _ = await agent(client, row.id)
+    assert (await client.post("/monitoring/agents/heartbeat", headers=headers)).status_code == 200
     async with domain.factory.begin() as session:
         schedule = await session.get(SourceCheckSchedule, row.id)
         schedule.interval_seconds = 3600

@@ -11,6 +11,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from monitoring.contracts import (
+    AgentSourcesUpdate,
     Approval,
     ClaimedJob,
     Completion,
@@ -21,6 +22,9 @@ from monitoring.contracts import (
     UploadRequest,
     UploadURL,
 )
+from monitoring.diagnostics import coverage, overview
+from monitoring.onboarding import OnboardingRequest, OnboardingService
+from monitoring.onboarding_config import onboarding_config
 from monitoring.queue import MonitoringQueue, status
 from monitoring.review import review_detail
 from monitoring.security import MonitoringError, authenticate_agent, authorize_admin
@@ -49,6 +53,8 @@ class MonitoringRoute(APIRoute):
             except RequestValidationError as error:
                 # Requests can contain captured text. Keep it out of error responses.
                 raise HTTPException(422, detail={"code": "INVALID_REQUEST"}) from error
+            except MonitoringError as error:
+                raise as_http(error) from error
 
         return bounded
 
@@ -57,6 +63,8 @@ router = APIRouter(prefix="/monitoring", tags=["monitoring"], route_class=Monito
 bearer = HTTPBearer(auto_error=False)
 Session = Annotated[AsyncSession, Depends(get_session)]
 Credentials = Annotated[HTTPAuthorizationCredentials | None, Depends(bearer)]
+SourceCursor = Annotated[int, Query(alias="afterSourceId", ge=0, le=9223372036854775807)]
+PageLimit = Annotated[int, Query(ge=1, le=100)]
 
 
 def token(credentials):
@@ -114,6 +122,76 @@ async def revoke(agent_id: UUID, session: Session):
             return await MonitoringQueue(session).revoke(agent_id)
     except MonitoringError as error:
         raise as_http(error) from error
+
+
+@router.get("/agents/{agent_id}/sources", dependencies=[Depends(operator)])
+async def agent_sources(
+    agent_id: UUID, session: Session, after: SourceCursor = 0, limit: PageLimit = 50
+):
+    return await MonitoringQueue(session).agent_sources(agent_id, after, limit)
+
+
+@router.put("/agents/{agent_id}/sources", dependencies=[Depends(operator)])
+async def update_agent_sources(agent_id: UUID, request: AgentSourcesUpdate, session: Session):
+    async with session.begin():
+        return await MonitoringQueue(session).update_agent_sources(agent_id, request)
+
+
+@router.get("/coverage", dependencies=[Depends(operator)])
+async def source_coverage(
+    session: Session,
+    after: SourceCursor = 0,
+    limit: PageLimit = 50,
+    only_uncovered: Annotated[bool, Query(alias="onlyUncovered")] = True,
+):
+    return await coverage(session, after, limit, only_uncovered)
+
+
+@router.get("/overview", dependencies=[Depends(operator)])
+async def monitoring_overview(session: Session):
+    return await overview(session)
+
+
+@router.get("/onboarding/policies", dependencies=[Depends(operator)])
+async def onboarding_policies():
+    return {
+        name: policy.model_dump(mode="json", by_alias=True)
+        for name, policy in onboarding_config().policies.items()
+    }
+
+
+@router.post("/onboarding/preview", dependencies=[Depends(operator)])
+async def preview_onboarding(request: OnboardingRequest, session: Session):
+    return await OnboardingService(session, onboarding_config()).preview(request)
+
+
+@router.post("/onboarding/runs", status_code=202, dependencies=[Depends(operator)])
+async def create_onboarding_run(request: OnboardingRequest, session: Session):
+    async with session.begin():
+        run = await OnboardingService(session, onboarding_config()).create_run(request)
+        return {"runId": run.id, "policy": run.policy_name}
+
+
+@router.get("/onboarding/runs", dependencies=[Depends(operator)])
+async def list_onboarding_runs(
+    session: Session,
+    limit: PageLimit = 50,
+    after: Annotated[UUID | None, Query(alias="afterRunId")] = None,
+):
+    return await OnboardingService(session, onboarding_config()).list_runs(after, limit)
+
+
+@router.get("/onboarding/runs/{run_id}", dependencies=[Depends(operator)])
+async def onboarding_progress(
+    run_id: UUID, session: Session, after: SourceCursor = 0, limit: PageLimit = 50
+):
+    return await OnboardingService(session, onboarding_config()).progress(run_id, after, limit)
+
+
+@router.post("/onboarding/runs/{run_id}/retry", status_code=202, dependencies=[Depends(operator)])
+async def retry_onboarding(run_id: UUID, session: Session, limit: PageLimit = 50):
+    async with session.begin():
+        return await OnboardingService(session, onboarding_config()).retry(run_id, limit)
 
 
 @router.post(

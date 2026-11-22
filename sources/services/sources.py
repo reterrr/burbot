@@ -2,7 +2,7 @@
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 from sqlalchemy import func, or_, select, update
@@ -392,14 +392,34 @@ class SourcesService:
         async with self._transaction():
             await self._writable_source(source_id)
             row = await self._session.get(SourceCheckSchedule, source_id, populate_existing=True)
+            changes = request.model_dump(exclude_unset=True)
             if row is None:
-                row = SourceCheckSchedule(source_id=source_id, **request.model_dump())
+                row = SourceCheckSchedule(source_id=source_id, **changes)
             else:
-                for key, value in request.model_dump().items():
+                last = changes.get("last_checked_at", row.last_checked_at)
+                next_check = changes.get("next_check_at", row.next_check_at)
+                if (
+                    {"last_checked_at", "next_check_at"} & changes.keys()
+                    and last is not None
+                    and next_check is not None
+                    and next_check < last
+                ):
+                    raise SourceValidationError("next_check_at cannot be before last_checked_at")
+                for key, value in changes.items():
                     setattr(row, key, value)
                 row.updated_at = utc_now()
             result = await self._save(row, dto.SourceCheckScheduleResponse)
         return result
+
+    async def record_check(self, source_id: int, checked_at: datetime) -> None:
+        """Advance execution timestamps using the current operator-configured cadence."""
+        async with self._transaction():
+            await self._writable_source(source_id)
+            row = await self._session.get(SourceCheckSchedule, source_id, populate_existing=True)
+            if row is not None:
+                row.last_checked_at = checked_at
+                row.next_check_at = checked_at + timedelta(seconds=row.interval_seconds)
+                row.updated_at = utc_now()
 
     async def add_warning(
         self, source_id: int, request: dto.SourceWarningCreate

@@ -13,6 +13,7 @@ from sqlalchemy import (
     ForeignKey,
     ForeignKeyConstraint,
     Index,
+    Integer,
     String,
     Text,
     UniqueConstraint,
@@ -56,10 +57,21 @@ class MonitoringAgent(SQLModel, table=True):
 
 class MonitoringAgentSource(SQLModel, table=True):
     __tablename__ = "monitoring_agent_sources"
+    __table_args__ = (
+        Index(
+            "ix_monitoring_agent_sources_coverage",
+            "source_id",
+            "agent_id",
+            postgresql_where=text("enabled"),
+        ),
+    )
     agent_id: UUID = Field(
         sa_column=Column(Uuid, ForeignKey("monitoring_agents.id"), primary_key=True)
     )
     source_id: int = Field(sa_column=reference("monitoring_sources.source_id", primary_key=True))
+    enabled: bool = Field(
+        default=True, sa_column=Column(Boolean, nullable=False, server_default=text("true"))
+    )
 
 
 class MonitoringJob(SQLModel, table=True):
@@ -155,3 +167,68 @@ class SourceCheckRun(SQLModel, table=True):
     processed_at: datetime | None = Field(default=None, sa_column=timestamp(nullable=True))
     change_status: str | None = Field(default=None, sa_column=Column(String(32)))
     field_results: list[dict[str, Any]] | None = Field(default=None, sa_column=Column(JSONB))
+
+
+class OnboardingRun(SQLModel, table=True):
+    __tablename__ = "monitoring_onboarding_runs"
+    __table_args__ = (
+        Index(
+            "uq_monitoring_onboarding_continuous_policy",
+            "policy_name",
+            unique=True,
+            postgresql_where=text("continuous"),
+        ),
+        Index(
+            "ix_monitoring_onboarding_run_service",
+            text("coalesce(last_serviced_at, created_at)"),
+            "created_at",
+            "id",
+        ),
+    )
+
+    id: UUID = Field(default_factory=uuid4, sa_column=Column(Uuid, primary_key=True))
+    policy_name: str = Field(sa_column=Column(String(48), nullable=False))
+    criteria: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSONB, nullable=False))
+    continuous: bool = Field(default=False, sa_column=Column(Boolean, nullable=False))
+    after_source_id: int = Field(default=0, sa_column=Column(BigInteger, nullable=False))
+    through_source_id: int | None = Field(default=None, sa_column=Column(BigInteger))
+    scan_complete: bool = Field(default=False, sa_column=Column(Boolean, nullable=False))
+    created_at: datetime = Field(default_factory=utc_now, sa_column=timestamp())
+    last_serviced_at: datetime | None = Field(default=None, sa_column=timestamp(nullable=True))
+
+
+class OnboardingItem(SQLModel, table=True):
+    __tablename__ = "monitoring_onboarding_items"
+    __table_args__ = (
+        CheckConstraint("attempts >= 0", name="onboarding_attempts_nonnegative"),
+        Index(
+            "ix_monitoring_onboarding_items_pending",
+            "run_id",
+            "available_at",
+            "source_id",
+            postgresql_where=text("status = 'pending'"),
+        ),
+    )
+
+    run_id: UUID = Field(
+        sa_column=Column(
+            Uuid,
+            ForeignKey("monitoring_onboarding_runs.id", ondelete="CASCADE"),
+            primary_key=True,
+        )
+    )
+    source_id: int = Field(sa_column=reference("sources.id", primary_key=True))
+    status: str = Field(default="pending", sa_column=Column(String(24), nullable=False))
+    attempts: int = Field(default=0, sa_column=Column(Integer, nullable=False))
+    available_at: datetime = Field(default_factory=utc_now, sa_column=timestamp())
+    source_state_at: datetime | None = Field(default=None, sa_column=timestamp(nullable=True))
+    diagnostics: dict[str, Any] = Field(
+        default_factory=dict, sa_column=Column(JSONB, nullable=False)
+    )
+
+
+class DiscoveryOrigin(SQLModel, table=True):
+    __tablename__ = "monitoring_discovery_origins"
+
+    origin: str = Field(sa_column=Column(String(260), primary_key=True))
+    next_request_at: datetime = Field(sa_column=timestamp())

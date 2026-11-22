@@ -5,7 +5,7 @@ import math
 from datetime import timedelta
 from uuid import uuid4
 
-from sqlalchemy import or_, select, tuple_
+from sqlalchemy import func, or_, select, tuple_, update
 
 from extraction.schemas.common import utc_now
 from extraction.schemas.selector import Selector, SelectorVersion
@@ -18,6 +18,12 @@ from monitoring.contracts import (
     JobStatus,
     PinnedSelector,
     UploadURL,
+)
+from monitoring.enrollment import (
+    approval_matches,
+    authorized_agent,
+    grant_agent_sources,
+    origin_key,
 )
 from monitoring.models import (
     ACTIVE,
@@ -33,6 +39,7 @@ from monitoring.models import (
     MonitoringUpload,
     SourceCheckRun,
 )
+from monitoring.onboarding_config import onboarding_config
 from monitoring.report import validate_consensus
 from monitoring.security import (
     MonitoringError,
@@ -49,6 +56,7 @@ LEASE_SECONDS = 180
 UPLOAD_SECONDS = 60
 ATTEMPT_LIMIT = 3
 PROCESSING_LIMIT = 5
+SCHEDULING_LOCK = 0x42555242  # Burbot's PostgreSQL advisory lock namespace.
 
 
 def retry_delay(attempt):
@@ -101,6 +109,15 @@ class MonitoringQueue:
         source = await self._source(source_id)
         policy = await self.session.get(MonitoringSource, source_id)
         if not request.enabled and policy is None:
+            if source.type == "HTML" and source.url:
+                self.session.add(
+                    MonitoringSource(
+                        source_id=source_id,
+                        url=source.url,
+                        origins=[],
+                        enabled=False,
+                    )
+                )
             return {"sourceId": source_id, "enabled": False, "allowedOrigins": []}
         if request.enabled and (source.type != "HTML" or not source.url):
             raise MonitoringError(422, "HTML_SOURCE_REQUIRED")
@@ -165,6 +182,89 @@ class MonitoringQueue:
             await self._retry(job, "AGENT_REVOKED")
         return {"agentId": agent.id, "enabled": False}
 
+    async def agent_sources(self, agent_id, after, limit):
+        if await self.session.get(MonitoringAgent, agent_id) is None:
+            raise MonitoringError(404, "AGENT_NOT_FOUND")
+        rows = list(
+            await self.session.scalars(
+                select(MonitoringAgentSource)
+                .where(
+                    MonitoringAgentSource.agent_id == agent_id,
+                    MonitoringAgentSource.source_id > after,
+                )
+                .order_by(MonitoringAgentSource.source_id)
+                .limit(limit + 1)
+            )
+        )
+        return {
+            "agentId": agent_id,
+            "sources": [
+                {"sourceId": row.source_id, "enabled": row.enabled} for row in rows[:limit]
+            ],
+            "nextAfterSourceId": rows[limit - 1].source_id if len(rows) > limit else None,
+        }
+
+    async def update_agent_sources(self, agent_id, request):
+        agent = await self.session.get(MonitoringAgent, agent_id, with_for_update=True)
+        if agent is None:
+            raise MonitoringError(404, "AGENT_NOT_FOUND")
+        approved = (
+            select(Source.id)
+            .join(MonitoringSource, MonitoringSource.source_id == Source.id)
+            .where(*approval_matches())
+        )
+        added = sorted(set(request.add_source_ids))
+        if added and set(await self.session.scalars(approved.where(Source.id.in_(added)))) != set(
+            added
+        ):
+            raise MonitoringError(422, "SOURCE_APPROVAL_REQUIRED")
+        if (added or request.policy) and not agent.enabled:
+            raise MonitoringError(409, "AGENT_DISABLED")
+        await grant_agent_sources(
+            self.session, [(agent_id, source_id) for source_id in added], explicit=True
+        )
+
+        removed = sorted(set(request.remove_source_ids))
+        if removed:
+            await self.session.execute(
+                update(MonitoringAgentSource)
+                .where(
+                    MonitoringAgentSource.agent_id == agent_id,
+                    MonitoringAgentSource.source_id.in_(removed),
+                )
+                .values(enabled=False)
+            )
+            leased = await self.session.scalars(
+                select(MonitoringJob)
+                .where(
+                    MonitoringJob.agent_id == agent_id,
+                    MonitoringJob.source_id.in_(removed),
+                    MonitoringJob.status.in_(LEASED),
+                )
+                .with_for_update()
+            )
+            for job in leased:
+                await self._retry(job, "AGENT_SCOPE_REVOKED")
+        next_id = None
+        if request.policy:
+            policy = onboarding_config().policy(request.policy)
+            rows = list(
+                await self.session.scalars(
+                    approved.where(
+                        Source.id > request.after_source_id,
+                        origin_key(Source.url).in_(policy.origins),
+                    )
+                    .order_by(Source.id)
+                    .limit(request.limit + 1)
+                )
+            )
+            await grant_agent_sources(
+                self.session, [(agent_id, source_id) for source_id in rows[: request.limit]]
+            )
+            if len(rows) > request.limit:
+                next_id = rows[request.limit - 1]
+        return {"agentId": agent_id, "nextAfterSourceId": next_id}
+
     @staticmethod
     def seen(agent):
         agent.last_seen_at = utc_now()
@@ -219,33 +319,77 @@ class MonitoringQueue:
             raise MonitoringError(409, "SOURCE_NOT_APPROVED_OR_ACTIVE")
         check_origin(policy.url, policy.origins)
 
-    async def schedule_due(self, flow_run_id=None, limit=100):
+    async def schedule_due(self, flow_run_id=None, limit=None, *, config=None):
+        config = config if config is not None else onboarding_config()
+        if not config.monitoring_enabled:
+            return []
+        # One automatic admission transaction accounts for shared capacity. The
+        # Source lock and partial unique index also cover manual job requests.
+        if not await self.session.scalar(
+            select(func.pg_try_advisory_xact_lock(SCHEDULING_LOCK, 1))
+        ):
+            return []
         now = utc_now()
+        active_count = await self.session.scalar(
+            select(func.count()).select_from(MonitoringJob).where(MonitoringJob.status.in_(ACTIVE))
+        )
+        requested = config.job_batch_size if limit is None else limit
+        batch = min(requested, config.job_batch_size, config.max_active_jobs - active_count)
+        if batch <= 0:
+            return []
         active = (
             select(MonitoringJob.id)
             .where(MonitoringJob.source_id == Source.id, MonitoringJob.status.in_(ACTIVE))
             .exists()
         )
+        due_at = func.coalesce(SourceCheckSchedule.next_check_at, SourceCheckSchedule.created_at)
+        candidates = (
+            select(Source.id.label("source_id"))
+            .join(SourceCheckSchedule, SourceCheckSchedule.source_id == Source.id)
+            .join(MonitoringSource, MonitoringSource.source_id == Source.id)
+            .where(
+                Source.state == "ACTIVE",
+                *approval_matches(),
+                SourceCheckSchedule.enabled.is_(True),
+                or_(
+                    SourceCheckSchedule.next_check_at.is_(None),
+                    SourceCheckSchedule.next_check_at <= now,
+                ),
+                authorized_agent(since=now - timedelta(seconds=LEASE_SECONDS)),
+                ~active,
+            )
+        )
+        if config.max_active_jobs_per_origin is not None:
+            job_origin = origin_key(MonitoringJob.url)
+            occupancy = (
+                select(job_origin.label("origin"), func.count().label("active"))
+                .where(MonitoringJob.status.in_(ACTIVE))
+                .group_by(job_origin)
+                .subquery()
+            )
+            site = origin_key(Source.url)
+            ranked = (
+                candidates.outerjoin(occupancy, occupancy.c.origin == site)
+                .add_columns(
+                    due_at.label("due_at"),
+                    func.row_number()
+                    .over(partition_by=site, order_by=(due_at, Source.id))
+                    .label("position"),
+                    func.coalesce(occupancy.c.active, 0).label("active"),
+                )
+                .subquery()
+            )
+            candidates = (
+                select(Source.id)
+                .join(ranked, ranked.c.source_id == Source.id)
+                .where(ranked.c.position + ranked.c.active <= config.max_active_jobs_per_origin)
+                .order_by(ranked.c.due_at, Source.id)
+            )
+        else:
+            candidates = candidates.order_by(due_at, Source.id)
         source_ids = list(
             await self.session.scalars(
-                select(Source.id)
-                .join(SourceCheckSchedule, SourceCheckSchedule.source_id == Source.id)
-                .join(MonitoringSource, MonitoringSource.source_id == Source.id)
-                .where(
-                    Source.state == "ACTIVE",
-                    Source.type == "HTML",
-                    MonitoringSource.enabled.is_(True),
-                    MonitoringSource.url == Source.url,
-                    SourceCheckSchedule.enabled.is_(True),
-                    or_(
-                        SourceCheckSchedule.next_check_at.is_(None),
-                        SourceCheckSchedule.next_check_at <= now,
-                    ),
-                    ~active,
-                )
-                .order_by(SourceCheckSchedule.next_check_at.nulls_first(), Source.id)
-                .limit(limit)
-                .with_for_update(of=Source, skip_locked=True)
+                candidates.limit(batch).with_for_update(of=Source, skip_locked=True)
             )
         )
         return [
@@ -284,6 +428,27 @@ class MonitoringQueue:
         )
         for job in rows:
             await self._retry(job, "LEASE_EXPIRED")
+        return len(rows)
+
+    async def expire_offline_jobs(self, grace_seconds, limit=100):
+        cutoff = utc_now() - timedelta(seconds=grace_seconds)
+        rows = list(
+            await self.session.scalars(
+                select(MonitoringJob)
+                .join(Source, Source.id == MonitoringJob.source_id)
+                .where(
+                    MonitoringJob.reason == "scheduled",
+                    MonitoringJob.status.in_(READY),
+                    MonitoringJob.available_at <= cutoff,
+                    ~authorized_agent(since=cutoff),
+                )
+                .order_by(MonitoringJob.available_at, MonitoringJob.id)
+                .limit(limit)
+                .with_for_update(of=MonitoringJob, skip_locked=True)
+            )
+        )
+        for job in rows:
+            self._finish(job, "cancelled", "AGENT_UNAVAILABLE")
         return len(rows)
 
     async def cancel_stale(self, limit=100):
@@ -339,6 +504,7 @@ class MonitoringQueue:
             .join(Source, Source.id == MonitoringJob.source_id)
             .where(
                 MonitoringAgentSource.agent_id == agent.id,
+                MonitoringAgentSource.enabled.is_(True),
                 MonitoringJob.status.in_(READY),
                 MonitoringJob.available_at <= now,
                 MonitoringSource.enabled.is_(True),
@@ -426,6 +592,7 @@ class MonitoringQueue:
                 MonitoringJob.id == job_id,
                 MonitoringJob.agent_id == agent.id,
                 MonitoringAgentSource.agent_id == agent.id,
+                MonitoringAgentSource.enabled.is_(True),
             )
         )
         if lock:
