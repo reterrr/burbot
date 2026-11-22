@@ -12,6 +12,7 @@ from extraction.schemas.selector_tree import (
     SelectorEvaluationResult,
     SelectorVersionDefinition,
 )
+from monitoring.onboarding_config import PolicyName
 
 REPRESENTATION = "rendered_dom"
 REPRESENTATION_VERSION = "firefox-dom-1"
@@ -31,7 +32,25 @@ class Approval(PortableModel):
 
 class RegisterAgent(PortableModel):
     name: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=150)]
-    source_ids: list[Identifier] = Field(min_length=1, max_length=250)
+    source_ids: list[Identifier] = Field(default_factory=list, max_length=250)
+
+
+class AgentSourcesUpdate(PortableModel):
+    add_source_ids: list[Identifier] = Field(default_factory=list, max_length=500)
+    remove_source_ids: list[Identifier] = Field(default_factory=list, max_length=500)
+    policy: PolicyName | None = None
+    after_source_id: int = Field(default=0, ge=0, le=9223372036854775807)
+    limit: int = Field(default=100, ge=1, le=250)
+
+    @model_validator(mode="after")
+    def changes_are_unambiguous(self):
+        if set(self.add_source_ids) & set(self.remove_source_ids):
+            raise ValueError("A source cannot be both added and removed")
+        if not (self.add_source_ids or self.remove_source_ids or self.policy):
+            raise ValueError("Provide sources or a policy")
+        if self.policy and self.remove_source_ids:
+            raise ValueError("Revoke selected sources in a separate request")
+        return self
 
 
 class Lease(PortableModel):

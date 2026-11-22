@@ -85,6 +85,7 @@ class Source(UpdatedAtMixin, table=True):
         CheckConstraint("url IS NOT NULL OR file_id IS NOT NULL", name="sources_locator_required"),
         Index("ix_sources_state", "state"),
         Index("ix_sources_type", "type"),
+        Index("ix_sources_type_state_id", "type", "state", "id"),
     )
 
     id: int | None = Field(default=None, sa_column=id_column())
@@ -128,6 +129,12 @@ class SourceCheckSchedule(UpdatedAtMixin, table=True):
     __tablename__ = "source_check_schedules"
     __table_args__ = (
         CheckConstraint("interval_seconds > 0", name="source_check_schedules_interval_positive"),
+        Index(
+            "ix_source_check_schedules_due",
+            "next_check_at",
+            "source_id",
+            postgresql_where=text("enabled"),
+        ),
     )
 
     source_id: int = Field(sa_column=reference("sources.id", primary_key=True))

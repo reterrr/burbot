@@ -43,6 +43,7 @@ def origin(url: str, *, allow_http: bool = False) -> str:
             (scheme != "https" and not (allow_http and scheme == "http"))
             or parsed.port not in (None, default_port)
             or parsed.username is not None
+            or len(host) > 253
             or len(labels) < 2
             or not all(HOST.fullmatch(label) for label in labels)
             or labels[-1] in LOCAL_SUFFIXES

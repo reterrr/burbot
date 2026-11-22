@@ -11,15 +11,17 @@ from prefect.runtime import flow_run
 from sqlalchemy import func, select
 
 from extraction.schemas.common import utc_now
+from monitoring.enrollment import MonitoringEnrollmentService
 from monitoring.models import PROCESSABLE, MonitoringJob, SourceCheckRun
+from monitoring.onboarding import ONBOARDING_TICK_SECONDS, run_onboarding_batch
+from monitoring.onboarding_config import onboarding_config
 from monitoring.processing import MonitoringProcessor
-from monitoring.queue import MonitoringQueue
+from monitoring.queue import SCHEDULING_LOCK, MonitoringQueue
 from monitoring.security import MonitoringError
 from shared.database import session_factory
 
 DISPATCH_TIMEOUT = 10
 PROCESSING_TIMEOUT = 120
-SCHEDULING_LOCK = 0x42555242  # Burbot's PostgreSQL advisory lock namespace.
 
 
 def log_job(logger, level, job_id, processing_run_id, retry_count, **fields):
@@ -167,6 +169,19 @@ async def dispatch(client, deployment_id, job_id, logger):
 async def schedule_monitoring():
     logger = get_run_logger()
     scheduler_run_id = flow_run.id
+    config = None
+    onboarded = 0
+    try:
+        config = onboarding_config()
+        if config.policies:
+            async with asyncio.timeout(ONBOARDING_TICK_SECONDS):
+                onboarded = await run_onboarding_batch(session_factory, config, logger)
+    except Exception as error:
+        logger.warning(
+            "scheduler_run_id=%s onboarding_status=deferred error_category=%s",
+            scheduler_run_id,
+            error.code if isinstance(error, MonitoringError) else type(error).__name__,
+        )
     try:
         async with session_factory.begin() as session:
             if not await session.scalar(select(func.pg_try_advisory_xact_lock(SCHEDULING_LOCK, 1))):
@@ -178,7 +193,16 @@ async def schedule_monitoring():
             cancelled = await queue.cancel_stale()
             await session.flush()
             expired = await queue.expire_leases()
-            jobs = await queue.schedule_due(scheduler_run_id)
+            enrolled = 0
+            offline = 0
+            jobs = []
+            if config is not None:
+                offline = await queue.expire_offline_jobs(config.agent_unavailable_grace_seconds)
+                enrolled = await MonitoringEnrollmentService(
+                    session, config.default_schedule
+                ).reconcile_approvals(config.batch_size)
+                await session.flush()
+                jobs = await queue.schedule_due(scheduler_run_id, config=config)
         try:
             async with session_factory.begin() as session:
                 cleaned = await MonitoringQueue(session).cleanup_uploads()
@@ -192,10 +216,14 @@ async def schedule_monitoring():
     except Exception as error:
         raise RuntimeError(f"Monitoring scheduling failed ({type(error).__name__})") from None
     logger.info(
-        "scheduler_run_id=%s scheduled=%d cancelled=%d expired_leases=%d cleaned_uploads=%d",
+        "scheduler_run_id=%s onboarding_processed=%d schedules_created=%d "
+        "scheduled=%d cancelled=%d expired_leases=%d offline_jobs=%d cleaned_uploads=%d",
         scheduler_run_id,
+        onboarded,
+        enrolled,
         len(jobs),
         cancelled,
         expired,
+        offline,
         cleaned,
     )

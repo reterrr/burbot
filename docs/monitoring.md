@@ -3,6 +3,8 @@
 The monitoring worker submits one Prefect scheduler flow per minute when the
 previous one has finished. The flow writes due checks to PostgreSQL. The worker
 independently looks for verified uploads and submits their processing flows.
+A named onboarding policy lets the same scheduler discover new HTML Sources
+and enroll those approved for monitoring.
 A running Firefox polls the PostgreSQL queue through the API,
 opens an inactive container tab, runs the pinned SelectorTree definitions and
 uploads a sanitized rendered DOM to MinIO. The Burbot API and Prefect worker
@@ -42,6 +44,204 @@ identity needs object read, write and deletion in the monitoring bucket. Use a
 browser-reachable HTTPS public endpoint for remote installations. Serve the API
 over HTTPS and restrict access to the existing Sources, Extraction and Tasks APIs
 as part of the Burbot deployment.
+
+## Bulk onboarding and continuous enrollment
+
+Set `MONITORING_ONBOARDING_CONFIG` on both the API and monitoring worker.
+Compose passes it through from `.env`. With no named policies, the scheduler
+still creates missing schedules for previously approved, active HTML Sources.
+Discovery runs only for origins named in a configured policy.
+
+```dotenv
+MONITORING_ONBOARDING_CONFIG='{"policies":{"official":{"origins":["https://example.org"],"continuous":false,"autoEnroll":true,"agentIds":[]}},"defaultSchedule":{"enabled":true,"intervalSeconds":86400,"initialSpreadSeconds":86400},"jobBatchSize":50,"maxActiveJobs":200,"batchSize":20}'
+```
+
+Replace the example origin with the exact public HTTPS origins an administrator
+has approved for discovery. An origin is a scheme and hostname on port 443.
+`additionalOrigins` explicitly permits redirect or dependency origins for the
+policy. Discovery checks each redirect against that policy, rejects any DNS
+answer containing a non-public address, and connects to a validated address with
+HTTPS verification for the original hostname. Probes ignore proxy settings and
+sample at most 256 KiB of HTML. An authenticated page, unreadable content, or a
+JavaScript shell that requires rendering goes to `NEEDS_REVIEW`. Transient DNS,
+network, timeout, and HTTP failures use the persisted retry schedule. Burbot
+records the probe's code, HTTP status, redirect count, and retryability.
+
+`autoEnroll: true` also grants monitoring approval for the policy's entry
+origins. Use `autoEnroll: false` for discovery with a separate approval step.
+An operator can approve selected Source IDs in a run with
+`"approveSelected": true`. Those URLs must still match the selected policy.
+`agentIds` grants scopes to the specific enabled agents named in the policy when
+a Source enrolls. Start an agent with an empty `sourceIds` list when there are no
+approved Sources yet. Firefox still needs its own trusted backend, S3, and
+navigation origins configured. Existing approvals and grants are durable.
+To withdraw them, use the Source approval and agent scope endpoints. Policy
+edits govern future discoveries and grants.
+
+The default schedule creates one check per day and distributes initial due times
+using a stable offset derived from each Source ID. The saved dates, intervals,
+and enabled flags persist across restarts. A schedule update that sends only an
+interval preserves existing timestamps and the enabled flag. Acquisition
+advances the execution timestamps using the current interval.
+
+| Configuration | Default | Effect |
+| --- | --- | --- |
+| `monitoringEnabled` | `true` | Enables automatic admission of due jobs. Manual requests remain available. |
+| `defaultSchedule.enabled` | `true` | Enables newly created schedules. |
+| `defaultSchedule.intervalSeconds` | `86400` | Cadence for newly created schedules. |
+| `defaultSchedule.initialSpreadSeconds` | `86400` | Window for the first check. Use zero for an immediate due check. |
+| `jobBatchSize` | `50` | Maximum automatic jobs admitted per tick. |
+| `maxActiveJobs` | `200` | Automatic admission considers all active jobs, including manual jobs. |
+| `maxActiveJobsPerOrigin` | Unset | Optional automatic admission cap per HTTPS origin. |
+| `agentUnavailableGraceSeconds` | `600` | Grace period for waiting automatic jobs with no recent scoped agent heartbeat or claim. |
+| `batchSize` | `20` | Maximum onboarding items considered per tick. |
+| `probeConcurrency` | `4` | Parallel onboarding items. |
+| `probeTimeoutSeconds` | `8` | End-to-end discovery deadline for an item. |
+| `perOriginIntervalSeconds` | `1` | Minimum interval between validation attempts per origin. Same-origin redirect hops share a reservation. Use zero to disable the rate limit. |
+| `discoveryAttempts` | `3` | Maximum attempts before a retryable failure reaches `FAILED`. |
+| `retryBaseSeconds` | `30` | Initial exponential backoff. A supported `Retry-After` can extend it up to one hour. |
+
+Due schedules advance oldest first. Automatic jobs require a recent heartbeat
+or claim from an enabled agent scoped to the Source. After the offline grace
+period the scheduler cancels waiting automatic jobs and leaves their Sources
+due, freeing capacity for other agents. Jobs with leases, verified uploads and
+manual requests follow their usual lifecycles. PostgreSQL retains the
+one-active-job constraint while admission respects the configured caps.
+
+Set `continuous: true` to keep enrolling newly registered Sources. The scheduler
+saves its scan cursor and per-Source progress in PostgreSQL. Each tick services
+one run in rotation, with a bounded discovery budget. Interrupted transactions
+roll back their work and the next tick can pick up the same item. Uploaded
+monitoring jobs keep their separate Prefect processing queue.
+
+### Deploy on an existing Compose stack
+
+Set the same policy for the API and worker in `.env` before recreating them.
+For an initial dry run, keep `continuous: false` until the preview and bulk
+results have been reviewed. Apply the PostgreSQL migration before starting
+the new worker.
+
+```bash
+docker compose build worker
+docker compose stop worker
+docker compose run --rm --no-deps initialize alembic upgrade head
+docker compose up -d --no-deps --force-recreate bot worker
+```
+
+This pauses monitoring briefly while PostgreSQL holds the jobs and Prefect
+retains its volume. The legacy Prefect upgrade further below applies to stacks
+whose deployments still use the original interval and shared queue.
+
+### Run the first bulk onboarding
+
+1. Review the HTTPS hosts in PostgreSQL. This query shows candidates for
+   administrator review.
+
+   ```bash
+   docker compose exec -T db sh -c 'exec psql -X -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB"' <<'SQL'
+   SELECT substring(lower(url) FROM '^https://([a-z0-9.-]+)(?::443)?(?:[/?#]|$)') AS host,
+          count(*) AS sources
+   FROM sources
+   WHERE type = 'HTML' AND state = 'UNDISCOVERED'
+   GROUP BY 1 ORDER BY 2 DESC, 1;
+   SQL
+   ```
+
+2. Populate `origins` and the authorized `agentIds` for the named policy.
+   Use an existing agent or register one via `POST /monitoring/agents/register`
+   with `{"name":"monitoring-firefox","sourceIds":[]}`. Save the issued token
+   privately and configure Firefox. After editing `.env`, apply the policy with
+   `docker compose up -d --no-deps --force-recreate bot worker`.
+
+3. Preview, start a bounded run, and inspect progress. Set the API URL for
+   your stack and supply the operator token. These commands use `jq`.
+
+   ```bash
+   monitoring_api=http://127.0.0.1:8000
+   read -rsp 'Monitoring admin token ' monitoring_token
+   printf '\n'
+   onboarding_request=$(python3 -c 'from uuid import uuid4; print(uuid4())')
+   onboarding_payload=$(jq -nc --arg id "$onboarding_request" \
+     '{policy:"official", sourceType:"HTML", sourceState:"UNDISCOVERED", requestId:$id}')
+
+   curl -fsS "$monitoring_api/monitoring/onboarding/preview" \
+     -H "Authorization: Bearer $monitoring_token" -H 'Content-Type: application/json' \
+     --data "$onboarding_payload" | jq
+   onboarding_run=$(curl -fsS "$monitoring_api/monitoring/onboarding/runs" \
+     -H "Authorization: Bearer $monitoring_token" -H 'Content-Type: application/json' \
+     --data "$onboarding_payload" | jq -er .runId)
+   curl -fsS "$monitoring_api/monitoring/onboarding/runs/$onboarding_run" \
+     -H "Authorization: Bearer $monitoring_token" | jq
+   ```
+
+   Reuse the same `requestId` and payload after an uncertain response. To
+   limit a run to specific records, include `sourceIds`. Type and state
+   filters are evaluated as the run scans records, up to the largest Source
+   ID visible when the run began.
+
+4. Inspect coverage and successful checks. Use the reported
+   `nextAfterSourceId` for the next page.
+
+   ```bash
+   curl -fsS "$monitoring_api/monitoring/coverage" \
+     -H "Authorization: Bearer $monitoring_token" | jq
+   curl -fsS "$monitoring_api/monitoring/overview" \
+     -H "Authorization: Bearer $monitoring_token" | jq
+   ```
+
+   ```bash
+   docker compose exec -T db sh -c 'exec psql -X -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB"' <<'SQL'
+   SELECT s.state, count(*) AS html_sources,
+          count(*) FILTER (WHERE m.enabled AND m.url = s.url) AS approved,
+          count(*) FILTER (WHERE m.enabled AND m.url = s.url AND sc.enabled) AS scheduled
+   FROM sources AS s
+   LEFT JOIN monitoring_sources AS m ON m.source_id = s.id
+   LEFT JOIN source_check_schedules AS sc ON sc.source_id = s.id
+   WHERE s.type = 'HTML'
+   GROUP BY s.state ORDER BY s.state;
+
+   SELECT j.status, count(*) AS scheduled_jobs, max(j.completed_at) AS last_finished
+   FROM monitoring_jobs AS j
+   JOIN source_check_runs AS cr ON cr.job_id = j.id
+   WHERE j.reason = 'scheduled' AND cr.scheduling_flow_run_id IS NOT NULL
+   GROUP BY j.status ORDER BY j.status;
+
+   SELECT j.source_id, j.id, j.source_snapshot_id, j.extraction_run_id, j.completed_at
+   FROM monitoring_jobs AS j
+   WHERE j.reason = 'scheduled' AND j.status = 'completed'
+   ORDER BY j.completed_at DESC LIMIT 10;
+   SQL
+   ```
+
+5. Enable `continuous: true` when ready for automatic discovery and reconciliation
+   of future Sources. Apply the setting with
+   `docker compose up -d --no-deps --force-recreate bot worker`.
+
+### Operator API
+
+Use the existing monitoring operator bearer token.
+
+| Method | Path | Result |
+| --- | --- | --- |
+| GET | `/monitoring/onboarding/policies` | Named discovery policies and their configured agent scope |
+| POST | `/monitoring/onboarding/preview` | Read-only counts for the requested policy and filters |
+| POST | `/monitoring/onboarding/runs` | Accepted run ID for a durable bulk operation |
+| GET | `/monitoring/onboarding/runs` | Paginated finite and continuous runs |
+| GET | `/monitoring/onboarding/runs/{runId}` | State, outcome counts, and paginated per-Source diagnostics |
+| POST | `/monitoring/onboarding/runs/{runId}/retry` | Requeue a bounded page of exhausted, retryable items |
+| GET, PUT | `/monitoring/agents/{agentId}/sources` | List and update an agent's scope |
+| GET | `/monitoring/coverage` | Uncovered approved active Sources. Use `onlyUncovered=false` to include covered Sources and online status. |
+| GET | `/monitoring/overview` | Source counts, lifecycle history counts, scheduling and agent coverage, queue counts, and check times |
+
+Bulk scope changes use `addSourceIds` and `removeSourceIds`. A named `policy`
+adds an approved page by origin, which can be continued with
+`afterSourceId`. Explicit removal releases any capture lease and prevents
+future policy enrollment from restoring that assignment. Explicitly adding its
+Source ID restores the scope.
+
+PDF and XLSX Sources appear in type and state counts. Their monitoring requires
+document acquisition, content hashes, versioned snapshots, and document-specific
+extraction, which are outside this HTML pipeline.
 
 ## Prefect scheduling and recovery
 
@@ -205,7 +405,8 @@ After migration, `docker compose restart worker` restarts polling and
 reconciliation. Use `docker compose up -d --build worker` for worker code
 updates. `docker compose restart prefect` uses the persisted Prefect SQLite
 database and the worker resumes polling when the API returns. The upgrade uses
-the existing PostgreSQL monitoring tables and requires no schema migration.
+the existing PostgreSQL monitoring tables. Apply the onboarding migration
+separately before using the bulk onboarding API.
 
 ## Approve a source and enroll Firefox
 
@@ -340,5 +541,6 @@ export COLLECTIONS_TEST_DATABASE_URL=postgresql+asyncpg://burbot:local@127.0.0.1
 export MONITORING_TEST_S3_URL=http://127.0.0.1:19000
 export MONITORING_TEST_S3_ACCESS_KEY=local
 export MONITORING_TEST_S3_SECRET_KEY=local-test-only
-pytest -q tests/test_monitoring_postgres.py tests/test_monitoring_orchestration.py
+pytest -q tests/test_monitoring_discovery.py tests/test_monitoring_onboarding.py \
+  tests/test_monitoring_postgres.py tests/test_monitoring_orchestration.py
 ```
