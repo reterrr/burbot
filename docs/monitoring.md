@@ -1,37 +1,37 @@
 # Automatic Source Monitoring
 
-Prefect 3 runs one scheduler every 60 seconds. It writes due checks to PostgreSQL
-and dispatches processing for verified uploads. A running Firefox polls the queue,
+The monitoring worker submits one Prefect scheduler flow per minute when the
+previous one has finished. The flow writes due checks to PostgreSQL. The worker
+independently looks for verified uploads and submits their processing flows.
+A running Firefox polls the PostgreSQL queue through the API,
 opens an inactive container tab, runs the pinned SelectorTree definitions and
 uploads a sanitized rendered DOM to MinIO. The Burbot API and Prefect worker
 require no browser installation.
 
 ## Run the local stack
 
-The Compose example uses PostgreSQL 18, the official Linux amd64 MinIO community
-binary and a Prefect 3 Process work pool. The API, S3 endpoint and Prefect UI bind
-to loopback. Database, bucket and Prefect state use named volumes.
+Compose uses PostgreSQL 18, MinIO and a Prefect 3.9.4 Process work pool. The
+API, S3 endpoint and Prefect UI bind to loopback. PostgreSQL and Prefect use
+named volumes. MinIO uses the existing `~/minio/data` directory.
 
 ```bash
-cp .env.monitoring.example .env.monitoring
-# Fill the database password, operator token and S3 credentials.
-docker compose --env-file .env.monitoring -f compose.monitoring.yml up --build
+docker network inspect burbot >/dev/null 2>&1 || docker network create burbot
+docker compose up -d --build
 ```
 
-Initialization applies `m100_source_monitoring` and creates the private bucket.
-Worker startup registers `schedule-monitoring/monitoring-scheduler` with a
-60-second interval and concurrency of one, and
-`process-monitoring/monitoring-process` with concurrency of four.
+Compose reads `.env`. Set `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`,
+`DCKR_DATABASE_URL` (using `db:5432`), `MINIO_ROOT_USER`,
+`MINIO_ROOT_PASSWORD` and `MONITORING_ADMIN_TOKEN`. Initialization applies
+Alembic migrations and creates the private bucket. Use the recovery and upgrade
+procedure below if the Prefect deployments already use the old interval.
 
-For an existing deployment, install `burbot-orm[monitoring]`, migrate with
-Alembic, and provision the private bucket. Run these commands with the repository
-available to the Process worker.
+For a deployment outside Compose, install `burbot-orm[monitoring]`, migrate
+with Alembic and provision the private bucket. Run the module from a Linux
+container that owns the lifetime of its local flow processes.
 
 ```bash
 export PREFECT_API_URL=https://prefect.example.org/api
-prefect work-pool create --type process burbot-monitoring
-python -m monitoring.deployments
-prefect worker start --pool burbot-monitoring --limit 5
+python -m monitoring.worker
 ```
 
 Set `DCKR_DATABASE_URL` on the API and worker and `HOST_DATABASE_URL` for
@@ -42,6 +42,170 @@ identity needs object read, write and deletion in the monitoring bucket. Use a
 browser-reachable HTTPS public endpoint for remote installations. Serve the API
 over HTTPS and restrict access to the existing Sources, Extraction and Tasks APIs
 as part of the Burbot deployment.
+
+## Prefect scheduling and recovery
+
+The `burbot-monitoring` pool has two dedicated queues. The Process worker
+polls exactly these queues and runs at most five subprocesses in total.
+
+| Queue | Priority | Concurrent runs | Deployment |
+| --- | --- | --- | --- |
+| `monitoring-processing` | 1 | 4 | `process-monitoring/monitoring-process` |
+| `monitoring-scheduling` | 2 | 1 | `schedule-monitoring/monitoring-scheduler` |
+
+Run a single worker container for these queues. Clear any externally imposed
+pool capacity restriction below five if you want all five queue slots to be
+available. The worker creates missing Prefect resources and reads existing
+settings at startup. Deployment and queue pauses are respected when submitting
+new runs. Use a queue pause to also stop workers picking up its already
+scheduled runs.
+
+With the old configuration, Prefect counted only future scheduled runs when
+deciding whether to generate another interval tick. Overdue runs could
+accumulate even without a worker. The default deployment collision strategy
+(`ENQUEUE`) rescheduled rejected `Pending` proposals as
+`AwaitingConcurrencySlot`. That state explains the worker's non-pending
+`SCHEDULED` log when the slot was full. Both deployments shared the default
+queue, which exposed processing runs to the same polling order and local
+capacity as the backlog. Reapplying deployments at worker startup could also
+replace their schedules and future auto-scheduled runs. The reported
+`Submitting` run and occupied slot are consistent with interrupted submission.
+The original process and lease owner require inspection on the affected host.
+
+Prefect 3.9.4 stores deployment lease records in memory by default and slot
+counters in the server database. A server restart can lose the lease record
+while retaining the counter. The `CANCEL_NEW` strategy needs a full deployment
+limit to cancel a tick, so an offline worker with zero occupied slots would
+still leave interval runs queued.
+
+The worker now coalesces missed ticks and creates at most one outstanding
+automatic scheduler run in its queue. PostgreSQL locks and the unique
+active-job constraint protect source scheduling. Prefect queue limits govern
+admission from `Pending` and `Running` states. The monitoring deployments
+use those queue limits in place of deployment concurrency leases.
+
+The worker preserves scheduled processing runs while capacity is busy.
+For `Pending` (including `Submitting`), `Running` and `Cancelling`, it
+checks its in-flight submissions and the local process identity. Only an
+orphan in an owned queue is reconciled automatically. A lost submission or
+execution becomes `Crashed`. An orphan already in `Cancelling` becomes
+`Cancelled`. Paused runs require the operator's decision. PostgreSQL records
+the assigned processing run, retry eligibility and evidence checkpoints. On a
+terminal or missing Prefect run, dispatch can assign a new run to the same job.
+The new run reuses committed acquisition data and resumes the evidence
+transaction. Job and evidence writes are fenced by the assigned run ID.
+
+### One-time upgrade and recovery
+
+Use this procedure from the repository root with the existing Compose project.
+Set `monitoring_job` to the UUID of the uploaded job you want to verify.
+
+1. Build the image and inspect the two deployments, including the job's
+   current processing flow ID. The report shows legacy deployment slots,
+   counts and oldest waiting runs, PostgreSQL job counts and optional run IDs.
+
+   ```bash
+   docker compose build worker
+   docker compose run --rm -T --no-deps worker python -m monitoring.recovery \
+     status --runs --job-id "$monitoring_job" > monitoring-recovery.json
+   ```
+
+2. Let active processing finish. Stop the legacy monitoring worker and confirm
+   that all Process workers serving the old queue and their flow subprocesses
+   have exited. Firefox can continue uploading to the API during the worker
+   pause. PostgreSQL holds those jobs for dispatch when the worker returns.
+
+   ```bash
+   docker compose stop -t 180 worker
+   docker compose ps -a worker
+   ```
+
+3. Keep the scheduler deployment paused if it was already paused. If it is
+   active, temporarily turn off Prefect's interval Scheduler by recreating
+   only the Prefect service with the override below. This briefly interrupts
+   the Prefect API and pauses new interval scheduling across that server.
+   The existing `prefect-data` volume carries the history across the restart.
+
+   ```bash
+   docker compose -f docker-compose.yml -f - up -d --no-deps --wait \
+     --force-recreate prefect <<'YAML'
+   services:
+     prefect:
+       environment:
+         PREFECT_SERVER_SERVICES_SCHEDULER_ENABLED: "false"
+   YAML
+   ```
+
+4. Refresh the report with `status --runs` and review the scheduler
+   candidates. Select only obsolete automatic interval runs in the legacy
+   queue with a scheduled state, zero starts and no infrastructure PID.
+   Put the approved UUIDs in `reviewed-scheduler-runs.txt`, one per line.
+   The command validates the manifest against the current states and cancels
+   those runs through Prefect, retaining their history. If you turned off the
+   server Scheduler, review any future automatic ticks too, then pause the
+   deployment with the command below. It requires zero remaining future
+   automatic scheduled runs before changing the deployment.
+
+   ```bash
+   docker compose run --rm -T --no-deps worker python -m monitoring.recovery \
+     cancel-scheduler < reviewed-scheduler-runs.txt
+   docker compose run --rm -T --no-deps worker python -m monitoring.recovery pause-scheduler
+   ```
+
+5. For each old `Submitting`, `Pending`, `Running` or `Cancelling` run,
+   use the worker attribution, infrastructure PID, container state and logs
+   to confirm whether an execution still exists. Reconcile only runs whose
+   execution has stopped. Repeat the following for each confirmed orphan in
+   either monitoring deployment. The terminal transition releases the run's
+   deployment slot through Prefect. Record any remaining leaked slot counts
+   from `status` before moving the drained deployments in step 7.
+
+   ```bash
+   docker compose run --rm -T --no-deps worker python -m monitoring.recovery \
+     reconcile-orphan --confirm-stopped "$orphan_flow_run"
+   ```
+
+6. If the uploaded job is still linked to an unstarted `Scheduled` processing
+   run in the legacy queue, confirm the processing deployment, queue, and
+   run ID against `status --runs --job-id "$monitoring_job"`. Cancel that
+   specific flow. Apply the same check to other stranded processing jobs if
+   needed. Dispatch will read the terminal run and reuse the uploaded job.
+
+   ```bash
+   docker compose run --rm -T --no-deps worker prefect flow-run cancel "$legacy_processing_run"
+   ```
+
+7. Move the deployments to their dedicated queues and retire the legacy
+   interval. The command preserves deployment and schedule IDs, sets the old
+   scheduler schedules inactive and removes their drained deployment
+   concurrency limits. It refuses to move a deployment with in-flight runs or
+   future automatic runs. Bring Prefect up with the regular Compose settings
+   if you disabled its server Scheduler or if the running server uses a
+   different Prefect version. Recreating Prefect briefly interrupts its API.
+
+   ```bash
+   docker compose run --rm -T --no-deps worker python -m monitoring.deployments --migrate
+   docker compose up -d --no-deps --wait --force-recreate prefect  # when needed
+   docker compose up -d --no-deps worker
+   ```
+
+8. Resume the scheduler if you are ready for source planning. Leave it paused
+   if the original pause was an administrative decision. Processing uploaded
+   jobs continues independently. Check the job's status until it reaches
+   `completed` with the original job ID and a snapshot reference. An upload
+   with selector evaluations should also have an extraction run reference.
+
+   ```bash
+   docker compose run --rm -T --no-deps worker python -m monitoring.recovery resume-scheduler
+   docker compose exec worker python -m monitoring.recovery status --job-id "$monitoring_job"
+   docker compose logs --since 10m worker
+   ```
+
+After migration, `docker compose restart worker` restarts polling and
+reconciliation. Use `docker compose up -d --build worker` for worker code
+updates. `docker compose restart prefect` uses the persisted Prefect SQLite
+database and the worker resumes polling when the API returns. The upgrade uses
+the existing PostgreSQL monitoring tables and requires no schema migration.
 
 ## Approve a source and enroll Firefox
 
@@ -165,8 +329,10 @@ network configuration.
 
 ## Verification
 
-Use separate disposable PostgreSQL and MinIO services. The integration tests
-create and drop an isolated schema and bucket per test.
+Use separate disposable PostgreSQL and MinIO services. The orchestration tests
+start a temporary Prefect server and real Process worker. The PostgreSQL test
+role needs `CREATEDB` for the worker tests' isolated databases. Tests drive
+the Firefox protocol through the API and upload to MinIO.
 
 ```bash
 python -m pip install -e '.[dev,monitoring]'
@@ -174,5 +340,5 @@ export COLLECTIONS_TEST_DATABASE_URL=postgresql+asyncpg://burbot:local@127.0.0.1
 export MONITORING_TEST_S3_URL=http://127.0.0.1:19000
 export MONITORING_TEST_S3_ACCESS_KEY=local
 export MONITORING_TEST_S3_SECRET_KEY=local-test-only
-pytest -q tests/test_monitoring_postgres.py
+pytest -q tests/test_monitoring_postgres.py tests/test_monitoring_orchestration.py
 ```

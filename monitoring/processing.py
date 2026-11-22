@@ -85,7 +85,7 @@ class MonitoringProcessor:
         self.capture = CaptureService(session, commit=False)
         self.tasks = TasksService(session, commit=False)
 
-    async def _lock(self, job_id, *, lock_workflow=False):
+    async def _lock(self, job_id, *, lock_workflow=False, expected_flow_id=None):
         job = await self.session.get(MonitoringJob, job_id)
         if job is None or job.status not in PROCESSABLE:
             return None, None
@@ -97,6 +97,8 @@ class MonitoringProcessor:
         if job.status not in PROCESSABLE or job.available_at > utc_now():
             return None, None
         check = await self.session.get(SourceCheckRun, job_id)
+        if expected_flow_id is not None and check.processing_flow_run_id != expected_flow_id:
+            return None, None
         try:
             self.queue._check_policy(
                 source, await self.session.get(MonitoringSource, source.id), job
@@ -106,8 +108,10 @@ class MonitoringProcessor:
             return None, None
         return job, check
 
-    async def acquire(self, job_id, flow_id=None):
-        job, check = await self._lock(job_id)
+    async def acquire(self, job_id, flow_id=None, *, require_dispatch=False):
+        job, check = await self._lock(
+            job_id, expected_flow_id=flow_id if require_dispatch else None
+        )
         if job is None:
             return False
         check.processing_flow_run_id = flow_id
@@ -524,8 +528,8 @@ class MonitoringProcessor:
             if row.get("selectorUuid") and row.get("taskId") is not None
         }
 
-    async def process(self, job_id):
-        job, check = await self._lock(job_id, lock_workflow=True)
+    async def process(self, job_id, *, expected_flow_id=None):
+        job, check = await self._lock(job_id, lock_workflow=True, expected_flow_id=expected_flow_id)
         if job is None or check.acquired_at is None:
             return False
         pins = await self.queue._pins(job)
@@ -556,8 +560,10 @@ class MonitoringProcessor:
         self.queue._finish(job, "completed")
         return True
 
-    async def retry_processing(self, job_id, flow_id=None):
-        job, check = await self._lock(job_id, lock_workflow=True)
+    async def retry_processing(self, job_id, flow_id=None, *, require_dispatch=False):
+        job, check = await self._lock(
+            job_id, lock_workflow=True, expected_flow_id=flow_id if require_dispatch else None
+        )
         if job is None:
             return
         check.processing_flow_run_id = flow_id
@@ -565,7 +571,7 @@ class MonitoringProcessor:
         job.error_code = "PROCESSING_FAILED"
         if job.processing_attempts < PROCESSING_LIMIT:
             job.available_at = utc_now() + retry_delay(job.processing_attempts)
-            return
+            return job.processing_attempts
         self.queue._finish(job, "failed", job.error_code)
         check.processed_at = utc_now()
         if check.acquired_at is None:
@@ -589,3 +595,4 @@ class MonitoringProcessor:
             except (TaskError, SQLAlchemyError):
                 outcome["taskErrorCode"] = "REVIEW_TASK_FAILED"
             check.field_results = [outcome]
+        return job.processing_attempts
