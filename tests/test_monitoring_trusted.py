@@ -316,13 +316,16 @@ async def test_prefect_backpressure_retains_uploads_in_postgres(
         register as register_deployments,
     )
 
-    config = configure(monkeypatch)
+    configure(monkeypatch)
     monkeypatch.setattr(worker, "session_factory", domain.factory)
     monkeypatch.setattr(flows, "session_factory", domain.factory)
     monkeypatch.setattr(worker, "DISPATCH_BATCH", 1)
     row = await register(domain, "https://example.org")
+    response = await client.post(f"/monitoring/sources/{row.id}/jobs", headers=OPERATOR)
+    assert response.status_code == 200, response.text
+    job_id = UUID(response.json()["jobId"])
     async with domain.factory.begin() as session:
-        job = await MonitoringQueue(session).create_job(row.id, config=config)
+        job = await session.get(MonitoringJob, job_id)
         job.status = "uploaded"
     async with get_client() as prefect:
         await register_deployments(prefect)
@@ -334,12 +337,12 @@ async def test_prefect_backpressure_retains_uploads_in_postgres(
         live = run_filters([deployment.id], UNFINISHED, queue_ids=[queue.id])
         assert await worker.dispatch_batch(prefect, deployment.id, queue.id, None) is None
         async with domain.factory() as session:
-            assert (await session.get(SourceCheckRun, job.id)).processing_flow_run_id is None
+            assert (await session.get(SourceCheckRun, job_id)).processing_flow_run_id is None
         await prefect.set_flow_run_state(queued.id, Cancelled(), force=True)
         await worker.dispatch_batch(prefect, deployment.id, queue.id, None)
         (linked,) = await prefect.read_flow_runs(**live)
-        assert linked.parameters["job_id"] == str(job.id)
+        assert linked.parameters["job_id"] == str(job_id)
         async with domain.factory() as session:
-            assert (await session.get(SourceCheckRun, job.id)).processing_flow_run_id == str(
+            assert (await session.get(SourceCheckRun, job_id)).processing_flow_run_id == str(
                 linked.id
             )

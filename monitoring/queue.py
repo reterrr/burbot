@@ -325,6 +325,8 @@ class MonitoringQueue:
             ).enroll_trusted(source, allow_http=config.trusted_allow_http)
             if site is None:
                 raise MonitoringError(409, "SOURCE_NOT_ELIGIBLE")
+            # A manual check can be requested before the next enrollment tick.
+            await self.session.flush()
             origins = [site]
             navigation = TRUSTED_HTTP if site.startswith("http://") else TRUSTED_HTTPS
         else:
