@@ -117,18 +117,26 @@ async def schedule_tick(client, deployment_id, queue_id, minute):
     )
 
 
-async def dispatch_batch(client, deployment_id, cursor):
+async def dispatch_batch(client, deployment_id, queue_id, cursor):
+    async with asyncio.timeout(POLL_SECONDS):
+        unfinished = await client.count_flow_runs(
+            **run_filters([deployment_id], UNFINISHED, queue_ids=[queue_id])
+        )
+    available = DISPATCH_BATCH - unfinished
+    if available <= 0:
+        return cursor
     async with session_factory() as session:
         rows = await MonitoringQueue(session).processable(DISPATCH_BATCH, after=cursor)
     loop = asyncio.get_running_loop()
     deadline = loop.time() + POLL_SECONDS
     for available_at, job_id in rows:
         try:
-            await dispatch(client, deployment_id, job_id, logger)
+            if await dispatch(client, deployment_id, job_id, logger):
+                available -= 1
         except Exception:
-            # dispatch already logged the error category. Keep scanning other jobs.
-            pass
-        if loop.time() >= deadline:
+            # A failed response may still have created a run in Prefect.
+            available -= 1
+        if available <= 0 or loop.time() >= deadline:
             return available_at, job_id
     return tuple(rows[-1]) if len(rows) == DISPATCH_BATCH else None
 
@@ -155,7 +163,7 @@ async def coordinate(worker, deployment_name):
                             await schedule_tick(client, deployment.id, queue.id, minute)
                             last_minute = minute
                 if runnable and deployment_name == PROCESS_DEPLOYMENT:
-                    cursor = await dispatch_batch(client, deployment.id, cursor)
+                    cursor = await dispatch_batch(client, deployment.id, queue.id, cursor)
             except Exception as error:
                 logger.warning(
                     "deployment=%s reconciliation_status=retry error_category=%s",

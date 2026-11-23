@@ -2,7 +2,7 @@
 
 import os
 from functools import lru_cache
-from typing import Annotated
+from typing import Annotated, Literal
 from uuid import UUID
 
 from pydantic import Field, StringConstraints, ValidationError, field_validator
@@ -11,6 +11,7 @@ from extraction.schemas.selector_tree import PortableModel
 from monitoring.security import MonitoringError, approve_origins
 
 PolicyName = Annotated[str, StringConstraints(pattern=r"^[a-z][a-z0-9-]{0,47}$")]
+MonitoringMode = Literal["strict", "trusted"]
 
 
 def configured_origins(values):
@@ -40,6 +41,8 @@ class ScheduleDefaults(PortableModel):
 
 
 class OnboardingConfig(PortableModel):
+    mode: MonitoringMode = "strict"
+    trusted_allow_http: bool = False
     policies: dict[PolicyName, ApprovalPolicy] = Field(default_factory=dict, max_length=32)
     default_schedule: ScheduleDefaults = Field(default_factory=ScheduleDefaults)
     monitoring_enabled: bool = True

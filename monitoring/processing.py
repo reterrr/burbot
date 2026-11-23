@@ -1,6 +1,5 @@
 """Turn a verified upload into Sources, Extraction, and Tasks records."""
 
-from datetime import timedelta
 from uuid import UUID, uuid4
 
 from sqlalchemy import select
@@ -15,8 +14,10 @@ from extraction.schemas.models import ExtractionRun, FieldObservation
 from extraction.schemas.selector import SelectorEvaluation, SelectorVersion
 from extraction.services.capture import CaptureService
 from extraction.services.tracking import BASELINE_STATUSES, comparable_value
+from monitoring.enrollment import INITIAL_CAPTURE_STATES
 from monitoring.models import (
     PROCESSABLE,
+    STRICT_NAVIGATION,
     MonitoringJob,
     MonitoringSource,
     MonitoringUpload,
@@ -31,7 +32,9 @@ from monitoring.review import (
 )
 from monitoring.security import MonitoringError, fingerprint
 from sources.schemas import api as source_dto
-from sources.schemas.models import SourceCheckSchedule, SourceFieldTracking, SourceSnapshot
+from sources.schemas.enums import SourceState as State
+from sources.schemas.enums import SourceStateTrigger as Trigger
+from sources.schemas.models import Source, SourceFieldTracking, SourceSnapshot
 from sources.services.sources import SourcesService
 from tasks.api.dto import TaskCreateRequest, TaskReferenceCreate, WorkflowStartRequest
 from tasks.exceptions.exceptions import TaskError
@@ -122,6 +125,17 @@ class MonitoringProcessor:
         intent = await self.session.get(MonitoringUpload, UUID(data["uploadIntentId"]))
         if intent is None or not intent.sealed_key or intent.cleaned_at is not None:
             raise MonitoringError(409, "SEALED_UPLOAD_MISSING")
+        source = await self.session.get(Source, job.source_id)
+        initial = (
+            job.navigation_policy != STRICT_NAVIGATION and source.state in INITIAL_CAPTURE_STATES
+        )
+        if initial:
+            await self.sources._change_state(
+                source, State.DISCOVERING, "BROWSER_DISCOVERY", Trigger.CRAWLER
+            )
+            await self.sources._change_state(
+                source, State.VALIDATING, "BROWSER_CAPTURE_VERIFIED", Trigger.VALIDATOR
+            )
         latest = await self.session.scalar(
             select(SourceSnapshot)
             .where(SourceSnapshot.source_id == job.source_id)
@@ -184,6 +198,10 @@ class MonitoringProcessor:
                 )
             )
             job.extraction_run_id = run.id
+        if initial:
+            await self.sources._change_state(
+                source, State.ACTIVE, "RENDERED_HTML_VALIDATED", Trigger.VALIDATOR
+            )
         job.status = "processing"
         check.acquired_at = now
         return True
@@ -565,9 +583,8 @@ class MonitoringProcessor:
         self.queue._finish(job, "failed", job.error_code)
         check.processed_at = utc_now()
         if check.acquired_at is None:
-            schedule = await self.session.get(SourceCheckSchedule, job.source_id)
-            if schedule is not None:
-                schedule.next_check_at = utc_now() + timedelta(seconds=schedule.interval_seconds)
+            await self.queue.record_initial_failure(job, job.error_code)
+            await self.queue._advance_failed_schedule(job)
         if job.extraction_run_id is not None:
             run = await self.session.get(ExtractionRun, job.extraction_run_id, with_for_update=True)
             run.status = ExtractionRunStatus.FAILED

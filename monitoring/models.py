@@ -30,6 +30,10 @@ LEASED = ("claimed", "capturing", "uploading")
 READY = ("pending", "retry_pending")
 PROCESSABLE = ("uploaded", "processing")
 ACTIVE = (*READY, *LEASED, *PROCESSABLE)
+STRICT_NAVIGATION = "strict"
+TRUSTED_HTTPS = "public_https"
+TRUSTED_HTTP = "public_http_https"
+NAVIGATION_POLICIES = (STRICT_NAVIGATION, TRUSTED_HTTPS, TRUSTED_HTTP)
 
 
 def timestamp(nullable=False):
@@ -43,6 +47,8 @@ class MonitoringSource(SQLModel, table=True):
     origins: list[str] = Field(sa_column=Column(JSONB, nullable=False))
     enabled: bool = Field(default=True, sa_column=Column(Boolean, nullable=False))
     approved_at: datetime = Field(default_factory=utc_now, sa_column=timestamp())
+    trusted_url: str | None = Field(default=None, sa_column=Column(Text))
+    trusted_origin: str | None = Field(default=None, sa_column=Column(Text))
 
 
 class MonitoringAgent(SQLModel, table=True):
@@ -51,6 +57,9 @@ class MonitoringAgent(SQLModel, table=True):
     name: str = Field(sa_column=Column(String(150), nullable=False))
     token_digest: str = Field(sa_column=Column(String(64), nullable=False, unique=True))
     enabled: bool = Field(default=True, sa_column=Column(Boolean, nullable=False))
+    trusted: bool = Field(
+        default=False, sa_column=Column(Boolean, nullable=False, server_default=text("false"))
+    )
     created_at: datetime = Field(default_factory=utc_now, sa_column=timestamp())
     last_seen_at: datetime | None = Field(default=None, sa_column=timestamp(nullable=True))
 
@@ -84,6 +93,12 @@ class MonitoringJob(SQLModel, table=True):
         CheckConstraint(
             "attempt_count >= 0 AND processing_attempts >= 0", name="monitoring_job_attempts"
         ),
+        CheckConstraint(
+            "navigation_policy IN ("
+            + ",".join(f"'{value}'" for value in NAVIGATION_POLICIES)
+            + ")",
+            name="monitoring_job_navigation",
+        ),
         Index(
             "uq_monitoring_jobs_active_source",
             "source_id",
@@ -96,6 +111,10 @@ class MonitoringJob(SQLModel, table=True):
     source_id: int = Field(sa_column=reference("monitoring_sources.source_id"))
     url: str = Field(sa_column=Column(Text, nullable=False))
     origins: list[str] = Field(sa_column=Column(JSONB, nullable=False))
+    navigation_policy: str = Field(
+        default=STRICT_NAVIGATION,
+        sa_column=Column(String(24), nullable=False, server_default=text("'strict'")),
+    )
     reason: str = Field(sa_column=Column(String(32), nullable=False))
     status: str = Field(default="pending", sa_column=Column(String(32), nullable=False))
     created_at: datetime = Field(default_factory=utc_now, sa_column=timestamp())

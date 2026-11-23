@@ -10,6 +10,136 @@ opens an inactive container tab, runs the pinned SelectorTree definitions and
 uploads a sanitized rendered DOM to MinIO. The Burbot API and Prefect worker
 require no browser installation.
 
+## Trusted local mode
+
+Use trusted mode on a controlled local Burbot installation with a dedicated
+Firefox profile. The scheduler enrolls HTML Sources with public site URLs in
+`UNDISCOVERED`, `FAILED`, `ACTIVE` or `DEGRADED` state. A disabled schedule
+or explicit monitoring revocation prevents automatic checks. The scheduler
+also finds Sources registered after startup. PDF and XLSX counts appear under
+`unsupportedSourceTypes` in the monitoring overview.
+
+Firefox validates the rendered page. For a previously undiscovered or failed
+Source, Prefect records discovery, validation and activation in Source history
+when it commits the first verified snapshot. A browser failure remains visible
+in check history during lease retries. After three failed attempts, a newly
+discovered Source moves to `FAILED` and stays eligible at its next scheduled
+check. Existing schedules keep their settings. Newly created schedules use a
+24-hour interval, with the same configurable spread for first checks.
+
+Each job carries the exact entry origin of its Source URL. Firefox checks both
+top-level redirects and page dependencies using public DNS, ordinary HTTP(S)
+ports, and GET or HEAD. It bounds navigation to ten top-level requests and
+rejects credentials, sensitive URL parameters, and local, private or internal
+destinations. An HTTPS Source uses HTTPS for its entire check. Set
+`"trustedAllowHttp":true` to admit public HTTP Sources and allow those jobs to
+use HTTP and HTTPS. Firefox performs hostname checks at request time. Use
+network-level egress controls for connection-level enforcement in the monitoring
+profile.
+
+### Deploy and register Firefox
+
+Set this line in the backend's `.env`. The example makes new schedules
+immediately due and limits the active queue to 25 jobs. A trusted agent can
+hold one live capture lease at a time.
+
+```dotenv
+MONITORING_ONBOARDING_CONFIG='{"mode":"trusted","defaultSchedule":{"initialSpreadSeconds":0},"jobBatchSize":10,"maxActiveJobs":25}'
+```
+
+Use the [local stack setup](#run-the-local-stack) for the other settings. On a
+fresh installation, start the stack from the backend checkout.
+
+```bash
+mkdir -p "$HOME/minio/data"
+docker network inspect burbot >/dev/null 2>&1 || docker network create burbot
+docker compose up -d --build
+```
+
+On an existing installation, apply the migration before restarting the API and
+worker. The initialization image is shared with the API and worker.
+
+```bash
+docker compose stop worker
+docker compose build bot
+docker compose run --rm --no-deps initialize alembic upgrade head
+docker compose up -d --no-deps --force-recreate bot worker
+```
+
+Register a trusted Firefox Agent once per profile. These commands use `jq`.
+Keep the returned token private.
+
+```bash
+monitoring_api=http://127.0.0.1:8000
+read -rsp 'Monitoring admin token ' monitoring_token
+printf '\n'
+curl -fsS "$monitoring_api/monitoring/agents/register" \
+  -H "Authorization: Bearer $monitoring_token" \
+  -H 'Content-Type: application/json' \
+  --data '{"name":"Local Firefox","trusted":true}' | jq
+```
+
+From the Firefox extension checkout, start a local build in Firefox 140 or later.
+
+```bash
+npm install --no-package-lock
+npm start
+```
+
+In the extension options, choose **Source monitoring → Trusted local**, enter
+`http://127.0.0.1:8000` as the backend origin, `http://127.0.0.1:9000` as
+the MinIO origin, and the returned `agentToken`. Enable monitoring and grant
+Firefox's requested permissions. Use your configured origins if the ports
+differ. Keep that Firefox instance running for the one-minute polls.
+
+Strict is the default mode. To return to it, set `"mode":"strict"` in
+`MONITORING_ONBOARDING_CONFIG`, recreate the API and worker, and choose
+**Strict** in Firefox. Strict enrollment and agent scopes use the existing
+approval workflow. Verified trusted uploads continue through processing.
+
+### Verify a trusted installation
+
+With Firefox polling, use an existing HTML Source ID or register another
+public HTML Source to verify continuous enrollment.
+
+```bash
+read -rp 'Public HTML Source URL ' monitoring_source_url
+source_id=$(curl -fsS "$monitoring_api/api/v1/sources" \
+  -H 'Content-Type: application/json' \
+  --data "$(jq -nc --arg url "$monitoring_source_url" '{type:"HTML",url:$url}')" | jq -er .id)
+
+curl -fsS "$monitoring_api/monitoring/overview" \
+  -H "Authorization: Bearer $monitoring_token" | jq
+curl -fsS "$monitoring_api/monitoring/sources/$source_id/history" \
+  -H "Authorization: Bearer $monitoring_token" | jq
+docker compose logs --tail=100 worker
+```
+
+After the scheduler and Firefox poll, check for `reason: scheduled` and a
+`schedulingFlowRunId`. A completed capture also has a `processingFlowRunId`
+and a `sourceSnapshotId`. Check a Source with an active SelectorTree to see
+its field evaluations and observation IDs. The database query shows the
+stored hashes and should return zero rows for duplicate active jobs.
+
+```bash
+docker compose exec -T db sh -c 'exec psql -X -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB"' <<'SQL'
+SELECT s.id, s.state, sc.interval_seconds, sc.next_check_at,
+       ss.page_url, ss.content_hash, ss.structure_hash, cr.field_results
+FROM monitoring_jobs AS j
+JOIN source_check_runs AS cr ON cr.job_id = j.id
+JOIN sources AS s ON s.id = j.source_id
+JOIN source_check_schedules AS sc ON sc.source_id = s.id
+JOIN source_snapshots AS ss ON ss.id = j.source_snapshot_id
+WHERE j.status = 'completed'
+ORDER BY j.completed_at DESC LIMIT 10;
+
+SELECT source_id, count(*)
+FROM monitoring_jobs
+WHERE status NOT IN ('completed', 'failed', 'cancelled')
+GROUP BY source_id HAVING count(*) > 1;
+SQL
+```
+
 ## Run the local stack
 
 Compose uses PostgreSQL 18, MinIO and a Prefect 3.9.4 Process work pool. The
@@ -45,7 +175,7 @@ browser-reachable HTTPS public endpoint for remote installations. Serve the API
 over HTTPS and restrict access to the existing Sources, Extraction and Tasks APIs
 as part of the Burbot deployment.
 
-## Bulk onboarding and continuous enrollment
+## Strict mode bulk onboarding and continuous enrollment
 
 Set `MONITORING_ONBOARDING_CONFIG` on both the API and monitoring worker.
 Compose passes it through from `.env`. With no named policies, the scheduler
@@ -86,6 +216,8 @@ advances the execution timestamps using the current interval.
 
 | Configuration | Default | Effect |
 | --- | --- | --- |
+| `mode` | `"strict"` | Use `"trusted"` to enroll public HTML Sources for a trusted Firefox Agent. |
+| `trustedAllowHttp` | `false` | Include public HTTP Sources in trusted mode. |
 | `monitoringEnabled` | `true` | Enables automatic admission of due jobs. Manual requests remain available. |
 | `defaultSchedule.enabled` | `true` | Enables newly created schedules. |
 | `defaultSchedule.intervalSeconds` | `86400` | Cadence for newly created schedules. |
@@ -285,6 +417,8 @@ admission from `Pending` and `Running` states. The monitoring deployments
 use those queue limits in place of deployment concurrency leases.
 
 The worker preserves scheduled processing runs while capacity is busy.
+It limits the number of outstanding processing runs in Prefect to 50.
+Further verified uploads wait in PostgreSQL for dispatch capacity.
 For `Pending` (including `Submitting`), `Running` and `Cancelling`, it
 checks its in-flight submissions and the local process identity. Only an
 orphan in an owned queue is reconciled automatically. A lost submission or
@@ -519,14 +653,12 @@ it when monitoring is disabled. HTML stays out of the outbox.
 
 ## Source access
 
-Approve only public content whose rendered HTML may be stored. The agent uses a
-temporary Firefox container and checks requested origins against both backend and
-local approvals. It allows HTTPS hostnames whose Firefox DNS answers are public,
-validates redirects and disallows authenticated or local sources. Point the agent
-only at trusted backend and S3 endpoints. Isolate the monitoring Firefox
-profile's outbound traffic where an enforced network boundary is required.
-Firefox hostname checks run at the request layer and depend on Firefox's DNS and
-network configuration.
+Monitor public content whose rendered HTML may be stored. The agent uses a
+temporary Firefox container and validates navigation and requests. Strict
+mode checks origins against the backend and Firefox approvals. Trusted mode
+uses the job's entry origin and public navigation policy. Point the agent at
+trusted backend and S3 endpoints. Firefox hostname checks depend on Firefox's
+DNS and network configuration.
 
 ## Verification
 
@@ -536,11 +668,23 @@ role needs `CREATEDB` for the worker tests' isolated databases. Tests drive
 the Firefox protocol through the API and upload to MinIO.
 
 ```bash
+docker run --rm -d --name burbot-monitoring-test-pg \
+  -p 127.0.0.1:55432:5432 -e POSTGRES_USER=burbot -e POSTGRES_PASSWORD=local \
+  -e POSTGRES_DB=burbot_test postgres:18.0
+docker run --rm -d --name burbot-monitoring-test-minio \
+  -p 127.0.0.1:19000:9000 -e MINIO_ROOT_USER=local \
+  -e MINIO_ROOT_PASSWORD=local-test-only cgr.dev/chainguard/minio:latest server /data
+until docker exec burbot-monitoring-test-pg pg_isready -U burbot -d burbot_test; do sleep 1; done
+until curl -fsS http://127.0.0.1:19000/minio/health/live; do sleep 1; done
+
 python -m pip install -e '.[dev,monitoring]'
 export COLLECTIONS_TEST_DATABASE_URL=postgresql+asyncpg://burbot:local@127.0.0.1:55432/burbot_test
 export MONITORING_TEST_S3_URL=http://127.0.0.1:19000
 export MONITORING_TEST_S3_ACCESS_KEY=local
 export MONITORING_TEST_S3_SECRET_KEY=local-test-only
 pytest -q tests/test_monitoring_discovery.py tests/test_monitoring_onboarding.py \
-  tests/test_monitoring_postgres.py tests/test_monitoring_orchestration.py
+  tests/test_monitoring_postgres.py tests/test_monitoring_orchestration.py \
+  tests/test_monitoring_trusted.py
+
+docker stop burbot-monitoring-test-pg burbot-monitoring-test-minio
 ```

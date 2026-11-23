@@ -33,6 +33,7 @@ class Approval(PortableModel):
 class RegisterAgent(PortableModel):
     name: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=150)]
     source_ids: list[Identifier] = Field(default_factory=list, max_length=250)
+    trusted: bool = False
 
 
 class AgentSourcesUpdate(PortableModel):
@@ -93,7 +94,13 @@ class Completion(UploadRequest):
 
 class Failure(Lease):
     code: Literal[
-        "NAVIGATION_FAILED", "PAGE_TIMEOUT", "CAPTURE_FAILED", "UPLOAD_FAILED", "CANCELLED"
+        "NAVIGATION_FAILED",
+        "PAGE_TIMEOUT",
+        "HTTP_ERROR",
+        "UNSUPPORTED_CONTENT_TYPE",
+        "CAPTURE_FAILED",
+        "UPLOAD_FAILED",
+        "CANCELLED",
     ]
 
 
@@ -103,6 +110,11 @@ class PinnedSelector(PortableModel):
     version_no: int
     definition_fingerprint: Digest
     definition: SelectorVersionDefinition
+
+
+class TrustedNavigation(PortableModel):
+    mode: Literal["trusted"] = "trusted"
+    allow_http: bool
 
 
 class ClaimedJob(PortableModel):
@@ -115,6 +127,7 @@ class ClaimedJob(PortableModel):
     lease_expires_at: datetime
     representation: Literal["rendered_dom"] = "rendered_dom"
     selectors: list[PinnedSelector]
+    navigation: TrustedNavigation | None = None
 
 
 class UploadURL(PortableModel):
