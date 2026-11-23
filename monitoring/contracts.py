@@ -1,7 +1,7 @@
 """Browser Agent wire contracts and versioned snapshot representation."""
 
 from datetime import datetime
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 from uuid import UUID
 
 from pydantic import Field, StringConstraints, model_validator
@@ -13,6 +13,7 @@ from extraction.schemas.selector_tree import (
     SelectorVersionDefinition,
 )
 from monitoring.onboarding_config import PolicyName
+from tasks.schemas.models import TaskStatus
 
 REPRESENTATION = "rendered_dom"
 REPRESENTATION_VERSION = "firefox-dom-1"
@@ -144,3 +145,45 @@ class JobStatus(PortableModel):
     source_snapshot_id: int | None
     extraction_run_id: int | None
     error_code: str | None
+
+
+class ReviewContext(PortableModel):
+    task_id: int
+    task_status: TaskStatus
+    source_id: int
+    monitoring_job_id: UUID
+    change_timestamp: datetime | None
+    requires_review: bool
+
+
+class FieldReview(ReviewContext):
+    review_type: Literal["field"]
+    source_snapshot_id: int | None
+    business_object_field_id: int | None
+    selector_version_id: int | None
+    selector_version_uuid: UUID | None
+    canonical_value_id: int | None
+    canonical_value: Any
+    previous_observation_id: int | None
+    observation_id: int | None
+    previous_evidence: str | list[str] | None
+    current_evidence: str | list[str] | None
+    evaluation_id: int | None
+    baseline_observation_id: int | None
+    comparison: str | None
+    evidence_status: str | None
+    evidence_changed: bool | None
+
+
+class SourceReview(ReviewContext):
+    review_type: Literal["source"]
+    change_status: str
+    previous_snapshot_id: int | None
+    current_snapshot_id: int
+    previous_content_hash: str | None
+    current_content_hash: str | None
+    previous_structure_hash: str | None
+    current_structure_hash: str | None
+
+
+ReviewDetail = Annotated[FieldReview | SourceReview, Field(discriminator="review_type")]

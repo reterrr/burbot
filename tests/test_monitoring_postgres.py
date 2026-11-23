@@ -5,11 +5,12 @@ import os
 from copy import deepcopy
 from datetime import timedelta
 from hashlib import sha256
+from pathlib import Path
+from runpy import run_path
 from uuid import UUID, uuid4
 
 import pytest
 import pytest_asyncio
-from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 from test_collections_postgres import database as database
@@ -79,19 +80,17 @@ async def minio(monkeypatch):
 async def client(domain, monkeypatch):
     monkeypatch.setenv("MONITORING_ADMIN_TOKEN", OPERATOR["Authorization"].split()[1])
     monkeypatch.setenv("DCKR_DATABASE_URL", os.environ["COLLECTIONS_TEST_DATABASE_URL"])
-    from extraction.api.routes import capture_router
-    from monitoring.api import router
     from shared.database import get_session
+    from tasks.api.database import get_session as get_task_session
 
-    app = FastAPI()
-    app.include_router(router)
-    app.include_router(capture_router)
+    app = run_path(str(Path(__file__).resolve().parents[1] / "main.py"))["api"]
 
     async def sessions():
         async with domain.factory() as session:
             yield session
 
     app.dependency_overrides[get_session] = sessions
+    app.dependency_overrides[get_task_session] = sessions
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as api:
         yield api
 
@@ -140,6 +139,12 @@ async def history(client, source_id):
 async def review(client, task_id):
     response = await client.get(f"/monitoring/reviews/{task_id}", headers=OPERATOR)
     assert response.status_code == 200, response.text
+    return response.json()
+
+
+async def tasks_api(client, path, *, method="GET", expected=200, **kwargs):
+    response = await client.request(method, f"/tasks{path}", headers=OPERATOR, **kwargs)
+    assert response.status_code == expected, response.text
     return response.json()
 
 
@@ -327,20 +332,62 @@ async def test_verified_upload_replay_cleanup_and_snapshot_compatibility(domain,
     checks = await history(client, row.id)
     assert checks[0]["changeStatus"] == "INITIAL_FETCH"
     assert checks[0]["processingFlowRunId"] == "retry-run"
+    assert await tasks_api(client, "/inbox/count") == 0
     assert (await monitor(client, domain, headers, row.id, html))["changeStatus"] == "UNCHANGED"
     assert await domain.count(SourceSnapshot, source_id=row.id) == 1
-    assert (await monitor(client, domain, headers, row.id, b"<p>Second</p>"))[
-        "changeStatus"
-    ] == "CONTENT_CHANGED"
-    assert (await monitor(client, domain, headers, row.id, b"<p>Second</p>", "b" * 64))[
-        "changeStatus"
-    ] == "STRUCTURE_CHANGED"
+    assert await domain.count(Workflow, source_id=row.id) == 1
+    assert await tasks_api(client, "/inbox/count") == 0
+
+    second_html = b"<p>Second</p>"
+    changed = await monitor(client, domain, headers, row.id, second_html)
+    assert changed["changeStatus"] == "CONTENT_CHANGED" and changed["fields"] == []
+    inbox = await tasks_api(client, "/inbox")
+    content_task = inbox["items"][0]["task"]
+    task_id = content_task["id"]
+    assert inbox["total"] == 1 and content_task["reason"] == "source_changed"
+    assert content_task["type"] == "review_source_change"
+    expected = {
+        "taskId": task_id,
+        "taskStatus": "pending",
+        "sourceId": row.id,
+        "monitoringJobId": changed["jobId"],
+        "changeTimestamp": changed["acquiredAt"].replace("+00:00", "Z"),
+        "requiresReview": True,
+        "reviewType": "source",
+        "changeStatus": "CONTENT_CHANGED",
+        "previousSnapshotId": checks[0]["sourceSnapshotId"],
+        "currentSnapshotId": changed["sourceSnapshotId"],
+        "previousContentHash": sha256(html).hexdigest(),
+        "currentContentHash": sha256(second_html).hexdigest(),
+        "previousStructureHash": "a" * 64,
+        "currentStructureHash": "a" * 64,
+    }
+    assert await review(client, task_id) == expected
+    refs = (await tasks_api(client, f"/{task_id}"))["references"]
+    assert {(ref["reference_type"], ref["reference_id"]) for ref in refs} == {
+        ("source", row.id),
+        ("source_snapshot", checks[0]["sourceSnapshotId"]),
+        ("source_snapshot", changed["sourceSnapshotId"]),
+    }
+    assert await domain.count(FieldObservation) == 0
+
+    structure = await monitor(client, domain, headers, row.id, second_html, "b" * 64)
+    assert structure["changeStatus"] == "STRUCTURE_CHANGED"
+    structure_task = (await tasks_api(client, "/inbox"))["items"][0]["task"]
+    structure_review = await review(client, structure_task["id"])
+    assert structure_review["previousContentHash"] == structure_review["currentContentHash"]
+    assert structure_review["previousStructureHash"] == "a" * 64
+    assert structure_review["currentStructureHash"] == "b" * 64
+    both = await monitor(client, domain, headers, row.id, b"<p>Third</p>", "c" * 64)
+    assert both["changeStatus"] == "CONTENT_AND_STRUCTURE_CHANGED"
+    assert await review(client, task_id) == expected  # Carry preserves original evidence.
     async with domain.factory.begin() as session:
         prior = await session.scalar(
             select(SourceSnapshot).order_by(SourceSnapshot.id.desc()).limit(1)
         )
         prior.representation_version = "other-version"
     assert (await monitor(client, domain, headers, row.id, html))["changeStatus"] == "INITIAL_FETCH"
+    assert await tasks_api(client, "/inbox/count") == 3
 
 
 async def add_tree(client, domain, source_id, slot, definition, etag=None):
@@ -494,6 +541,32 @@ async def test_detected_evidence_baseline_version_pins_and_review_carry(domain, 
             workflow.status == "active" and workflow.source_snapshot_id == again["sourceSnapshotId"]
         )
 
+    back = await monitor(client, domain, headers, row.id, html)
+    changed_task_id = fields[0]["taskId"]
+    assert back["fields"][0]["taskId"] == changed_task_id
+    done = await tasks_api(
+        client, f"/{changed_task_id}/status", method="PATCH", json={"status": "completed"}
+    )
+    assert done["status"] == "completed"
+    completed = await review(client, changed_task_id)
+    assert completed["canonicalValueId"] == slot.value_id
+    assert completed["canonicalValue"] == "B2B"
+    assert completed["taskStatus"] == "completed" and not completed["requiresReview"]
+    assert completed["sourceId"] == row.id
+    assert completed["selectorVersionId"] == fields[0]["selectorVersionId"]
+    assert completed["selectorVersionUuid"] == version["uuid"]
+    assert completed["observationId"] == fields[0]["observationId"]
+    assert completed["baselineObservationId"] == completed["previousObservationId"]
+    assert completed["previousObservationId"] == old_observation_id
+    assert completed["comparison"] == "accepted_baseline"
+    assert completed["changeTimestamp"] and completed["monitoringJobId"] == pinned["jobId"]
+    async with domain.factory() as session:
+        detected = await session.get(FieldObservation, fields[0]["observationId"])
+        assert detected.status == ObservationStatus.DETECTED
+    assert await domain.count(
+        BusinessObjectFieldValue, business_object_field_id=slot.object_field_id
+    ) == 1
+
     # A review reads the live canonical value after an explicit business edit.
     await domain.call(
         lambda service: service.data.assign_object_fields_values(
@@ -502,23 +575,183 @@ async def test_detected_evidence_baseline_version_pins_and_review_carry(domain, 
             expected_value_ids={slot.object_field_id: slot.value_id},
         )
     )
-    updated_review = await review(client, fields[0]["taskId"])
+    updated_review = await review(client, changed_task_id)
     assert updated_review["canonicalValue"] == "B2C"
     assert updated_review["previousEvidence"] == original_evidence
     assert updated_review["currentEvidence"] == "New"
 
-    back = await monitor(client, domain, headers, row.id, html)
-    assert back["fields"][0]["taskId"] == fields[0]["taskId"]
-    async with domain.factory.begin() as session:
-        done = await session.get(Task, back["fields"][0]["taskId"])
-        done.status = TaskStatus.COMPLETED
-        done.completed_at = utc_now()
+    await monitor(client, domain, headers, row.id, b"<p>still no match</p>")
     for _ in range(2):
         same = await monitor(client, domain, headers, row.id, html)
-        assert same["fields"][0]["taskId"] == done.id
+        assert same["fields"][0]["taskId"] == changed_task_id
         assert same["fields"][0]["requiresReview"] is False
     assert await domain.count(Task) == 3
-    assert (await review(client, done.id))["requiresReview"] is False
+
+
+async def test_source_fallback_when_eligible_fields_are_unchanged(domain, client, minio):
+    row = await source(domain, client)
+    slot = domain.slot(await domain.make(name="Canonical"), "name")
+    await add_tree(client, domain, row.id, slot, tree(recipe(part(css("#name")))))
+    headers, _ = await agent(client, row.id)
+    initial = b'<p id="name">First</p>'
+    await monitor(client, domain, headers, row.id, initial)
+    changed = initial.replace(b"First", b"Second")
+    first_change = await monitor(client, domain, headers, row.id, changed)
+    assert first_change["fields"][0]["status"] == "FIELD_CHANGED"
+    assert await domain.count(Task, reason=TaskReason.SOURCE_CHANGED) == 0
+
+    document_only = changed + b"<footer>Other content</footer>"
+    second_change = await monitor(client, domain, headers, row.id, document_only, "b" * 64)
+    assert second_change["fields"][0]["status"] == "FIELD_UNCHANGED"
+    assert second_change["fields"][0]["taskId"] is None
+    source_items = (await tasks_api(client, "/inbox", params={"reason": "source_changed"}))["items"]
+    assert len(source_items) == 1
+    detail = await review(client, source_items[0]["task"]["id"])
+    assert detail["changeStatus"] == "CONTENT_AND_STRUCTURE_CHANGED"
+    assert detail["previousSnapshotId"] == first_change["sourceSnapshotId"]
+    assert detail["currentSnapshotId"] == second_change["sourceSnapshotId"]
+
+    distinct = document_only.replace(b"Second", b"Third")
+    latest = await monitor(client, domain, headers, row.id, distinct, "b" * 64)
+    assert latest["fields"][0]["status"] == "FIELD_CHANGED"
+    assert latest["fields"][0]["taskId"] != first_change["fields"][0]["taskId"]
+    assert await domain.count(Task, reason=TaskReason.VALUE_CHANGED) == 2
+    assert await domain.count(Task, reason=TaskReason.SOURCE_CHANGED) == 1
+
+
+async def test_concurrent_processing_and_recurring_source_change(domain, client, minio):
+    row = await source(domain, client)
+    headers, _ = await agent(client, row.id)
+    original, changed = b"<p>First</p>", b"<p>Second</p>"
+    await monitor(client, domain, headers, row.id, original)
+    await enqueue(client, row.id)
+    job = await claim(client, headers)
+    grant, data = await prepare(client, headers, job, changed, "a" * 64)
+    await put(grant, changed)
+    await complete(client, headers, job, data)
+    identity = UUID(job["jobId"])
+    async with domain.factory.begin() as session:
+        assert await MonitoringProcessor(session).acquire(identity)
+
+    async def finish():
+        async with domain.factory.begin() as session:
+            return await MonitoringProcessor(session).process(identity)
+
+    assert sorted(await asyncio.gather(finish(), finish())) == [False, True]
+    assert await domain.count(Workflow, source_id=row.id) == 2
+    assert await domain.count(SourceSnapshot, source_id=row.id) == 2
+    assert await domain.count(Task, reason=TaskReason.SOURCE_CHANGED) == 1
+    task_id = (await tasks_api(client, "/inbox"))["items"][0]["task"]["id"]
+
+    await monitor(client, domain, headers, row.id, original)
+    await monitor(client, domain, headers, row.id, changed)
+    assert await domain.count(Task, reason=TaskReason.SOURCE_CHANGED) == 2
+    assert await tasks_api(client, "/inbox/count") == 2
+    await tasks_api(client, f"/{task_id}/status", method="PATCH", json={"status": "completed"})
+    await monitor(client, domain, headers, row.id, original)
+    await monitor(client, domain, headers, row.id, changed)
+    assert await domain.count(Task, reason=TaskReason.SOURCE_CHANGED) == 2
+    assert await tasks_api(client, "/inbox/count") == 1
+    assert not (await review(client, task_id))["requiresReview"]
+
+
+async def test_task_inbox_filters_status_history_and_authorization(domain, client):
+    row, other = await source(domain, client), await source(domain, client)
+    first = SourceSnapshot(source_id=row.id)
+    successor = SourceSnapshot(source_id=row.id)
+    elsewhere = SourceSnapshot(source_id=other.id)
+    async with domain.factory.begin() as session:
+        session.add_all([first, successor, elsewhere])
+
+    def task_body(snapshot, task_type="review_source_change", reason="value_changed"):
+        return {
+            "source_id": snapshot.source_id,
+            "source_snapshot_id": snapshot.id,
+            "type": task_type,
+            "reason": reason,
+        }
+
+    async def start_workflow(snapshot, *tasks):
+        return await tasks_api(
+            client,
+            f"/sources/{snapshot.source_id}/workflows",
+            method="POST",
+            expected=201,
+            json={"source_snapshot_id": snapshot.id, "tasks": tasks},
+        )
+
+    initial = await start_workflow(first, task_body(first), task_body(first, "resolve_observation"))
+    await start_workflow(elsewhere, task_body(elsewhere))
+    workflow_id = initial["workflow"]["id"]
+    first_task, stale_task = [task["id"] for task in initial["tasks"]]
+    second_task = (await tasks_api(
+        client,
+        f"/workflows/{workflow_id}/tasks",
+        method="POST",
+        expected=201,
+        json=task_body(first),
+    ))["id"]
+    await tasks_api(
+        client,
+        f"/workflows/{workflow_id}/tasks",
+        method="POST",
+        expected=409,
+        json=task_body(successor),
+    )
+    async with domain.factory.begin() as session:
+        created_at = utc_now()
+        for task_id in (first_task, second_task):
+            (await session.get(Task, task_id)).created_at = created_at
+
+    filters = {"source_id": row.id, "type": "review_source_change", "reason": "value_changed"}
+    assert await tasks_api(client, "/inbox/count") == 4
+    assert await tasks_api(client, "/inbox/count", params=filters) == 2
+    for offset, task_id in enumerate([second_task, first_task]):
+        page = await tasks_api(client, "/inbox", params={**filters, "limit": 1, "offset": offset})
+        assert (page["total"], page["limit"], page["offset"]) == (2, 1, offset)
+        assert [item["task"]["id"] for item in page["items"]] == [task_id]
+    end = await tasks_api(client, "/inbox", params={**filters, "offset": 2})
+    assert end["total"] == 2 and end["items"] == []
+    await tasks_api(client, "/inbox/count", params={"source_id": 0}, expected=422)
+
+    async def transition(task_id, status, expected=200):
+        return await tasks_api(
+            client, f"/{task_id}/status", method="PATCH", expected=expected,
+            json={"status": status},
+        )
+
+    await transition(first_task, "in_progress")
+    failed = await transition(first_task, "failed")
+    assert failed["completed_at"] and failed["started_at"]
+    pending = await transition(first_task, "pending")
+    assert pending["completed_at"] is None and pending["started_at"] is None
+    await transition(first_task, "completed")
+    await transition(first_task, "pending", 422)
+    await transition(second_task, "cancelled")
+    assert await tasks_api(client, "/inbox/count", params=filters) == 0
+
+    active = await start_workflow(successor)
+    workflows = (await tasks_api(client, f"/sources/{row.id}/workflows"))["items"]
+    assert [(w["id"], w["status"]) for w in workflows] == [
+        (active["workflow"]["id"], "active"), (workflow_id, "superseded")
+    ]
+    old = (await tasks_api(client, f"/workflows/{workflow_id}/tasks"))["items"]
+    assert {task["id"]: task["status"] for task in old} == {
+        first_task: "completed", second_task: "cancelled", stale_task: "cancelled",
+    }
+    assert (await tasks_api(client, f"/{stale_task}"))["workflow_id"] == workflow_id
+    await transition(stale_task, "in_progress", 409)
+    assert await tasks_api(client, "/inbox/count") == 1
+
+    browser_headers, _ = await agent(client, row.id)
+    for headers in ({}, browser_headers):
+        for path in ("inbox", "inbox/count", str(first_task), f"workflows/{workflow_id}/tasks"):
+            denied = await client.get(f"/tasks/{path}", headers=headers)
+            assert denied.status_code == 401 and denied.headers["www-authenticate"] == "Bearer"
+        denied = await client.patch(
+            f"/tasks/{first_task}/status", headers=headers, json={"status": "cancelled"}
+        )
+        assert denied.status_code == 401
 
 
 async def test_initial_evidence_uses_only_previous_observation_of_same_selector(
@@ -697,6 +930,31 @@ async def test_monitoring_preserves_success_for_evidence_in_different_formats(
                 assert (await repo.observation_value(evidence)).raw_value == raw
     assert await domain.count(FieldObservation) == 7
     assert await domain.count(ExtractionIssue, code="VALUE_NOT_FOUND") == 2
+
+
+@pytest.mark.parametrize(
+    "locator,outcome,evidence_status,reason",
+    [
+        (".same", "FIELD_AMBIGUOUS", "AMBIGUOUS", "value_conflict"),
+        ("[", "FIELD_EXTRACTION_FAILED", "EXTRACTION_FAILED", "extraction_failed"),
+    ],
+)
+async def test_selector_evaluation_failure_review(
+    domain, client, minio, locator, outcome, evidence_status, reason
+):
+    row = await source(domain, client)
+    await add_tree(client, domain, row.id, None, tree(recipe(part(css(locator)))))
+    headers, _ = await agent(client, row.id)
+    html = b'<p class="same">One</p><p class="same">Two</p>'
+    result = (await monitor(client, domain, headers, row.id, html))["fields"][0]
+    assert result["status"] == outcome and result["observationId"] is None
+    task_id = result["taskId"]
+    assert (await tasks_api(client, f"/{task_id}"))["reason"] == reason
+    detail = await review(client, task_id)
+    assert detail["reviewType"] == "field" and detail["evidenceStatus"] == evidence_status
+    assert detail["currentEvidence"] is None
+    assert detail["evaluationId"] == result["evaluationId"]
+    assert detail["selectorVersionId"] == result["selectorVersionId"]
 
 
 async def test_selector_failure_and_terminal_processing_failure_create_reviews(

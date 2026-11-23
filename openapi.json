@@ -2329,8 +2329,13 @@
           "tasks"
         ],
         "summary": "Start Source Workflow",
-        "description": "Start processing a source snapshot.\n\nIf an older ACTIVE workflow exists:\n\n    - old workflow becomes SUPERSEDED\n    - unfinished old tasks become CANCELLED\n    - a new ACTIVE workflow is created\n\nRepeating the call for the same snapshot is idempotent.",
+        "description": "Start processing a source snapshot.\n\nA new snapshot supersedes the old active workflow. Pending and in-progress\nmonitoring tasks move to the new workflow. Other unfinished tasks are cancelled.\n\nRepeating the call for the same snapshot is idempotent.",
         "operationId": "start_source_workflow_tasks_sources__source_id__workflows_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "parameters": [
           {
             "name": "source_id",
@@ -2382,6 +2387,11 @@
         ],
         "summary": "List Source Workflows",
         "operationId": "list_source_workflows_tasks_sources__source_id__workflows_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "parameters": [
           {
             "name": "source_id",
@@ -2448,6 +2458,11 @@
         ],
         "summary": "Get Current Source Workflow",
         "operationId": "get_current_source_workflow_tasks_sources__source_id__workflows_current_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "parameters": [
           {
             "name": "source_id",
@@ -2491,6 +2506,11 @@
         ],
         "summary": "Get Workflow",
         "operationId": "get_workflow_tasks_workflows__workflow_id__get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "parameters": [
           {
             "name": "workflow_id",
@@ -2534,6 +2554,11 @@
         ],
         "summary": "List Workflow Tasks",
         "operationId": "list_workflow_tasks_tasks_workflows__workflow_id__tasks_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "parameters": [
           {
             "name": "workflow_id",
@@ -2598,6 +2623,11 @@
         ],
         "summary": "Create Task",
         "operationId": "create_task_tasks_workflows__workflow_id__tasks_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "parameters": [
           {
             "name": "workflow_id",
@@ -2650,8 +2680,65 @@
           "tasks"
         ],
         "summary": "Get Inbox Count",
-        "description": "Useful for frontend notification badge.",
+        "description": "Count actionable tasks matching the Inbox filters.",
         "operationId": "get_inbox_count_tasks_inbox_count_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "source_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "maximum": 9223372036854775807,
+                  "exclusiveMinimum": 0
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Source Id"
+            }
+          },
+          {
+            "name": "type",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/TaskType"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Type"
+            }
+          },
+          {
+            "name": "reason",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/TaskReason"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Reason"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Successful Response",
@@ -2684,6 +2771,11 @@
         "summary": "Get Inbox",
         "description": "Only actionable tasks belonging to ACTIVE workflows.\n\nTasks from superseded source snapshots never appear here.",
         "operationId": "get_inbox_tasks_inbox_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "parameters": [
           {
             "name": "offset",
@@ -2706,6 +2798,56 @@
               "minimum": 1,
               "default": 20,
               "title": "Limit"
+            }
+          },
+          {
+            "name": "source_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "maximum": 9223372036854775807,
+                  "exclusiveMinimum": 0
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Source Id"
+            }
+          },
+          {
+            "name": "type",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/TaskType"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Type"
+            }
+          },
+          {
+            "name": "reason",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/TaskReason"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Reason"
             }
           }
         ],
@@ -2739,6 +2881,11 @@
         ],
         "summary": "Get Task",
         "operationId": "get_task_tasks__task_id__get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "parameters": [
           {
             "name": "task_id",
@@ -2782,6 +2929,11 @@
         ],
         "summary": "Change Task Status",
         "operationId": "change_task_status_tasks__task_id__status_patch",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "parameters": [
           {
             "name": "task_id",
@@ -2835,6 +2987,11 @@
         ],
         "summary": "Add Task Reference",
         "operationId": "add_task_reference_tasks__task_id__references_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "parameters": [
           {
             "name": "task_id",
@@ -3417,6 +3574,68 @@
           },
           "422": {
             "description": "Invalid extraction graph or business binding"
+          }
+        }
+      }
+    },
+    "/monitoring/reviews/{task_id}": {
+      "get": {
+        "tags": [
+          "monitoring"
+        ],
+        "summary": "Get Review",
+        "operationId": "get_review_monitoring_reviews__task_id__get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Task Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/FieldReview"
+                    },
+                    {
+                      "$ref": "#/components/schemas/SourceReview"
+                    }
+                  ],
+                  "discriminator": {
+                    "propertyName": "reviewType",
+                    "mapping": {
+                      "field": "#/components/schemas/FieldReview",
+                      "source": "#/components/schemas/SourceReview"
+                    }
+                  },
+                  "title": "Response Get Review Monitoring Reviews  Task Id  Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
           }
         }
       }
@@ -8460,6 +8679,373 @@
           "cell_range"
         ],
         "title": "XLSXMetadata"
+      },
+      "FieldReview": {
+        "properties": {
+          "taskId": {
+            "type": "integer",
+            "title": "Taskid"
+          },
+          "taskStatus": {
+            "$ref": "#/components/schemas/TaskStatus"
+          },
+          "sourceId": {
+            "type": "integer",
+            "title": "Sourceid"
+          },
+          "monitoringJobId": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Monitoringjobid"
+          },
+          "changeTimestamp": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Changetimestamp"
+          },
+          "requiresReview": {
+            "type": "boolean",
+            "title": "Requiresreview"
+          },
+          "reviewType": {
+            "type": "string",
+            "const": "field",
+            "title": "Reviewtype"
+          },
+          "sourceSnapshotId": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sourcesnapshotid"
+          },
+          "businessObjectFieldId": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Businessobjectfieldid"
+          },
+          "selectorVersionId": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Selectorversionid"
+          },
+          "selectorVersionUuid": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Selectorversionuuid"
+          },
+          "canonicalValueId": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Canonicalvalueid"
+          },
+          "canonicalValue": {
+            "title": "Canonicalvalue"
+          },
+          "previousObservationId": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Previousobservationid"
+          },
+          "observationId": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Observationid"
+          },
+          "previousEvidence": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Previousevidence"
+          },
+          "currentEvidence": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Currentevidence"
+          },
+          "evaluationId": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evaluationid"
+          },
+          "baselineObservationId": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Baselineobservationid"
+          },
+          "comparison": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Comparison"
+          },
+          "evidenceStatus": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evidencestatus"
+          },
+          "evidenceChanged": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evidencechanged"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "taskId",
+          "taskStatus",
+          "sourceId",
+          "monitoringJobId",
+          "changeTimestamp",
+          "requiresReview",
+          "reviewType",
+          "sourceSnapshotId",
+          "businessObjectFieldId",
+          "selectorVersionId",
+          "selectorVersionUuid",
+          "canonicalValueId",
+          "canonicalValue",
+          "previousObservationId",
+          "observationId",
+          "previousEvidence",
+          "currentEvidence",
+          "evaluationId",
+          "baselineObservationId",
+          "comparison",
+          "evidenceStatus",
+          "evidenceChanged"
+        ],
+        "title": "FieldReview"
+      },
+      "SourceReview": {
+        "properties": {
+          "taskId": {
+            "type": "integer",
+            "title": "Taskid"
+          },
+          "taskStatus": {
+            "$ref": "#/components/schemas/TaskStatus"
+          },
+          "sourceId": {
+            "type": "integer",
+            "title": "Sourceid"
+          },
+          "monitoringJobId": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Monitoringjobid"
+          },
+          "changeTimestamp": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Changetimestamp"
+          },
+          "requiresReview": {
+            "type": "boolean",
+            "title": "Requiresreview"
+          },
+          "reviewType": {
+            "type": "string",
+            "const": "source",
+            "title": "Reviewtype"
+          },
+          "changeStatus": {
+            "type": "string",
+            "title": "Changestatus"
+          },
+          "previousSnapshotId": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Previoussnapshotid"
+          },
+          "currentSnapshotId": {
+            "type": "integer",
+            "title": "Currentsnapshotid"
+          },
+          "previousContentHash": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Previouscontenthash"
+          },
+          "currentContentHash": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Currentcontenthash"
+          },
+          "previousStructureHash": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Previousstructurehash"
+          },
+          "currentStructureHash": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Currentstructurehash"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "taskId",
+          "taskStatus",
+          "sourceId",
+          "monitoringJobId",
+          "changeTimestamp",
+          "requiresReview",
+          "reviewType",
+          "changeStatus",
+          "previousSnapshotId",
+          "currentSnapshotId",
+          "previousContentHash",
+          "currentContentHash",
+          "previousStructureHash",
+          "currentStructureHash"
+        ],
+        "title": "SourceReview"
+      }
+    },
+    "securitySchemes": {
+      "HTTPBearer": {
+        "type": "http",
+        "scheme": "bearer"
       }
     }
   }

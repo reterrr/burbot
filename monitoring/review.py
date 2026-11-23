@@ -8,9 +8,18 @@ from business_layer.schemas.models import BusinessObjectField
 from business_layer.services.data import DataService
 from extraction.schemas.models import FieldObservation
 from extraction.services.repositories import ExtractionRepository
-from monitoring.models import SourceCheckRun
+from monitoring.models import MonitoringJob, SourceCheckRun
 from monitoring.security import MonitoringError
-from tasks.schemas.models import Task, TaskReference, TaskReferenceType, TaskStatus
+from sources.schemas.models import SourceSnapshot
+from tasks.schemas.models import (
+    Task,
+    TaskReason,
+    TaskReference,
+    TaskReferenceType,
+    TaskStatus,
+    Workflow,
+    WorkflowStatus,
+)
 
 OPEN_REVIEW_STATUSES = (TaskStatus.PENDING, TaskStatus.IN_PROGRESS)
 
@@ -46,24 +55,69 @@ async def observation_text(repo, observation_id):
     return values[0] if len(values) == 1 else values
 
 
+async def source_review_detail(session, job, check, task_id):
+    previous_id = await session.scalar(
+        select(TaskReference.reference_id)
+        .where(
+            TaskReference.task_id == task_id,
+            TaskReference.reference_type == TaskReferenceType.SOURCE_SNAPSHOT,
+            TaskReference.metadata_json["snapshotPosition"].as_string() == "previous",
+        )
+        .order_by(TaskReference.id)
+        .limit(1)
+    )
+    previous = await session.get(SourceSnapshot, previous_id) if previous_id is not None else None
+    current = await session.get(SourceSnapshot, job.source_snapshot_id)
+    return {
+        "reviewType": "source",
+        "changeStatus": check.change_status,
+        "previousSnapshotId": previous_id,
+        "currentSnapshotId": current.id,
+        "previousContentHash": previous.content_hash if previous else None,
+        "currentContentHash": current.content_hash,
+        "previousStructureHash": previous.structure_hash if previous else None,
+        "currentStructureHash": current.structure_hash,
+    }
+
+
 async def review_detail(session, task_id):
-    task = await session.get(Task, task_id)
-    metadata = (task.metadata_json or {}) if task else {}
+    row = (
+        await session.execute(
+            select(Task, Workflow.status)
+            .join(Workflow, Workflow.id == Task.workflow_id)
+            .where(Task.id == task_id)
+        )
+    ).one_or_none()
+    if row is None:
+        raise MonitoringError(404, "MONITORING_REVIEW_NOT_FOUND")
+    task, workflow_status = row
+    metadata = task.metadata_json or {}
     if not metadata.get("monitoringKey") or not metadata.get("monitoringJobId"):
         raise MonitoringError(404, "MONITORING_REVIEW_NOT_FOUND")
     try:
         job_id = UUID(metadata["monitoringJobId"])
     except (ValueError, TypeError, AttributeError):
         raise MonitoringError(404, "MONITORING_REVIEW_NOT_FOUND") from None
+    job = await session.get(MonitoringJob, job_id)
     check = await session.get(SourceCheckRun, job_id)
-    field = (
-        next(
-            (row for row in (check.field_results or []) if row.get("taskId") == task_id),
-            None,
-        )
-        if check
-        else None
-    )
+    if job is None or check is None:
+        raise MonitoringError(404, "MONITORING_REVIEW_NOT_FOUND")
+    context = {
+        "taskId": task.id,
+        "taskStatus": task.status,
+        "sourceId": job.source_id,
+        "monitoringJobId": job_id,
+        "changeTimestamp": check.acquired_at,
+        "requiresReview": (
+            workflow_status == WorkflowStatus.ACTIVE and task.status in OPEN_REVIEW_STATUSES
+        ),
+    }
+    if task.reason == TaskReason.SOURCE_CHANGED:
+        if job.source_snapshot_id is None:
+            raise MonitoringError(404, "MONITORING_REVIEW_NOT_FOUND")
+        return {**context, **await source_review_detail(session, job, check, task_id)}
+
+    field = next((row for row in check.field_results or [] if row.get("taskId") == task_id), None)
     if field is None:
         raise MonitoringError(404, "MONITORING_REVIEW_NOT_FOUND")
 
@@ -88,9 +142,12 @@ async def review_detail(session, task_id):
     current = field.get("observationId")
     repo = ExtractionRepository(session)
     return {
-        "taskId": task.id,
-        "taskStatus": task.status,
+        **context,
+        "reviewType": "field",
+        "sourceSnapshotId": job.source_snapshot_id,
         "businessObjectFieldId": slot_id,
+        "selectorVersionId": field.get("selectorVersionId"),
+        "selectorVersionUuid": field.get("selectorVersionUuid"),
         "canonicalValueId": canonical.value_id if canonical else None,
         "canonicalValue": canonical.value if canonical else None,
         "previousObservationId": previous,
@@ -102,5 +159,4 @@ async def review_detail(session, task_id):
         "comparison": field.get("comparison", "accepted_baseline" if previous else None),
         "evidenceStatus": field.get("evidenceStatus", EVIDENCE_STATUS.get(field["status"])),
         "evidenceChanged": field.get("evidenceChanged", evidence_changed(field["status"])),
-        "requiresReview": task.status in OPEN_REVIEW_STATUSES,
     }

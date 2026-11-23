@@ -67,11 +67,8 @@ async def start_source_workflow(
     """
     Start processing a source snapshot.
 
-    If an older ACTIVE workflow exists:
-
-        - old workflow becomes SUPERSEDED
-        - unfinished old tasks become CANCELLED
-        - a new ACTIVE workflow is created
+    A new snapshot supersedes the old active workflow. Pending and in-progress
+    monitoring tasks move to the new workflow. Other unfinished tasks are cancelled.
 
     Repeating the call for the same snapshot is idempotent.
     """
@@ -153,7 +150,7 @@ async def create_task(
         request: dto.TaskCreateRequest,
         service: TasksServiceDep,
 ) -> dto.TaskDetailResponse:
-    return await service.create_task(
+    return await service.create_workflow_task(
         workflow_id,
         request,
     )
@@ -170,12 +167,13 @@ async def create_task(
 )
 async def get_inbox_count(
         service: TasksServiceDep,
+        query: Annotated[dto.InboxFilters, Query()],
 ) -> int:
     """
-    Useful for frontend notification badge.
+    Count actionable tasks matching the Inbox filters.
     """
 
-    return await service.get_inbox_count()
+    return await service.get_inbox_count(query)
 
 
 @router.get(
@@ -184,7 +182,7 @@ async def get_inbox_count(
 )
 async def get_inbox(
         service: TasksServiceDep,
-        query: Pagination,
+        query: Annotated[dto.InboxQuery, Query()],
 ) -> dto.TaskInboxResponse:
     """
     Only actionable tasks belonging to ACTIVE workflows.
@@ -193,7 +191,8 @@ async def get_inbox(
     """
 
     return await service.get_inbox(
-        query
+        query,
+        filters=query,
     )
 
 

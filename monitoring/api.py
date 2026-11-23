@@ -19,6 +19,7 @@ from monitoring.contracts import (
     Heartbeat,
     JobStatus,
     RegisterAgent,
+    ReviewDetail,
     UploadRequest,
     UploadURL,
 )
@@ -215,7 +216,7 @@ async def history(
     return await MonitoringQueue(session).history(source_id, offset, limit)
 
 
-@router.get("/reviews/{task_id}", dependencies=[Depends(operator)])
+@router.get("/reviews/{task_id}", dependencies=[Depends(operator)], response_model=ReviewDetail)
 async def get_review(task_id: int, session: Session):
     try:
         return await review_detail(session, task_id)

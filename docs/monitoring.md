@@ -635,21 +635,46 @@ it when monitoring is disabled. HTML stays out of the outbox.
   history and check time. The existing acceptance workflow controls the baseline.
   An extraction issue and missing evidence review carry the evaluation for a
   `not_found` result.
-- Monitoring reviews retain the Source, snapshot, run, field, and available
-  previous and current evidence references. Pending and in-progress reviews move
-  to the active workflow on supersession. Repeated comparisons with the same
-  outcome for a target and evidence pair reuse the open task. A consecutive
-  identical result can also reference its completed or cancelled review.
-- Operators can request `GET /monitoring/reviews/{task_id}` for the original review
-  context. It shows raw previous and current evidence when available, their
-  observation IDs, the evaluation and baseline IDs, and the current canonical
-  field value and its value ID. The canonical value is read through the Business
-  Layer at request time. The review task uses the existing workflow lifecycle.
 - Acquisition commits before evidence processing. A technical processing
   failure retries against the same snapshot and extraction run, with up to five
   attempts. A check's history shows acquisition and processing times, Prefect
   run IDs, change classification, selector versions, task IDs and safe error
   codes.
+
+## Automatic review tasks
+
+Processing uses one active workflow per Source and reuses it when the snapshot
+is the same. A new snapshot gets a new workflow. Pending and in-progress
+monitoring tasks move to the new workflow with their original evidence references.
+The superseded workflow retains its completed and cancelled tasks.
+
+| Field outcome | Task reason or action |
+| --- | --- |
+| `FIELD_NEW` | `manual` for a bound field that needs initial confirmation, or `possible_new_object` for unbound evidence |
+| `FIELD_CHANGED` | `value_changed` |
+| `FIELD_UNCHANGED` | Record the observation |
+| `FIELD_MISSING` | `value_missing` |
+| `FIELD_AMBIGUOUS`, `FIELD_CONFLICT` | `value_conflict` |
+| `FIELD_EXTRACTION_FAILED` | `extraction_failed` |
+
+A source-only review requires `CONTENT_CHANGED`, `STRUCTURE_CHANGED`, or
+`CONTENT_AND_STRUCTURE_CHANGED` and no field review for the check. This covers
+Sources without eligible SelectorTrees and changes outside the tracked fields.
+The task has type `review_source_change` and reason `source_changed`.
+
+The `monitoringKey` identifies the Source, target, outcome, and evidence. For a
+field comparison, it includes the available before and after raw literals.
+Selector failures are grouped by target and outcome. For a source-only review,
+it includes the representation and hash versions and the before and after hash
+pairs. Pending and in-progress tasks take precedence. Completed and cancelled
+tasks in workflow history also satisfy a matching key. A failed task retains
+its key in the active workflow and can be retried through the Tasks API. A
+different evidence pair can create a new task. PostgreSQL locks the Source and
+Monitoring Job through the lookup and task write, and a completed job exits on
+replay.
+
+See the [Tasks and review API](tasks.md) for Inbox filters, history, status
+transitions, and both review response formats.
 
 ## Source access
 

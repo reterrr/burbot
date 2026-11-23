@@ -1,9 +1,16 @@
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
-from tasks.schemas.models import TaskType, TaskReason, TaskReferenceRole, TaskReferenceType, TaskStatus, WorkflowStatus
+from tasks.schemas.models import (
+    TaskReason,
+    TaskReferenceRole,
+    TaskReferenceType,
+    TaskStatus,
+    TaskType,
+    WorkflowStatus,
+)
 
 
 class Pagination(BaseModel):
@@ -17,6 +24,16 @@ class Pagination(BaseModel):
         ge=1,
         le=100,
     )
+
+
+class InboxFilters(BaseModel):
+    source_id: int | None = Field(default=None, gt=0, le=9223372036854775807)
+    type: TaskType | None = None
+    reason: TaskReason | None = None
+
+
+class InboxQuery(InboxFilters, Pagination):
+    pass
 
 
 class TaskReferenceCreate(BaseModel):

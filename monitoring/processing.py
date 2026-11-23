@@ -43,6 +43,7 @@ from tasks.schemas.models import (
     TaskReason,
     TaskStatus,
     TaskType,
+    Workflow,
 )
 from tasks.services.task import TasksService
 
@@ -52,6 +53,7 @@ HASH_FIELDS = (
     "structure_hash_version",
     "hash_algorithm",
 )
+SOURCE_CHANGE_STATUSES = {"CONTENT_CHANGED", "STRUCTURE_CHANGED", "CONTENT_AND_STRUCTURE_CHANGED"}
 FAILURES = {
     "not_found": ("FIELD_MISSING", "VALUE_NOT_FOUND", TaskReason.VALUE_MISSING),
     "ambiguous": ("FIELD_AMBIGUOUS", "AMBIGUOUS_MATCH", TaskReason.VALUE_CONFLICT),
@@ -111,6 +113,14 @@ class MonitoringProcessor:
             return None, None
         return job, check
 
+    async def _latest_snapshot(self, source_id, *, before_id=None):
+        statement = select(SourceSnapshot).where(SourceSnapshot.source_id == source_id)
+        if before_id is not None:
+            statement = statement.where(SourceSnapshot.id < before_id)
+        return await self.session.scalar(
+            statement.order_by(SourceSnapshot.fetched_at.desc(), SourceSnapshot.id.desc()).limit(1)
+        )
+
     async def acquire(self, job_id, flow_id=None, *, require_dispatch=False):
         job, check = await self._lock(
             job_id, expected_flow_id=flow_id if require_dispatch else None
@@ -136,12 +146,7 @@ class MonitoringProcessor:
             await self.sources._change_state(
                 source, State.VALIDATING, "BROWSER_CAPTURE_VERIFIED", Trigger.VALIDATOR
             )
-        latest = await self.session.scalar(
-            select(SourceSnapshot)
-            .where(SourceSnapshot.source_id == job.source_id)
-            .order_by(SourceSnapshot.fetched_at.desc(), SourceSnapshot.id.desc())
-            .limit(1)
-        )
+        latest = await self._latest_snapshot(job.source_id)
         hashes = dict(
             zip(
                 HASH_FIELDS,
@@ -311,18 +316,30 @@ class MonitoringProcessor:
             context={"selector_evidence": True},
         ), evaluations
 
+    async def _workflow_id(self, job):
+        workflow = await self.tasks._get_current_workflow(job.source_id, for_update=True)
+        if workflow is not None and workflow.source_snapshot_id == job.source_snapshot_id:
+            return workflow.id
+        started = await self.tasks.start_source_workflow(
+            job.source_id,
+            WorkflowStartRequest(source_snapshot_id=job.source_snapshot_id),
+        )
+        return started.workflow.id
+
     async def review_task(
         self,
         job,
+        workflow_id,
         outcome,
         reason,
         *,
         selector=None,
         observation=None,
         previous=None,
+        baseline_id=None,
+        previous_snapshot=None,
         values=(),
         legacy_values=None,
-        previous_task_id=None,
     ):
         slot_id = selector.business_object_field_id if selector is not None else None
         target = [job.source_id, slot_id or str(selector.uuid if selector else ""), outcome]
@@ -330,32 +347,22 @@ class MonitoringProcessor:
         keys = [key]
         if legacy_values is not None:
             keys.append(fingerprint([*target, legacy_values]))
-        if previous_task_id is not None:
-            previous_task = await self.session.get(Task, previous_task_id)
-            if (
-                previous_task is not None
-                and previous_task.status in (TaskStatus.COMPLETED, TaskStatus.CANCELLED)
-                and (previous_task.metadata_json or {}).get("monitoringKey") in keys
-            ):
-                return previous_task
 
-        workflow = await self.tasks._get_current_workflow(job.source_id, for_update=True)
-        if workflow is None or workflow.source_snapshot_id != job.source_snapshot_id:
-            workflow = (
-                await self.tasks.start_source_workflow(
-                    job.source_id,
-                    WorkflowStartRequest(source_snapshot_id=job.source_snapshot_id),
-                )
-            ).workflow
-
+        # Processing holds the Source lock through this lookup and the insert.
+        current_workflow = Task.workflow_id == workflow_id
         existing = await self.session.scalar(
             select(Task)
+            .join(Workflow, Workflow.id == Task.workflow_id)
             .where(
-                Task.workflow_id == workflow.id,
-                Task.status.in_(OPEN_REVIEW_STATUSES),
+                Workflow.source_id == job.source_id,
+                current_workflow | Task.status.in_((TaskStatus.COMPLETED, TaskStatus.CANCELLED)),
                 Task.metadata_json["monitoringKey"].as_string().in_(keys),
             )
-            .order_by(Task.id)
+            .order_by(
+                current_workflow.desc(),
+                Task.status.in_(OPEN_REVIEW_STATUSES).desc(),
+                Task.id.desc(),
+            )
             .limit(1)
         )
         if existing is not None:
@@ -383,7 +390,41 @@ class MonitoringProcessor:
                     metadata_json={"evidencePosition": "previous"},
                 )
             )
-        return await self.tasks.create_task(
+        if (
+            baseline_id is not None
+            and baseline_id != reference_ids["observation"]
+            and (previous is None or baseline_id != previous.id)
+        ):
+            references.append(
+                TaskReferenceCreate(
+                    role="context",
+                    reference_type="observation",
+                    reference_id=baseline_id,
+                    metadata_json={"evidencePosition": "baseline"},
+                )
+            )
+        if previous_snapshot is not None:
+            references.append(
+                TaskReferenceCreate(
+                    role="context",
+                    reference_type="source_snapshot",
+                    reference_id=previous_snapshot.id,
+                    metadata_json={"snapshotPosition": "previous"},
+                )
+            )
+        metadata = {"monitoringKey": key, "monitoringJobId": str(job.id)}
+        if reason == TaskReason.SOURCE_CHANGED:
+            metadata["changeStatus"] = outcome
+            title = "Review source change"
+        else:
+            metadata["evidenceStatus"] = EVIDENCE_STATUS[outcome]
+            title = (
+                "Resolve unbound evidence"
+                if reason == TaskReason.POSSIBLE_NEW_OBJECT
+                else REVIEW_TITLES[outcome]
+            )
+        return await self.tasks.create_workflow_task(
+            workflow_id,
             TaskCreateRequest(
                 source_id=job.source_id,
                 source_snapshot_id=job.source_snapshot_id,
@@ -393,18 +434,28 @@ class MonitoringProcessor:
                     else TaskType.REVIEW_SOURCE_CHANGE
                 ),
                 reason=reason,
-                title=(
-                    "Resolve unbound evidence"
-                    if reason == TaskReason.POSSIBLE_NEW_OBJECT
-                    else REVIEW_TITLES[outcome]
-                ),
-                metadata_json={
-                    "monitoringKey": key,
-                    "monitoringJobId": str(job.id),
-                    "evidenceStatus": EVIDENCE_STATUS[outcome],
-                },
+                title=title,
+                metadata_json=metadata,
                 references=references,
-            )
+            ),
+        )
+
+    async def _review_source_change(self, job, check, workflow_id):
+        current = await self.session.get(SourceSnapshot, job.source_snapshot_id)
+        # Snapshots are inserted while holding the Source lock. Exclude any
+        # snapshots registered after acquisition, even if their fetched_at is older.
+        previous = await self._latest_snapshot(job.source_id, before_id=current.id)
+        await self.review_task(
+            job,
+            workflow_id,
+            check.change_status,
+            TaskReason.SOURCE_CHANGED,
+            previous_snapshot=previous,
+            values=(
+                tuple(getattr(current, name) for name in HASH_FIELDS),
+                (previous.content_hash, previous.structure_hash) if previous else None,
+                (current.content_hash, current.structure_hash),
+            ),
         )
 
     async def _comparison_evidence(self, job, selector, observed_at):
@@ -459,7 +510,7 @@ class MonitoringProcessor:
         return baseline_id, previous, await repo.observation_value(previous), "previous_observation"
 
     async def _outcome(
-        self, job, selector, evaluation, observation_id, observed_at, previous_task_id
+        self, job, workflow_id, selector, evaluation, observation_id, observed_at
     ):
         baseline_id, previous, prior_value, comparison = await self._comparison_evidence(
             job, selector, observed_at
@@ -493,14 +544,15 @@ class MonitoringProcessor:
         task = (
             await self.review_task(
                 job,
+                workflow_id,
                 outcome,
                 reason,
                 selector=selector,
                 observation=observed,
                 previous=previous,
+                baseline_id=baseline_id,
                 values=values,
                 legacy_values=legacy_values,
-                previous_task_id=previous_task_id,
             )
             if reason is not None
             else None
@@ -522,28 +574,14 @@ class MonitoringProcessor:
             "taskId": task.id if task else None,
         }
 
-    async def _previous_tasks(self, source_id):
-        fields = await self.session.scalar(
-            select(SourceCheckRun.field_results)
-            .join(MonitoringJob, MonitoringJob.id == SourceCheckRun.job_id)
-            .where(MonitoringJob.source_id == source_id, MonitoringJob.status == "completed")
-            .order_by(SourceCheckRun.processed_at.desc(), MonitoringJob.id.desc())
-            .limit(1)
-        )
-        return {
-            row["selectorUuid"]: row["taskId"]
-            for row in fields or []
-            if row.get("selectorUuid") and row.get("taskId") is not None
-        }
-
     async def process(self, job_id, *, expected_flow_id=None):
         job, check = await self._lock(job_id, lock_workflow=True, expected_flow_id=expected_flow_id)
         if job is None or check.acquired_at is None:
             return False
+        workflow_id = await self._workflow_id(job)
         pins = await self.queue._pins(job)
         results = []
         if pins:
-            previous_tasks = await self._previous_tasks(job.source_id)
             request, evaluations = await self._payload(job, pins)
             capture = await self.capture.register_capture(
                 job.extraction_run_id,
@@ -556,13 +594,17 @@ class MonitoringProcessor:
                 results.append(
                     await self._outcome(
                         job,
+                        workflow_id,
                         selector,
                         evaluations[key],
                         capture.observation_ids_by_client_key.get(key),
                         check.acquired_at,
-                        previous_tasks.get(str(selector.uuid)),
                     )
                 )
+        if check.change_status in SOURCE_CHANGE_STATUSES and not any(
+            field["taskId"] is not None for field in results
+        ):
+            await self._review_source_change(job, check, workflow_id)
         check.field_results = results
         check.processed_at = utc_now()
         self.queue._finish(job, "completed")
@@ -595,6 +637,7 @@ class MonitoringProcessor:
                 async with self.session.begin_nested():
                     task = await self.review_task(
                         job,
+                        await self._workflow_id(job),
                         "FIELD_EXTRACTION_FAILED",
                         TaskReason.EXTRACTION_FAILED,
                     )

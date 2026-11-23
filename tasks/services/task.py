@@ -20,13 +20,12 @@ from tasks.exceptions.exceptions import (
     TaskValidationError,
     WorkflowNotFound,
 )
-
 from tasks.schemas.models import (
+    Task,
+    TaskReference,
+    TaskStatus,
     Workflow,
     WorkflowStatus,
-    Task,
-    TaskStatus,
-    TaskReference,
     utc_now,
 )
 
@@ -274,6 +273,13 @@ class TasksService:
                 f"Workflow {workflow.id} is no longer active"
             )
 
+    async def _lock_active_task(self, task_id: int) -> Task:
+        task = await self._get_task(task_id)
+        # Supersession locks the workflow before moving or cancelling its tasks.
+        workflow = await self._get_workflow(task.workflow_id, for_update=True)
+        self._ensure_workflow_active(workflow)
+        return await self._get_task(task_id, for_update=True)
+
     # ========================================================
     # DTO helpers
     # ========================================================
@@ -418,25 +424,7 @@ class TasksService:
             source_id: int,
             request: dto.WorkflowStartRequest,
     ) -> dto.WorkflowStartResponse:
-        """
-        Create the current workflow for a new source snapshot.
-
-        Important behaviour:
-
-        Source #10
-            Snapshot #100
-                Workflow #1 ACTIVE
-
-        new Snapshot #150 appears
-
-            Workflow #1 -> SUPERSEDED
-            unfinished tasks -> CANCELLED
-
-            Workflow #2 -> ACTIVE
-
-        Calling this method again with the SAME snapshot is
-        idempotent: the existing workflow is returned.
-        """
+        """Start or reuse the processing workflow for a source snapshot."""
 
         async with self._transaction():
             current = await self._get_current_workflow(
@@ -707,55 +695,25 @@ class TasksService:
                     "Workflow has no id"
                 )
 
-            task = Task(
-                workflow_id=workflow.id,
+            task = await self._create_task_row(workflow.id, request)
+            return await self._task_detail_response(task)
 
-                type=request.type,
-                reason=request.reason,
+    async def create_workflow_task(
+            self,
+            workflow_id: int,
+            request: dto.TaskCreateRequest,
+    ) -> dto.TaskDetailResponse:
+        async with self._transaction():
+            workflow = await self._get_workflow(workflow_id, for_update=True)
+            self._ensure_workflow_active(workflow)
+            if (
+                request.source_id != workflow.source_id
+                or request.source_snapshot_id != workflow.source_snapshot_id
+            ):
+                raise TaskConflict("Task source and snapshot must match its workflow")
+            task = await self._create_task_row(workflow_id, request)
+            return await self._task_detail_response(task)
 
-                status=TaskStatus.PENDING,
-
-                title=request.title,
-                description=request.description,
-
-                metadata_json=request.metadata_json,
-            )
-
-            self._session.add(task)
-
-            await self._session.flush()
-
-            if task.id is None:
-                raise RuntimeError(
-                    "Task has no id"
-                )
-
-            for reference in request.references:
-                self._session.add(
-                    TaskReference(
-                        task_id=task.id,
-
-                        role=reference.role,
-
-                        reference_type=(
-                            reference.reference_type
-                        ),
-
-                        reference_id=(
-                            reference.reference_id
-                        ),
-
-                        metadata_json=(
-                            reference.metadata_json
-                        ),
-                    )
-                )
-
-            await self._session.flush()
-
-            return await self._task_detail_response(
-                task
-            )
     async def get_task(
             self,
             task_id: int,
@@ -819,26 +777,7 @@ class TasksService:
             request: dto.TaskStatusChangeRequest,
     ) -> dto.TaskDetailResponse:
         async with self._transaction():
-            task = await self._get_task(
-                task_id,
-                for_update=True,
-            )
-
-            workflow = await self._get_workflow(
-                task.workflow_id,
-                for_update=True,
-            )
-
-            # ------------------------------------------------
-            # This is THE important stale-task guard.
-            #
-            # Even if frontend somehow still has an old task,
-            # it cannot mutate it after source refresh.
-            # ------------------------------------------------
-
-            self._ensure_workflow_active(
-                workflow
-            )
+            task = await self._lock_active_task(task_id)
 
             target_status = request.status
 
@@ -911,19 +850,7 @@ class TasksService:
             request: dto.TaskReferenceCreate,
     ) -> dto.TaskReferenceResponse:
         async with self._transaction():
-            task = await self._get_task(
-                task_id,
-                for_update=True,
-            )
-
-            workflow = await self._get_workflow(
-                task.workflow_id,
-                for_update=True,
-            )
-
-            self._ensure_workflow_active(
-                workflow
-            )
+            await self._lock_active_task(task_id)
 
             reference = TaskReference(
                 task_id=task_id,
@@ -960,8 +887,27 @@ class TasksService:
     # Inbox / notification-like tasks
     # ========================================================
 
+    @staticmethod
+    def _inbox_conditions(query: dto.InboxFilters | None):
+        conditions = [
+            col(Workflow.status) == WorkflowStatus.ACTIVE,
+            col(Task.status).in_((TaskStatus.PENDING, TaskStatus.IN_PROGRESS)),
+        ]
+        if query is not None:
+            conditions.extend(
+                column == value
+                for column, value in (
+                    (col(Workflow.source_id), query.source_id),
+                    (col(Task.type), query.type),
+                    (col(Task.reason), query.reason),
+                )
+                if value is not None
+            )
+        return conditions
+
     async def get_inbox_count(
             self,
+            query: dto.InboxFilters | None = None,
     ) -> int:
         count = await self._session.scalar(
             select(func.count())
@@ -971,17 +917,7 @@ class TasksService:
                 col(Workflow.id)
                 == col(Task.workflow_id),
             )
-            .where(
-                col(Workflow.status)
-                == WorkflowStatus.ACTIVE,
-
-                col(Task.status).in_(
-                    [
-                        TaskStatus.PENDING,
-                        TaskStatus.IN_PROGRESS,
-                    ]
-                ),
-            )
+            .where(*self._inbox_conditions(query))
         )
 
         return count or 0
@@ -989,34 +925,10 @@ class TasksService:
     async def get_inbox(
             self,
             query: dto.Pagination,
+            *,
+            filters: dto.InboxFilters | None = None,
     ) -> dto.TaskInboxResponse:
-        condition = (
-                col(Workflow.status)
-                == WorkflowStatus.ACTIVE
-        )
-
-        task_condition = (
-            col(Task.status).in_(
-                [
-                    TaskStatus.PENDING,
-                    TaskStatus.IN_PROGRESS,
-                ]
-            )
-        )
-
-        total = await self._session.scalar(
-            select(func.count())
-            .select_from(Task)
-            .join(
-                Workflow,
-                col(Workflow.id)
-                == col(Task.workflow_id),
-            )
-            .where(
-                condition,
-                task_condition,
-            )
-        )
+        total = await self.get_inbox_count(filters)
 
         rows = await self._session.execute(
             select(
@@ -1028,12 +940,10 @@ class TasksService:
                 col(Workflow.id)
                 == col(Task.workflow_id),
             )
-            .where(
-                condition,
-                task_condition,
-            )
+            .where(*self._inbox_conditions(filters))
             .order_by(
-                col(Task.created_at).desc()
+                col(Task.created_at).desc(),
+                col(Task.id).desc(),
             )
             .offset(query.offset)
             .limit(query.limit)
@@ -1065,7 +975,7 @@ class TasksService:
         return dto.TaskInboxResponse(
             items=items,
 
-            total=total or 0,
+            total=total,
             offset=query.offset,
             limit=query.limit,
         )
