@@ -60,8 +60,9 @@ include a handwritten Alembic revision or change the database on application sta
 ## Automatic Source Monitoring
 
 A Prefect 3 scheduler, PostgreSQL queue and Firefox Browser Agent automate
-checks of approved public HTML Sources. See [Source monitoring](docs/monitoring.md)
-for setup, agent enrollment, protocols and verification.
+checks of public HTML Sources. A controlled local installation can opt in to
+trusted enrollment. Setup and verification commands are in the monitoring
+guide. [Source monitoring](docs/monitoring.md)
 
 ## Firefox workspace identities
 

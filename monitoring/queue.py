@@ -5,7 +5,7 @@ import math
 from datetime import timedelta
 from uuid import uuid4
 
-from sqlalchemy import func, or_, select, tuple_, update
+from sqlalchemy import and_, case, func, or_, select, tuple_, update
 
 from extraction.schemas.common import utc_now
 from extraction.schemas.selector import Selector, SelectorVersion
@@ -17,20 +17,28 @@ from monitoring.contracts import (
     ClaimedJob,
     JobStatus,
     PinnedSelector,
+    TrustedNavigation,
     UploadURL,
 )
 from monitoring.enrollment import (
+    TRUSTED_SOURCE_STATES,
+    MonitoringEnrollmentService,
     approval_matches,
+    assigned_source,
     authorized_agent,
     grant_agent_sources,
     origin_key,
+    trusted_enrollment_matches,
 )
 from monitoring.models import (
     ACTIVE,
     LEASED,
     PROCESSABLE,
     READY,
+    STRICT_NAVIGATION,
     TERMINAL,
+    TRUSTED_HTTP,
+    TRUSTED_HTTPS,
     MonitoringAgent,
     MonitoringAgentSource,
     MonitoringJob,
@@ -48,9 +56,14 @@ from monitoring.security import (
     fingerprint,
     new_token,
     token_digest,
+    trusted_origin,
 )
 from monitoring.storage import storage_from_env
+from sources.schemas.enums import SourceState as State
+from sources.schemas.enums import SourceStateTrigger as Trigger
+from sources.schemas.enums import SourceType
 from sources.schemas.models import Source, SourceCheckSchedule, StoredFile
+from sources.services.sources import SourcesService
 
 LEASE_SECONDS = 180
 UPLOAD_SECONDS = 60
@@ -136,7 +149,8 @@ class MonitoringQueue:
                 .with_for_update()
             )
             for job in jobs:
-                self._finish(job, "cancelled", "APPROVAL_CHANGED")
+                if not request.enabled or job.navigation_policy == STRICT_NAVIGATION:
+                    self._finish(job, "cancelled", "APPROVAL_CHANGED")
         policy.enabled = request.enabled
         policy.origins = origins
         if request.enabled:
@@ -146,18 +160,24 @@ class MonitoringQueue:
         return {"sourceId": source_id, "enabled": policy.enabled, "allowedOrigins": policy.origins}
 
     async def register(self, request):
+        if request.trusted and onboarding_config().mode != "trusted":
+            raise MonitoringError(409, "TRUSTED_MODE_DISABLED")
         ids = set(request.source_ids)
         permitted = set(
             await self.session.scalars(
                 select(MonitoringSource.source_id).where(
-                    MonitoringSource.source_id.in_(ids), MonitoringSource.enabled.is_(True)
+                    MonitoringSource.source_id.in_(ids),
+                    MonitoringSource.enabled.is_(True),
+                    MonitoringSource.origins != [],
                 )
             )
         )
         if permitted != ids:
             raise MonitoringError(422, "SOURCE_APPROVAL_REQUIRED")
         token = new_token()
-        agent = MonitoringAgent(name=request.name, token_digest=token_digest(token))
+        agent = MonitoringAgent(
+            name=request.name, token_digest=token_digest(token), trusted=request.trusted
+        )
         self.session.add(agent)
         await self.session.flush()
         self.session.add_all(
@@ -166,7 +186,12 @@ class MonitoringQueue:
                 for source_id in sorted(ids)
             ]
         )
-        return {"agentId": agent.id, "agentToken": token, "sourceIds": sorted(ids)}
+        return {
+            "agentId": agent.id,
+            "agentToken": token,
+            "sourceIds": sorted(ids),
+            **({"trusted": True} if agent.trusted else {}),
+        }
 
     async def revoke(self, agent_id):
         agent = await self.session.get(MonitoringAgent, agent_id, with_for_update=True)
@@ -239,6 +264,7 @@ class MonitoringQueue:
                 .where(
                     MonitoringJob.agent_id == agent_id,
                     MonitoringJob.source_id.in_(removed),
+                    MonitoringJob.navigation_policy == STRICT_NAVIGATION,
                     MonitoringJob.status.in_(LEASED),
                 )
                 .with_for_update()
@@ -278,6 +304,7 @@ class MonitoringQueue:
             "agentId": agent.id,
             "name": agent.name,
             "enabled": agent.enabled,
+            "trusted": agent.trusted,
             "lastSeenAt": agent.last_seen_at,
             "connected": bool(
                 agent.enabled
@@ -286,10 +313,24 @@ class MonitoringQueue:
             ),
         }
 
-    async def create_job(self, source_id, reason="scheduled", flow_run_id=None):
+    async def create_job(self, source_id, reason="scheduled", flow_run_id=None, *, config=None):
+        config = config if config is not None else onboarding_config()
         source = await self._source(source_id)
-        policy = await self.session.get(MonitoringSource, source_id)
-        self._check_policy(source, policy)
+        navigation = STRICT_NAVIGATION
+        if config.mode == "trusted":
+            if source.type != SourceType.HTML:
+                raise MonitoringError(422, "UNSUPPORTED_SOURCE_TYPE")
+            site, _ = await MonitoringEnrollmentService(
+                self.session, config.default_schedule
+            ).enroll_trusted(source, allow_http=config.trusted_allow_http)
+            if site is None:
+                raise MonitoringError(409, "SOURCE_NOT_ELIGIBLE")
+            origins = [site]
+            navigation = TRUSTED_HTTP if site.startswith("http://") else TRUSTED_HTTPS
+        else:
+            policy = await self.session.get(MonitoringSource, source_id)
+            self._check_policy(source, policy)
+            origins = policy.origins
         existing = await self.session.scalar(
             select(MonitoringJob).where(
                 MonitoringJob.source_id == source_id, MonitoringJob.status.in_(ACTIVE)
@@ -298,7 +339,11 @@ class MonitoringQueue:
         if existing is not None:
             return existing
         job = MonitoringJob(
-            source_id=source_id, url=source.url, origins=policy.origins, reason=reason
+            source_id=source_id,
+            url=source.url,
+            origins=origins,
+            navigation_policy=navigation,
+            reason=reason,
         )
         self.session.add(job)
         await self.session.flush()
@@ -307,6 +352,21 @@ class MonitoringQueue:
 
     @staticmethod
     def _check_policy(source, policy, job=None):
+        if job is not None and job.navigation_policy != STRICT_NAVIGATION:
+            if (
+                source is None
+                or policy is None
+                or not policy.enabled
+                or source.type != SourceType.HTML
+                or source.state not in TRUSTED_SOURCE_STATES
+                or source.url != job.url
+                or policy.trusted_url != job.url
+                or job.origins != [policy.trusted_origin]
+                or trusted_origin(job.url, allow_http=job.navigation_policy == TRUSTED_HTTP)
+                != policy.trusted_origin
+            ):
+                raise MonitoringError(409, "SOURCE_NOT_ELIGIBLE")
+            return
         if (
             source is None
             or policy is None
@@ -318,6 +378,30 @@ class MonitoringQueue:
         ):
             raise MonitoringError(409, "SOURCE_NOT_APPROVED_OR_ACTIVE")
         check_origin(policy.url, policy.origins)
+
+    @staticmethod
+    def _job_policy_matches():
+        return and_(
+            Source.type == SourceType.HTML,
+            Source.url.is_not_distinct_from(MonitoringJob.url),
+            MonitoringSource.enabled.is_(True),
+            or_(
+                and_(
+                    MonitoringJob.navigation_policy == STRICT_NAVIGATION,
+                    Source.state == State.ACTIVE,
+                    MonitoringSource.url == MonitoringJob.url,
+                    MonitoringSource.origins == MonitoringJob.origins,
+                ),
+                and_(
+                    MonitoringJob.navigation_policy != STRICT_NAVIGATION,
+                    Source.state.in_(TRUSTED_SOURCE_STATES),
+                    MonitoringSource.trusted_url.is_not_distinct_from(MonitoringJob.url),
+                    MonitoringSource.trusted_origin.is_not(None),
+                    MonitoringJob.origins
+                    == func.jsonb_build_array(MonitoringSource.trusted_origin),
+                ),
+            ),
+        )
 
     async def schedule_due(self, flow_run_id=None, limit=None, *, config=None):
         config = config if config is not None else onboarding_config()
@@ -343,31 +427,42 @@ class MonitoringQueue:
             .exists()
         )
         due_at = func.coalesce(SourceCheckSchedule.next_check_at, SourceCheckSchedule.created_at)
+        trusted = config.mode == "trusted"
+        eligible = (
+            trusted_enrollment_matches(config.trusted_allow_http)
+            if trusted
+            else (Source.state == State.ACTIVE, *approval_matches())
+        )
         candidates = (
             select(Source.id.label("source_id"))
             .join(SourceCheckSchedule, SourceCheckSchedule.source_id == Source.id)
             .join(MonitoringSource, MonitoringSource.source_id == Source.id)
             .where(
-                Source.state == "ACTIVE",
-                *approval_matches(),
+                *eligible,
                 SourceCheckSchedule.enabled.is_(True),
                 or_(
                     SourceCheckSchedule.next_check_at.is_(None),
                     SourceCheckSchedule.next_check_at <= now,
                 ),
-                authorized_agent(since=now - timedelta(seconds=LEASE_SECONDS)),
+                authorized_agent(since=now - timedelta(seconds=LEASE_SECONDS), mode=config.mode),
                 ~active,
             )
         )
         if config.max_active_jobs_per_origin is not None:
-            job_origin = origin_key(MonitoringJob.url)
+            job_origin = case(
+                (
+                    MonitoringJob.navigation_policy == STRICT_NAVIGATION,
+                    origin_key(MonitoringJob.url),
+                ),
+                else_=MonitoringJob.origins[0].astext,
+            )
             occupancy = (
                 select(job_origin.label("origin"), func.count().label("active"))
                 .where(MonitoringJob.status.in_(ACTIVE))
                 .group_by(job_origin)
                 .subquery()
             )
-            site = origin_key(Source.url)
+            site = MonitoringSource.trusted_origin if trusted else origin_key(Source.url)
             ranked = (
                 candidates.outerjoin(occupancy, occupancy.c.origin == site)
                 .add_columns(
@@ -393,7 +488,8 @@ class MonitoringQueue:
             )
         )
         return [
-            await self.create_job(source_id, flow_run_id=flow_run_id) for source_id in source_ids
+            await self.create_job(source_id, flow_run_id=flow_run_id, config=config)
+            for source_id in source_ids
         ]
 
     @staticmethod
@@ -402,7 +498,27 @@ class MonitoringQueue:
         job.error_code = error_code
         job.completed_at = utc_now()
 
-    async def _retry(self, job, code):
+    async def _advance_failed_schedule(self, job):
+        schedule = await self.session.get(SourceCheckSchedule, job.source_id)
+        if schedule is not None:
+            schedule.next_check_at = utc_now() + timedelta(seconds=schedule.interval_seconds)
+
+    async def record_initial_failure(self, job, code):
+        """Record terminal discovery failure while the caller holds the Source lock."""
+        if job.navigation_policy == STRICT_NAVIGATION:
+            return
+        source = await self.session.get(Source, job.source_id)
+        if source is None or source.state != State.UNDISCOVERED:
+            return
+        try:
+            self._check_policy(source, await self.session.get(MonitoringSource, source.id), job)
+        except MonitoringError:
+            return
+        sources = SourcesService(self.session, commit=False)
+        await sources._change_state(source, State.DISCOVERING, "BROWSER_DISCOVERY", Trigger.CRAWLER)
+        await sources._change_state(source, State.FAILED, code, Trigger.CRAWLER)
+
+    async def _retry(self, job, code, *, record_failure=False):
         job.error_code = code
         job.lease_expires_at = None
         if job.attempt_count < ATTEMPT_LIMIT:
@@ -410,24 +526,25 @@ class MonitoringQueue:
             job.available_at = utc_now() + retry_delay(job.attempt_count)
         else:
             self._finish(job, "failed", code)
-            schedule = await self.session.get(SourceCheckSchedule, job.source_id)
-            if schedule is not None:
-                schedule.next_check_at = utc_now() + timedelta(seconds=schedule.interval_seconds)
+            await self._advance_failed_schedule(job)
+            if record_failure:
+                await self.record_initial_failure(job, code)
 
     async def expire_leases(self, limit=100):
         rows = list(
             await self.session.scalars(
                 select(MonitoringJob)
+                .join(Source, Source.id == MonitoringJob.source_id)
                 .where(
                     MonitoringJob.status.in_(LEASED), MonitoringJob.lease_expires_at <= utc_now()
                 )
                 .order_by(MonitoringJob.lease_expires_at)
                 .limit(limit)
-                .with_for_update(skip_locked=True)
+                .with_for_update(of=(Source, MonitoringJob), skip_locked=True)
             )
         )
         for job in rows:
-            await self._retry(job, "LEASE_EXPIRED")
+            await self._retry(job, "LEASE_EXPIRED", record_failure=True)
         return len(rows)
 
     async def expire_offline_jobs(self, grace_seconds, limit=100):
@@ -440,7 +557,16 @@ class MonitoringQueue:
                     MonitoringJob.reason == "scheduled",
                     MonitoringJob.status.in_(READY),
                     MonitoringJob.available_at <= cutoff,
-                    ~authorized_agent(since=cutoff),
+                    or_(
+                        and_(
+                            MonitoringJob.navigation_policy == STRICT_NAVIGATION,
+                            ~authorized_agent(since=cutoff),
+                        ),
+                        and_(
+                            MonitoringJob.navigation_policy != STRICT_NAVIGATION,
+                            ~authorized_agent(since=cutoff, mode="trusted"),
+                        ),
+                    ),
                 )
                 .order_by(MonitoringJob.available_at, MonitoringJob.id)
                 .limit(limit)
@@ -451,7 +577,15 @@ class MonitoringQueue:
             self._finish(job, "cancelled", "AGENT_UNAVAILABLE")
         return len(rows)
 
-    async def cancel_stale(self, limit=100):
+    async def cancel_stale(self, limit=100, *, config=None):
+        config = config if config is not None else onboarding_config()
+        disabled_navigation = (
+            MonitoringJob.navigation_policy != STRICT_NAVIGATION
+            if config.mode != "trusted"
+            else and_(
+                not config.trusted_allow_http, MonitoringJob.navigation_policy == TRUSTED_HTTP
+            )
+        )
         rows = list(
             await self.session.scalars(
                 select(MonitoringJob)
@@ -460,12 +594,8 @@ class MonitoringQueue:
                 .where(
                     MonitoringJob.status.in_(ACTIVE),
                     or_(
-                        Source.state != "ACTIVE",
-                        Source.type != "HTML",
-                        Source.url.is_distinct_from(MonitoringJob.url),
-                        MonitoringSource.enabled.is_(False),
-                        MonitoringSource.url != MonitoringJob.url,
-                        MonitoringSource.origins != MonitoringJob.origins,
+                        ~self._job_policy_matches(),
+                        and_(MonitoringJob.status.not_in(PROCESSABLE), disabled_navigation),
                     ),
                 )
                 .order_by(MonitoringJob.created_at)
@@ -474,7 +604,12 @@ class MonitoringQueue:
             )
         )
         for job in rows:
-            self._finish(job, "cancelled", "SOURCE_NOT_APPROVED_OR_ACTIVE")
+            code = (
+                "SOURCE_NOT_APPROVED_OR_ACTIVE"
+                if job.navigation_policy == STRICT_NAVIGATION
+                else "SOURCE_NOT_ELIGIBLE"
+            )
+            self._finish(job, "cancelled", code)
         return len(rows)
 
     async def _pins(self, job):
@@ -495,27 +630,55 @@ class MonitoringQueue:
             update={"status": "active"}
         )
 
-    async def claim(self, agent):
+    async def claim(self, agent, mode="strict"):
         now = utc_now()
+        trusted = mode == "trusted"
+        if trusted:
+            config = onboarding_config()
+            if config.mode != "trusted":
+                raise MonitoringError(409, "TRUSTED_MODE_DISABLED")
+            if not agent.trusted:
+                raise MonitoringError(403, "TRUSTED_AGENT_REQUIRED")
+        if agent.trusted:
+            # Authentication locks this agent row. With the same token, two
+            # concurrent polls can never acquire two live browser leases.
+            has_lease = await self.session.scalar(
+                select(
+                    select(MonitoringJob.id)
+                    .where(
+                        MonitoringJob.agent_id == agent.id,
+                        MonitoringJob.status.in_(LEASED),
+                        MonitoringJob.lease_expires_at > now,
+                    )
+                    .exists()
+                )
+            )
+            if has_lease:
+                return None
+        if trusted:
+            navigation = (
+                (TRUSTED_HTTPS, TRUSTED_HTTP) if config.trusted_allow_http else (TRUSTED_HTTPS,)
+            )
+            scope = MonitoringJob.navigation_policy.in_(navigation)
+        else:
+            scope = and_(
+                MonitoringJob.navigation_policy == STRICT_NAVIGATION, assigned_source(agent.id)
+            )
         job = await self.session.scalar(
             select(MonitoringJob)
-            .join(MonitoringAgentSource, MonitoringAgentSource.source_id == MonitoringJob.source_id)
             .join(MonitoringSource, MonitoringSource.source_id == MonitoringJob.source_id)
             .join(Source, Source.id == MonitoringJob.source_id)
             .where(
-                MonitoringAgentSource.agent_id == agent.id,
-                MonitoringAgentSource.enabled.is_(True),
+                scope,
                 MonitoringJob.status.in_(READY),
                 MonitoringJob.available_at <= now,
-                MonitoringSource.enabled.is_(True),
-                Source.state == "ACTIVE",
-                Source.url == MonitoringJob.url,
-                MonitoringSource.url == MonitoringJob.url,
-                MonitoringSource.origins == MonitoringJob.origins,
+                self._job_policy_matches(),
             )
             .order_by(MonitoringJob.available_at, MonitoringJob.created_at)
             .limit(1)
-            .with_for_update(of=MonitoringJob, skip_locked=True)
+            .with_for_update(
+                of=(Source, MonitoringJob) if trusted else MonitoringJob, skip_locked=True
+            )
         )
         if job is None:
             return None
@@ -539,9 +702,8 @@ class MonitoringQueue:
             )
             if len(rows) > MAX_SELECTORS:
                 self._finish(job, "failed", "TOO_MANY_SELECTORS")
-                schedule = await self.session.get(SourceCheckSchedule, job.source_id)
-                if schedule is not None:
-                    schedule.next_check_at = now + timedelta(seconds=schedule.interval_seconds)
+                await self._advance_failed_schedule(job)
+                await self.record_initial_failure(job, "TOO_MANY_SELECTORS")
                 return None
             for selector, version in rows:
                 definition = await self.definition(version, selector)
@@ -582,19 +744,40 @@ class MonitoringQueue:
             lease_expires_at=job.lease_expires_at,
             representation=REPRESENTATION,
             selectors=definitions,
+            **(
+                {
+                    "navigation": TrustedNavigation(
+                        mode="trusted", allow_http=job.navigation_policy == TRUSTED_HTTP
+                    )
+                }
+                if trusted
+                else {}
+            ),
         )
 
-    async def owned(self, job_id, agent, *, lock=True):
+    async def owned(self, job_id, agent, *, lock=True, lock_source=False):
+        scoped = and_(
+            MonitoringJob.navigation_policy == STRICT_NAVIGATION, assigned_source(agent.id)
+        )
+        scope = (
+            or_(scoped, MonitoringJob.navigation_policy != STRICT_NAVIGATION)
+            if agent.trusted
+            else scoped
+        )
         query = (
             select(MonitoringJob)
-            .join(MonitoringAgentSource, MonitoringAgentSource.source_id == MonitoringJob.source_id)
-            .where(
-                MonitoringJob.id == job_id,
-                MonitoringJob.agent_id == agent.id,
-                MonitoringAgentSource.agent_id == agent.id,
-                MonitoringAgentSource.enabled.is_(True),
-            )
+            .join(Source, Source.id == MonitoringJob.source_id)
+            .where(MonitoringJob.id == job_id, MonitoringJob.agent_id == agent.id, scope)
         )
+        if lock_source and agent.trusted:
+            source_id = await self.session.scalar(
+                query.with_only_columns(MonitoringJob.source_id).where(
+                    MonitoringJob.navigation_policy != STRICT_NAVIGATION
+                )
+            )
+            if source_id is not None:
+                # State changes take the Source lock before locking the job.
+                await self._source(source_id)
         if lock:
             query = query.with_for_update(of=MonitoringJob)
         job = await self.session.scalar(query)
@@ -613,6 +796,12 @@ class MonitoringQueue:
         source = await self.session.get(Source, job.source_id)
         policy = await self.session.get(MonitoringSource, job.source_id)
         self._check_policy(source, policy, job)
+        if job.navigation_policy != STRICT_NAVIGATION:
+            config = onboarding_config()
+            if config.mode != "trusted":
+                raise MonitoringError(409, "TRUSTED_MODE_DISABLED")
+            if job.navigation_policy == TRUSTED_HTTP and not config.trusted_allow_http:
+                raise MonitoringError(409, "TRUSTED_HTTP_DISABLED")
 
     async def heartbeat(self, job, request):
         await self._lease(job, request.lease_id)
@@ -678,7 +867,10 @@ class MonitoringQueue:
             request.content_size,
         ):
             raise MonitoringError(422, "UPLOAD_METADATA_MISMATCH")
-        check_origin(request.page_url, job.origins)
+        if job.navigation_policy == STRICT_NAVIGATION:
+            check_origin(request.page_url, job.origins)
+        else:
+            trusted_origin(request.page_url, allow_http=job.navigation_policy == TRUSTED_HTTP)
         now = utc_now()
         if request.captured_at > now + timedelta(minutes=5) or (
             request.captured_at < job.claimed_at - timedelta(minutes=5)
@@ -723,7 +915,7 @@ class MonitoringQueue:
 
     async def fail(self, job, request):
         await self._lease(job, request.lease_id)
-        await self._retry(job, request.code)
+        await self._retry(job, request.code, record_failure=request.code != "CANCELLED")
         return status(job)
 
     async def processable(self, limit=50, *, after=None):

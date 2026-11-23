@@ -736,16 +736,16 @@ async def test_migration_downgrade_is_safe_when_empty(database):
 async def test_migration_refuses_to_drop_collection_history(domain, database):
     await domain.make(tags=[])
     engine, _, schema = database
+    revision = text("SELECT version_num FROM alembic_version")
+    async with engine.connect() as connection:
+        before = await connection.scalar(revision)
     with pytest.raises(RuntimeError, match="without losing"):
         async with engine.begin() as connection:
             await connection.run_sync(
                 lambda conn: migrate(conn, schema, "b200_business_baseline", True)
             )
     async with engine.connect() as connection:
-        assert (
-            await connection.scalar(text("SELECT version_num FROM alembic_version"))
-            == "m101_bulk_onboarding"
-        )
+        assert await connection.scalar(revision) == before
 
 
 @pytest.mark.parametrize("database", ["e102_extraction_recipes"], indirect=True)

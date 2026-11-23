@@ -163,6 +163,7 @@ async def dispatch(client, deployment_id, job_id, logger):
         scheduler_run_id=scheduler_run_id,
         dispatch_status="linked",
     )
+    return True
 
 
 @flow(name="schedule-monitoring", retries=0, timeout_seconds=300, persist_result=False)
@@ -173,7 +174,7 @@ async def schedule_monitoring():
     onboarded = 0
     try:
         config = onboarding_config()
-        if config.policies:
+        if config.mode == "strict" and config.policies:
             async with asyncio.timeout(ONBOARDING_TICK_SECONDS):
                 onboarded = await run_onboarding_batch(session_factory, config, logger)
     except Exception as error:
@@ -190,7 +191,7 @@ async def schedule_monitoring():
                 )
                 return
             queue = MonitoringQueue(session)
-            cancelled = await queue.cancel_stale()
+            cancelled = await queue.cancel_stale(config=config) if config is not None else 0
             await session.flush()
             expired = await queue.expire_leases()
             enrolled = 0
@@ -198,9 +199,13 @@ async def schedule_monitoring():
             jobs = []
             if config is not None:
                 offline = await queue.expire_offline_jobs(config.agent_unavailable_grace_seconds)
-                enrolled = await MonitoringEnrollmentService(
-                    session, config.default_schedule
-                ).reconcile_approvals(config.batch_size)
+                enrollment = MonitoringEnrollmentService(session, config.default_schedule)
+                if config.mode == "trusted":
+                    enrolled = await enrollment.reconcile_trusted(
+                        config.batch_size, allow_http=config.trusted_allow_http
+                    )
+                else:
+                    enrolled = await enrollment.reconcile_approvals(config.batch_size)
                 await session.flush()
                 jobs = await queue.schedule_due(scheduler_run_id, config=config)
         try:

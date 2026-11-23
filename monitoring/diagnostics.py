@@ -5,8 +5,9 @@ from datetime import timedelta
 from sqlalchemy import distinct, func, or_, select
 
 from extraction.schemas.common import utc_now
-from monitoring.enrollment import approval_matches, authorized_agent
+from monitoring.enrollment import approval_matches, authorized_agent, trusted_enrollment_matches
 from monitoring.models import MonitoringJob, MonitoringSource
+from monitoring.onboarding_config import onboarding_config
 from monitoring.queue import LEASE_SECONDS
 from sources.schemas.enums import SourceState as State
 from sources.schemas.enums import SourceType
@@ -21,18 +22,29 @@ def approved_html():
     )
 
 
+def monitored_html(config):
+    if config.mode == "trusted":
+        return (
+            select(Source.id)
+            .join(MonitoringSource, MonitoringSource.source_id == Source.id)
+            .where(*trusted_enrollment_matches(config.trusted_allow_http))
+        )
+    return approved_html().where(Source.state == State.ACTIVE)
+
+
 async def coverage(session, after, limit, only_uncovered):
-    authorized = authorized_agent()
-    online = authorized_agent(since=utc_now() - timedelta(seconds=LEASE_SECONDS))
+    config = onboarding_config()
+    authorized = authorized_agent(mode=config.mode)
+    online = authorized_agent(since=utc_now() - timedelta(seconds=LEASE_SECONDS), mode=config.mode)
     if only_uncovered:
         conditions = (~authorized,)
     else:
         conditions = ()
     rows = (
         await session.execute(
-            approved_html()
+            monitored_html(config)
             .add_columns(authorized, online)
-            .where(Source.state == State.ACTIVE, Source.id > after, *conditions)
+            .where(Source.id > after, *conditions)
             .order_by(Source.id)
             .limit(limit + 1)
         )
@@ -47,6 +59,7 @@ async def coverage(session, after, limit, only_uncovered):
 
 
 async def overview(session):
+    config = onboarding_config()
     source_counts = (
         await session.execute(
             select(Source.type, Source.state, func.count()).group_by(Source.type, Source.state)
@@ -83,24 +96,28 @@ async def overview(session):
     now = utc_now()
     due = or_(scheduled.is_(None), scheduled <= now)
     active = Source.state == State.ACTIVE
-    assigned = authorized_agent()
-    online = authorized_agent(since=utc_now() - timedelta(seconds=LEASE_SECONDS))
-    approved = (
-        approved_html()
+    assigned = authorized_agent(mode=config.mode)
+    online = authorized_agent(since=now - timedelta(seconds=LEASE_SECONDS), mode=config.mode)
+    approved = approved_html().with_only_columns(
+        func.count().label("approvedSources"),
+        func.count().filter(active).label("approvedActiveSources"),
+    )
+    schedule_query = (
+        monitored_html(config)
         .outerjoin(SourceCheckSchedule, SourceCheckSchedule.source_id == Source.id)
         .with_only_columns(
-            func.count().label("approvedSources"),
-            func.count().filter(active).label("approvedActiveSources"),
-            func.count().filter(active, schedule_enabled).label("scheduledSources"),
-            func.count().filter(active, ~assigned).label("sourcesWithoutAuthorizedAgent"),
-            func.count().filter(active, ~online).label("sourcesWithoutOnlineAgent"),
-            func.count().filter(active, schedule_enabled, due).label("overdueSources"),
+            func.count().label("enrolledSources"),
+            func.count().filter(schedule_enabled).label("scheduledSources"),
+            func.count().filter(~assigned).label("sourcesWithoutAuthorizedAgent"),
+            func.count().filter(~online).label("sourcesWithoutOnlineAgent"),
+            func.count().filter(schedule_enabled, due).label("overdueSources"),
             func.min(func.coalesce(scheduled, now))
-            .filter(active, schedule_enabled)
+            .filter(schedule_enabled)
             .label("nextScheduledCheck"),
         )
     )
-    schedule_counts = (await session.execute(approved)).mappings().one()
+    approvals = (await session.execute(approved)).mappings().one()
+    schedule_counts = (await session.execute(schedule_query)).mappings().one()
     jobs = dict(
         (
             await session.execute(
@@ -112,13 +129,20 @@ async def overview(session):
         select(func.max(MonitoringJob.completed_at)).where(MonitoringJob.status == "completed")
     )
     return {
+        "mode": config.mode,
         "totalSources": sum(by_type.values()),
         "sourcesByType": by_type,
+        "unsupportedSourceTypes": {
+            kind: total for kind, total in by_type.items() if kind != SourceType.HTML
+        },
         "sourcesByState": by_state,
-        "eligibleHtmlSources": eligible_html,
+        "eligibleHtmlSources": (
+            schedule_counts["enrolledSources"] if config.mode == "trusted" else eligible_html
+        ),
         "discoveredSources": history_counts[0],
         "validatedSources": history_counts[1],
         "sourcesAwaitingReview": by_state.get(State.NEEDS_REVIEW, 0),
+        **approvals,
         **schedule_counts,
         "jobsByStatus": jobs,
         "pendingJobs": jobs.get("pending", 0) + jobs.get("retry_pending", 0),

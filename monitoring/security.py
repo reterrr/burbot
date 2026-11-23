@@ -7,6 +7,7 @@ import secrets
 from urllib.parse import parse_qsl, urlsplit
 
 from sqlalchemy import select
+from whatwg_url import parse_url
 
 from monitoring.models import MonitoringAgent
 
@@ -77,6 +78,23 @@ def approve_origins(url, additional):
 def check_origin(url, origins):
     if origin(url) not in origins:
         raise MonitoringError(422, "URL_NOT_APPROVED")
+
+
+def trusted_origin(url: str | None, *, allow_http: bool) -> str:
+    # Match Firefox's URL parser for IDNs and unusual host spellings. Reject
+    # credentials and ambiguous or sensitive input before canonicalization.
+    try:
+        if not url or len(url.encode()) > 2048:
+            raise ValueError
+        authority = re.match(r"https?://([^/?#]+)", url, re.I)
+        if not authority or "@" in authority[1] or re.search(r"[\x00-\x20\\\x7f]", url):
+            raise ValueError
+        parsed = parse_url(url)
+        if parsed is None or parsed.username is not None or parsed.password is not None:
+            raise ValueError
+        return origin(parsed.href, allow_http=allow_http)
+    except (ValueError, UnicodeError) as error:
+        raise MonitoringError(422, "URL_NOT_ALLOWED") from error
 
 
 def token_digest(token: str) -> str:

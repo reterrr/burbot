@@ -24,7 +24,7 @@ from monitoring.contracts import (
 )
 from monitoring.diagnostics import coverage, overview
 from monitoring.onboarding import OnboardingRequest, OnboardingService
-from monitoring.onboarding_config import onboarding_config
+from monitoring.onboarding_config import MonitoringMode, onboarding_config
 from monitoring.queue import MonitoringQueue, status
 from monitoring.review import review_detail
 from monitoring.security import MonitoringError, authenticate_agent, authorize_admin
@@ -223,7 +223,9 @@ async def get_review(task_id: int, session: Session):
         raise as_http(error) from error
 
 
-async def agent_operation(session, credentials, action, *, job_id=None, payload=None):
+async def agent_operation(
+    session, credentials, action, *, job_id=None, payload=None, mode="strict"
+):
     # Authentication, ownership, lease validation and mutation share one transaction.
     try:
         async with session.begin():
@@ -233,8 +235,10 @@ async def agent_operation(session, credentials, action, *, job_id=None, payload=
             if action == "seen":
                 return seen
             if action == "claim":
-                return await queue.claim(agent)
-            job = await queue.owned(job_id, agent, lock=action != "status")
+                return await queue.claim(agent, mode)
+            job = await queue.owned(
+                job_id, agent, lock=action != "status", lock_source=action == MonitoringQueue.fail
+            )
             if action == "status":
                 return status(job)
             return await action(queue, job, payload)
@@ -253,8 +257,8 @@ async def agent_heartbeat(session: Session, credentials: Credentials):
     response_model_exclude_unset=True,
     responses={204: {"description": "No job"}},
 )
-async def claim(session: Session, credentials: Credentials):
-    claimed = await agent_operation(session, credentials, "claim")
+async def claim(session: Session, credentials: Credentials, mode: MonitoringMode = "strict"):
+    claimed = await agent_operation(session, credentials, "claim", mode=mode)
     return claimed if claimed is not None else Response(status_code=204)
 
 
