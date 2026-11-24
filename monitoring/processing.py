@@ -61,15 +61,30 @@ FAILURES = {
 }
 
 
-def acquisition_change(previous, hashes, completion):
-    if (
-        previous is None
-        or previous.file_id is None
-        or any(getattr(previous, name) != value for name, value in hashes.items())
+def compatible_snapshot(previous, hashes):
+    return (
+        previous is not None
+        and previous.file_id is not None
+        and all(getattr(previous, name) == value for name, value in hashes.items())
+    )
+
+
+def acquisition_change(previous, hashes, completion, previous_comparison=None):
+    if not compatible_snapshot(previous, hashes):
+        return "INITIAL_FETCH"
+    comparison = completion.get("comparison")
+    if comparison is None and previous_comparison is None:
+        content = previous.content_hash != completion["contentHash"]
+        structure = previous.structure_hash != completion["structureHash"]
+    elif (
+        comparison is None
+        or previous_comparison is None
+        or comparison["version"] != previous_comparison["version"]
     ):
         return "INITIAL_FETCH"
-    content = previous.content_hash != completion["contentHash"]
-    structure = previous.structure_hash != completion["structureHash"]
+    else:
+        content = previous_comparison["contentHash"] != comparison["contentHash"]
+        structure = previous_comparison["structureHash"] != comparison["structureHash"]
     return {
         (False, False): "UNCHANGED",
         (True, False): "CONTENT_CHANGED",
@@ -155,9 +170,30 @@ class MonitoringProcessor:
             )
         )
         now = utc_now()
-        check.change_status = acquisition_change(latest, hashes, data)
-        snapshot_id = latest.id if latest is not None else None
-        if check.change_status != "UNCHANGED":
+        previous_comparison = None
+        same_artifact = False
+        if compatible_snapshot(latest, hashes):
+            # The latest acquired check may have reused this exact artifact.
+            previous_comparison = await self.session.scalar(
+                select(MonitoringJob.completion_json["comparison"])
+                .join(SourceCheckRun, SourceCheckRun.job_id == MonitoringJob.id)
+                .where(
+                    MonitoringJob.source_id == job.source_id,
+                    MonitoringJob.source_snapshot_id == latest.id,
+                    SourceCheckRun.acquired_at.is_not(None),
+                )
+                .order_by(SourceCheckRun.acquired_at.desc(), MonitoringJob.id.desc())
+                .limit(1)
+            )
+            same_artifact = (
+                latest.content_hash == data["contentHash"]
+                and latest.structure_hash == data["structureHash"]
+                and latest.page_url == data["pageUrl"]
+            )
+        check.change_status = acquisition_change(latest, hashes, data, previous_comparison)
+        if same_artifact:
+            snapshot_id = latest.id
+        else:
             stored_file = await self.sources.register_file(
                 source_dto.StoredFileCreateRequest(
                     storage_key=intent.sealed_key,

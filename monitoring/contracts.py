@@ -21,6 +21,8 @@ MIME_TYPE = "text/html"
 MAX_BYTES = 5 * 1024 * 1024
 MAX_SELECTORS = 64
 
+ComparisonVersion = Literal["dom-comparison-1"]
+COMPARISON_VERSION: ComparisonVersion = "dom-comparison-1"
 Digest = Annotated[str, StringConstraints(pattern=r"^[a-f0-9]{64}$")]
 URL = Annotated[str, StringConstraints(min_length=1, max_length=2048)]
 
@@ -74,6 +76,12 @@ class SelectorReport(PortableModel):
     result: SelectorEvaluationResult
 
 
+class SnapshotComparison(PortableModel):
+    version: ComparisonVersion
+    content_hash: Digest
+    structure_hash: Digest
+
+
 class Completion(UploadRequest):
     upload_intent_id: UUID
     completion_key: UUID
@@ -81,6 +89,7 @@ class Completion(UploadRequest):
     structure_hash_version: Literal["dom-shape-1"]
     hash_algorithm: Literal["sha256"]
     structure_hash: Digest
+    comparison: SnapshotComparison | None = None
     page_url: URL
     captured_at: datetime
     evaluations: list[SelectorReport] = Field(max_length=MAX_SELECTORS)
@@ -126,6 +135,7 @@ class ClaimedJob(PortableModel):
     lease_id: UUID
     lease_expires_at: datetime
     representation: Literal["rendered_dom"] = "rendered_dom"
+    comparison_version: ComparisonVersion
     selectors: list[PinnedSelector]
     navigation: TrustedNavigation | None = None
 

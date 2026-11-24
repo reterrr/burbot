@@ -28,8 +28,9 @@ from extraction.services.capture import CaptureService
 from extraction.services.repositories import ExtractionRepository
 from extraction.services.selector_resolver import HtmlSelectorRuntime, evaluate_selector_version
 from extraction.services.tracking import update_tracking_from_observation
+from monitoring.contracts import COMPARISON_VERSION
 from monitoring.models import MonitoringJob, MonitoringUpload
-from monitoring.processing import MonitoringProcessor
+from monitoring.processing import HASH_FIELDS, MonitoringProcessor, acquisition_change
 from monitoring.queue import MonitoringQueue
 from monitoring.security import MonitoringError, origin
 from sources.schemas.models import (
@@ -214,7 +215,7 @@ async def test_scheduler_concurrency_access_and_expired_lease(domain, client):
         )
 
 
-async def prepare(client, headers, job, html, structure, *, digest=None):
+async def prepare(client, headers, job, html, structure, *, digest=None, comparison=None):
     upload = {
         "leaseId": job["leaseId"],
         "representation": "rendered_dom",
@@ -243,6 +244,7 @@ async def prepare(client, headers, job, html, structure, *, digest=None):
         "pageUrl": job["url"],
         "capturedAt": utc_now().isoformat(),
         "evaluations": report,
+        **({"comparison": comparison} if comparison is not None else {}),
     }
 
 
@@ -277,10 +279,10 @@ async def process(domain, job, *, retry=False):
         assert not await MonitoringProcessor(session).acquire(identity)
 
 
-async def monitor(client, domain, headers, source_id, html, structure="a" * 64):
+async def monitor(client, domain, headers, source_id, html, structure="a" * 64, *, comparison=None):
     await enqueue(client, source_id)
     job = await claim(client, headers)
-    grant, data = await prepare(client, headers, job, html, structure)
+    grant, data = await prepare(client, headers, job, html, structure, comparison=comparison)
     await put(grant, html)
     await complete(client, headers, job, data)
     await process(domain, job)
@@ -358,6 +360,111 @@ async def add_tree(client, domain, source_id, slot, definition, etag=None):
     )
     assert response.status_code == 200, response.text
     return response.headers["etag"]
+
+
+async def test_comparison_versions_start_a_new_baseline():
+    previous = SourceSnapshot(
+        source_id=1,
+        file_id=1,
+        representation="rendered_dom",
+        representation_version="firefox-dom-1",
+        structure_hash_version="dom-shape-1",
+        hash_algorithm="sha256",
+        content_hash="a" * 64,
+        structure_hash="b" * 64,
+    )
+    hashes = {name: getattr(previous, name) for name in HASH_FIELDS}
+    current = {"version": COMPARISON_VERSION, "contentHash": "c" * 64, "structureHash": "d" * 64}
+    completion = {"comparison": current, "contentHash": "e" * 64, "structureHash": "f" * 64}
+    assert acquisition_change(previous, hashes, completion, current) == "UNCHANGED"
+    assert (
+        acquisition_change(
+            previous, hashes, completion, {**current, "version": "future-comparison"}
+        )
+        == "INITIAL_FETCH"
+    )
+    assert (
+        acquisition_change(previous, hashes, completion, {**current, "structureHash": "1" * 64})
+        == "STRUCTURE_CHANGED"
+    )
+
+
+async def test_normalized_changes_keep_exact_evidence_and_legacy_compatibility(
+    domain, client, minio
+):
+    row = await source(domain, client)
+    obj = await domain.make(name="Canonical value")
+    await add_tree(
+        client, domain, row.id, domain.slot(obj, "name"), tree(recipe(part(css("#name"))))
+    )
+    headers, _ = await agent(client, row.id)
+    pending = b'<p id="name">70%</p><img src="/lazy_placeholder.gif" data-src="/public.jpg">'
+    loaded = b'<p id="name">70%</p><img src="/public.jpg">'
+    comparison = {"version": COMPARISON_VERSION, "contentHash": "c" * 64, "structureHash": "d" * 64}
+    legacy = await monitor(client, domain, headers, row.id, pending)
+    assert legacy["changeStatus"] == "INITIAL_FETCH"
+
+    await enqueue(client, row.id)
+    job = await claim(client, headers)
+    assert job["comparisonVersion"] == COMPARISON_VERSION
+    grant, data = await prepare(client, headers, job, pending, "a" * 64, comparison=comparison)
+    await put(grant, pending)
+    for malformed in (
+        {"version": COMPARISON_VERSION, "contentHash": "c" * 64},
+        {**comparison, "contentHash": "not a SHA-256 digest"},
+        {**comparison, "version": "dom-comparison-unknown"},
+    ):
+        await complete(client, headers, job, {**data, "comparison": malformed}, 422)
+    await complete(client, headers, job, data)
+    await process(domain, job, retry=True)
+    assert (await complete(client, headers, job, data))["status"] == "completed"
+    assert (await complete(client, headers, job, {**data, "comparison": None}, 409))["detail"][
+        "code"
+    ] == "COMPLETION_CONFLICT"
+    baseline = (await history(client, row.id))[0]
+    assert baseline["changeStatus"] == "INITIAL_FETCH"
+    assert baseline["sourceSnapshotId"] == legacy["sourceSnapshotId"]
+
+    settled = await monitor(
+        client, domain, headers, row.id, loaded, "b" * 64, comparison=comparison
+    )
+    assert settled["changeStatus"] == "UNCHANGED"
+    assert settled["fields"][0]["status"] == "FIELD_UNCHANGED"
+    assert settled["sourceSnapshotId"] != baseline["sourceSnapshotId"]
+    repeat = await monitor(client, domain, headers, row.id, loaded, "b" * 64, comparison=comparison)
+    assert repeat["changeStatus"] == "UNCHANGED"
+    assert repeat["sourceSnapshotId"] == settled["sourceSnapshotId"]
+    assert await domain.count(SourceSnapshot, source_id=row.id) == 2
+    async with domain.factory() as session:
+        for check, expected in [(legacy, pending), (settled, loaded)]:
+            snapshot = await session.get(SourceSnapshot, check["sourceSnapshotId"])
+            stored = await session.get(StoredFile, snapshot.file_id)
+            file = minio.reader.get_object(Bucket=minio.bucket, Key=stored.storage_key)
+            with file["Body"] as body:
+                assert body.read() == expected
+            assert snapshot.content_hash == stored.sha256 == sha256(expected).hexdigest()
+
+    changed = await monitor(
+        client,
+        domain,
+        headers,
+        row.id,
+        loaded.replace(b"70%", b"80%"),
+        "b" * 64,
+        comparison={**comparison, "contentHash": "e" * 64},
+    )
+    assert changed["changeStatus"] == "CONTENT_CHANGED"
+    field = changed["fields"][0]
+    assert field["status"] == "FIELD_CHANGED"
+    evidence = await review(client, field["taskId"])
+    assert evidence["previousEvidence"] == "70%"
+    assert evidence["currentEvidence"] == "80%"
+    assert evidence["canonicalValue"] == "Canonical value"
+    old_agent = await monitor(client, domain, headers, row.id, loaded, "b" * 64)
+    assert old_agent["changeStatus"] == "INITIAL_FETCH"
+    assert (await monitor(client, domain, headers, row.id, loaded, "b" * 64))[
+        "changeStatus"
+    ] == "UNCHANGED"
 
 
 async def test_detected_evidence_baseline_version_pins_and_review_carry(domain, client, minio):

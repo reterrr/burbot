@@ -12,6 +12,7 @@ from extraction.schemas.selector import Selector, SelectorVersion
 from extraction.schemas.selector_tree import validate_selector_evaluation
 from extraction.services.selectors import SelectorService
 from monitoring.contracts import (
+    COMPARISON_VERSION,
     MAX_SELECTORS,
     REPRESENTATION,
     ClaimedJob,
@@ -745,6 +746,7 @@ class MonitoringQueue:
             lease_id=job.lease_id,
             lease_expires_at=job.lease_expires_at,
             representation=REPRESENTATION,
+            comparison_version=COMPARISON_VERSION,
             selectors=definitions,
             **(
                 {

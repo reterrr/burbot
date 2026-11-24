@@ -573,11 +573,11 @@ endpoint.
 | Agent request | Result |
 | --- | --- |
 | `POST /monitoring/agents/heartbeat` | Records the agent's presence |
-| `POST /monitoring/jobs/claim` | One available scoped job with lease ID and immutable definitions, or HTTP 204 |
+| `POST /monitoring/jobs/claim` | One available scoped job with lease ID, immutable definitions and `comparisonVersion`, or HTTP 204 |
 | `GET /monitoring/jobs/{jobId}` | State of a job assigned to the caller |
 | `POST /monitoring/jobs/{jobId}/heartbeat` | Extends the matching lease |
 | `POST /monitoring/jobs/{jobId}/uploads` | Grants a 60-second PUT for the declared length and `text/html` type |
-| `POST /monitoring/jobs/{jobId}/complete` | Validates and seals the object and records the reported evaluations |
+| `POST /monitoring/jobs/{jobId}/complete` | Validates and seals the object and records the evaluations and optional `comparison` |
 | `POST /monitoring/jobs/{jobId}/fail` | Records an acquisition failure and schedules a bounded retry |
 
 PostgreSQL row locks and a partial unique index permit one active job per Source.
@@ -597,18 +597,50 @@ it when monitoring is disabled. HTML stays out of the outbox.
 
 ## Snapshot and extraction semantics
 
+- Firefox settles the DOM after navigation commits and the document is ready.
+  The settle window uses 600 ms of DOM quiet and a 4-second cap. Image loads
+  can continue during capture.
 - `rendered_dom/firefox-dom-1` serializes a detached copy of the settled HTML
   document as `<!doctype html>`, a newline, and the root's HTML, encoded in
-  UTF-8. It strips extension overlays, executable script and embedded documents,
-  form values, comments, and common credential-bearing attributes and URLs.
-  SHA-256 covers the exact uploaded bytes.
-- `dom-shape-1` hashes a UTF-8 JSON array in element traversal order. Each row
+  UTF-8. It strips known Burbot overlays and `div#automa-palette`, executable
+  script and embedded documents, form values, comments, and common
+  credential-bearing attributes and URLs. `contentHash` is the SHA-256 of these
+  exact uploaded bytes. SelectorTrees evaluate the sanitized DOM and preserve
+  the existing CSS, XPath, text and attribute extraction behavior.
+- `structureHash` uses `dom-shape-1` on the sanitized DOM. It hashes a UTF-8
+  JSON array in element traversal order. Each row
   includes parent index, namespace URI, local name and sorted attribute names.
   Text and attribute values are excluded from the shape hash.
-- The latest SourceSnapshot is comparable when it has stored bytes and the same
-  representation and hash versions. Incompatible snapshots start a new
-  `INITIAL_FETCH` comparison. Identical hashes reuse the prior snapshot while
-  registering fresh selector evaluations and updating the check schedule.
+- The claim response advertises `comparisonVersion: "dom-comparison-1"`.
+  Agents that support it may include `comparison` with `version`, `contentHash`
+  and `structureHash` in the completion. These are SHA-256 fingerprints of
+  UTF-8 JSON. The content fingerprint covers normalized element structure,
+  attributes and literal text in DOM order. The structure fingerprint covers
+  hierarchy and normalized attribute names. Comparison resolves supported URL
+  attributes against the sanitized base, orders attributes deterministically,
+  and recognizes `lazy-hidden` and `lazy-loaded` on HTML images. For a
+  `lazy-hidden` image, it can resolve a missing source or `lazy_placeholder.gif`
+  to a safe deferred resource. It coalesces redundant `data-src` and `data-srcset`
+  values. A real `src` takes precedence over a differing deferred URL. Safe
+  native image `srcset` candidates participate in the fingerprints. HTML
+  sanitization redacts the raw `srcset` attribute. Other lazy-loading conventions
+  can still produce changes.
+- The backend retains the reported comparison in the existing job completion
+  record. It compares the latest stored snapshot using the most recent
+  acquisition linked to it. Matching artifact versions and matching comparison
+  versions permit fingerprint comparison. Two acquisitions without `comparison`
+  use the legacy hashes. A missing baseline or incompatible versions yield
+  `INITIAL_FETCH`. Old agents can omit `comparison`, and new agents send it
+  only after a compatible claim. Historical snapshots retain their stored bytes
+  and hashes.
+- A comparison can return `UNCHANGED` when the exact HTML bytes differ. Each
+  distinct artifact gets a SourceSnapshot so fresh selector evaluations refer
+  to the evidence used during capture. A matching artifact and page URL reuse
+  the prior snapshot. The backend verifies uploaded bytes independently of the
+  agent-reported fingerprints.
+- The saved HTML is a capture artifact. Opening it through `file://` may render
+  differently from the live page because styling, scripts and dependent
+  resources can be absent or unavailable.
 - Backend validation checks the complete diagnostics tree and recomputes the
   reported consensus from its outcomes. Evaluations carry
   `browser_agent_reported` provenance. CaptureWriter saves successful raw
