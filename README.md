@@ -64,6 +64,9 @@ checks of public HTML Sources. A controlled local installation can opt in to
 trusted enrollment. Setup and verification commands are in the monitoring
 guide. [Source monitoring](docs/monitoring.md)
 
+The operator review API groups attention by source and reads pinned checks and
+field evidence. [Monitoring Review Workspace API](docs/monitoring-workspace.md)
+
 ## Firefox workspace identities
 
 The Burbot business schema and workspace identity API connect the Firefox

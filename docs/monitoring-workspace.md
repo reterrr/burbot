@@ -1,0 +1,50 @@
+# Monitoring Review Workspace
+
+The workspace reads monitoring checks, their captured field outcomes, current
+Business Layer values, and Task state. Apply Alembic revision
+`m103_monitoring_source_history` before running the backend. It adds an index on
+the source and creation order of jobs.
+
+## Operator API
+
+Each route uses the existing Monitoring operator Bearer credential and returns
+`Cache-Control: no-store`. All routes in this table use GET.
+
+| Path | Query parameters | Response |
+| --- | --- | --- |
+| `/monitoring/attention/sources` | `offset`, `limit`, `search`, `issue`, `sort`, `includeAll` | `{items, total, offset, limit}`. Each source includes `id`, `name`, `url`, `state`, `lastCheck`, `counts`, `openTaskCount`, `severity` and `reason`. |
+| `/monitoring/sources/{source_id}/review` | Optional `checkId`, `tasksOffset`, `tasksLimit` | Source metadata, `latestCheck`, `latestCompletedCheck`, `selectedCheck`, its `snapshot`, `fields`, and the `earlierTasks` page. |
+| `/monitoring/sources/{source_id}/review/{check_id}/{selector_uuid}` | None | `{selector, evaluation, extractionRunId}` for the recorded field result. |
+| `/monitoring/sources/{source_id}/history?summary=true` | `offset`, `limit` | Paginated check summaries with check status, time, change status, error code, run ID, and snapshot ID. The existing history response is still available with the default query. |
+
+Most recent means the latest completed or failed job by creation order. An
+in-flight or cancelled job does not replace a settled result. A failed job
+without evaluations leaves configured fields unchecked. Use `checkId` to
+inspect a historical job and the snapshot from that particular acquisition.
+The history view includes checks which reused an earlier snapshot.
+
+Attention counts come from the latest settled check, with one outcome per
+selector-backed field binding. Open tasks are counted independently from live
+task state on active workflows. The task's originating job identifies its
+capture even when a later check reuses the same task ID. The source review
+includes currently configured fields when viewing the latest check and
+capture-bound fields when viewing an earlier check.
+
+Attention ranks failed jobs, extraction problems, and open high-priority field
+reviews first. Other open reviews and website changes with incomplete coverage
+are normal priority. Website changes with complete field coverage can be
+informational. Healthy monitored sources are available with `includeAll=true`.
+Sort by `priority` or `last_checked`. Issue values are `changed`, `missing`,
+`extraction_failed`, `initial`, `ambiguous`, `conflict`, `source_changed`,
+`job_failed`, and `open_tasks`. Search accepts a source ID or a case-insensitive
+URL substring. The current Source model has no title field.
+
+Field rows contain the business field and optional named business object, live
+canonical value and value ID, previous/current evidence, captured selector and
+evaluation identifiers, and any linked task. Missing evidence and unchecked
+fields have distinct statuses. Definitions and diagnostics are read only when
+the inspector opens and use the job's pinned version. Legacy results may have
+unavailable evidence or diagnostics. Snapshot viewing uses authorized metadata.
+
+Completing tasks uses the existing Task status operation. Baseline acceptance
+and canonical value changes use separate Business Layer operations.
