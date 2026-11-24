@@ -216,11 +216,13 @@ async def history(
 
 
 @router.get("/reviews/{task_id}", dependencies=[Depends(operator)])
-async def get_review(task_id: int, session: Session):
+async def get_review(task_id: int, session: Session, response: Response):
     try:
-        return await review_detail(session, task_id)
+        detail = await review_detail(session, task_id)
     except MonitoringError as error:
         raise as_http(error) from error
+    response.headers["Cache-Control"] = "no-store"
+    return detail
 
 
 async def agent_operation(

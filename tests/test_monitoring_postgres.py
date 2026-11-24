@@ -14,7 +14,7 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 from test_collections_postgres import database as database
 from test_collections_postgres import domain as domain
-from test_selector_tree import css, part, recipe, tree
+from test_selector_tree import css, part, recipe, tree, uuid
 
 from business_layer.schemas.models import BusinessObject, BusinessObjectFieldValue
 from extraction.schemas import capture as capture_dto
@@ -28,7 +28,7 @@ from extraction.services.capture import CaptureService
 from extraction.services.repositories import ExtractionRepository
 from extraction.services.selector_resolver import HtmlSelectorRuntime, evaluate_selector_version
 from extraction.services.tracking import update_tracking_from_observation
-from monitoring.models import MonitoringJob, MonitoringUpload
+from monitoring.models import MonitoringJob, MonitoringUpload, SourceCheckRun
 from monitoring.processing import MonitoringProcessor
 from monitoring.queue import MonitoringQueue
 from monitoring.security import MonitoringError, origin
@@ -140,6 +140,7 @@ async def history(client, source_id):
 async def review(client, task_id):
     response = await client.get(f"/monitoring/reviews/{task_id}", headers=OPERATOR)
     assert response.status_code == 200, response.text
+    assert response.headers["cache-control"] == "no-store"
     return response.json()
 
 
@@ -379,6 +380,8 @@ async def test_detected_evidence_baseline_version_pins_and_review_carry(domain, 
     assert initial_review["canonicalValue"] == "B2B"
     assert initial_review["previousEvidence"] is None
     assert initial_review["currentEvidence"] == original_evidence
+    assert initial_review["selector"]["version"]["status"] == "active"
+    assert initial_review["selector"]["identity"] == initial["selector"]
 
     # Accept the same observation already recorded as the latest check.
     async with domain.factory.begin() as session:
@@ -434,6 +437,19 @@ async def test_detected_evidence_baseline_version_pins_and_review_carry(domain, 
     assert fields[0]["status"] == "FIELD_CHANGED"
     assert fields[0]["baselineObservationId"] == old_observation_id
     changed_review = await review(client, fields[0]["taskId"])
+    assert changed_review["selector"] == {
+        "identity": {
+            key: value for key, value in initial["selector"].items() if key != "activeVersionUuid"
+        },
+        "versionId": fields[0]["selectorVersionId"],
+        "version": {**version, "status": "superseded"},
+    }
+    execution = changed_review["evaluation"]
+    assert execution["result"] == payload["evaluations"][0]["result"]
+    assert execution["provenance"] == "browser_agent_reported"
+    assert execution["pageUrl"] == row.url
+    assert execution["sourceSnapshotId"] == changed_review["snapshot"]["id"]
+    assert execution["extractionRunId"] == changed_review["extractionRunId"]
     assert {
         "businessObjectFieldId": slot.object_field_id,
         "canonicalValueId": slot.value_id,
@@ -506,6 +522,9 @@ async def test_detected_evidence_baseline_version_pins_and_review_carry(domain, 
     assert updated_review["canonicalValue"] == "B2C"
     assert updated_review["previousEvidence"] == original_evidence
     assert updated_review["currentEvidence"] == "New"
+    assert updated_review["selector"] == changed_review["selector"]
+    assert updated_review["evaluation"] == changed_review["evaluation"]
+    assert updated_review["snapshot"] == changed_review["snapshot"]
 
     back = await monitor(client, domain, headers, row.id, html)
     assert back["fields"][0]["taskId"] == fields[0]["taskId"]
@@ -519,6 +538,78 @@ async def test_detected_evidence_baseline_version_pins_and_review_carry(domain, 
         assert same["fields"][0]["requiresReview"] is False
     assert await domain.count(Task) == 3
     assert (await review(client, done.id))["requiresReview"] is False
+
+
+async def test_review_checks_execution_links_and_keeps_legacy_comparisons(domain, client, minio):
+    row = await source(domain, client)
+    xpath = {"uuid": uuid(), "kind": "xpath", "order": 1, "expression": "//p"}
+    definition = tree(
+        recipe(part(css("#required"), xpath)),
+        recipe(part(css("#backup")), order=1),
+    )
+    await add_tree(client, domain, row.id, None, definition)
+    headers, _ = await agent(client, row.id)
+    first = await monitor(client, domain, headers, row.id, b"<p>First</p><p>Second</p>")
+    field = first["fields"][0]
+    task_id = field["taskId"]
+    path = f"/monitoring/reviews/{task_id}"
+    assert (await client.get(path)).status_code == 401
+    assert (await client.get(path, headers=headers)).status_code == 401
+    assert (await client.patch(path, headers=OPERATOR)).status_code == 405
+    detail = await review(client, task_id)
+    assert detail["currentEvidence"] is None
+    assert detail["evidenceStatus"] == "AMBIGUOUS"
+    assert detail["source"] == {"id": row.id, "url": row.url}
+    assert detail["snapshot"]["id"] == first["sourceSnapshotId"]
+    assert "storage_key" not in detail["snapshot"]
+    assert detail["selector"]["version"]["recipes"] == definition["versions"][0]["recipes"]
+    result = detail["evaluation"]["result"]
+    assert result["status"] == "ambiguous"
+    recipes = result["recipeResults"]
+    assert [recipe["status"] for recipe in recipes] == ["ambiguous", "not_found"]
+    locators = recipes[0]["partResults"][0]["locatorResults"]
+    assert [(locator["status"], locator["matchCount"]) for locator in locators] == [
+        ("not_found", 0),
+        ("ambiguous", 2),
+    ]
+
+    async with domain.factory.begin() as session:
+        check = await session.get(SourceCheckRun, UUID(first["jobId"]))
+        task = await session.get(Task, task_id)
+        task.metadata_json = {"monitoringJobId": first["jobId"]}
+        check.field_results = [
+            {
+                "taskId": task_id,
+                "status": field["status"],
+                "evaluationId": field["evaluationId"],
+            }
+        ]
+    legacy = await review(client, task_id)
+    assert legacy["selector"] == detail["selector"]
+    assert legacy["evaluation"] == detail["evaluation"]
+
+    async with domain.factory.begin() as session:
+        check = await session.get(SourceCheckRun, UUID(first["jobId"]))
+        check.field_results = [{**field, "evaluationId": None}]
+    unevaluated = await review(client, task_id)
+    assert unevaluated["selector"] == detail["selector"]
+    assert unevaluated["evaluation"] is None
+
+    second = await monitor(client, domain, headers, row.id, b"<span>No matching element</span>")
+    assert second["sourceSnapshotId"] != first["sourceSnapshotId"]
+    assert second["fields"][0]["status"] == "FIELD_MISSING"
+    async with domain.factory.begin() as session:
+        check = await session.get(SourceCheckRun, UUID(first["jobId"]))
+        check.field_results = [{**field, "evaluationId": second["fields"][0]["evaluationId"]}]
+    invalid = await review(client, task_id)
+    assert invalid["selector"] == detail["selector"]
+    assert invalid["evaluation"] is None
+    assert invalid["snapshot"]["id"] == first["sourceSnapshotId"]
+
+    async with domain.factory.begin() as session:
+        job = await session.get(MonitoringJob, UUID(first["jobId"]))
+        job.source_snapshot_id = second["sourceSnapshotId"]
+    assert (await client.get(path, headers=OPERATOR)).status_code == 404
 
 
 async def test_initial_evidence_uses_only_previous_observation_of_same_selector(
@@ -713,6 +804,9 @@ async def test_selector_failure_and_terminal_processing_failure_create_reviews(
     conflict = await monitor(client, domain, headers, row.id, html)
     assert conflict["fields"][0]["status"] == "FIELD_CONFLICT"
     assert conflict["fields"][0]["observationId"] is None
+    assert (await review(client, conflict["fields"][0]["taskId"]))["evaluation"]["result"][
+        "status"
+    ] == "conflict"
     async with domain.factory() as session:
         conflict_task = await session.get(Task, conflict["fields"][0]["taskId"])
         assert conflict_task.reason == TaskReason.VALUE_CONFLICT
@@ -733,6 +827,9 @@ async def test_selector_failure_and_terminal_processing_failure_create_reviews(
     assert result["status"] == "failed" and result["acquiredAt"]
     assert result["sourceSnapshotId"] == conflict["sourceSnapshotId"]
     assert result["fields"][0]["status"] == "FIELD_EXTRACTION_FAILED"
+    unavailable = await review(client, result["fields"][0]["taskId"])
+    assert unavailable["selector"] is None and unavailable["evaluation"] is None
+    assert unavailable["extractionRunId"] == result["extractionRunId"]
     async with domain.factory() as session:
         task = await session.get(Task, result["fields"][0]["taskId"])
         run = await session.get(ExtractionRun, result["extractionRunId"])
