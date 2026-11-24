@@ -184,7 +184,7 @@ async def get_inbox_count(
 )
 async def get_inbox(
         service: TasksServiceDep,
-        query: Pagination,
+        query: Annotated[dto.InboxQuery, Query()],
 ) -> dto.TaskInboxResponse:
     """
     Only actionable tasks belonging to ACTIVE workflows.
