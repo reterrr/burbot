@@ -20,13 +20,12 @@ from tasks.exceptions.exceptions import (
     TaskValidationError,
     WorkflowNotFound,
 )
-
 from tasks.schemas.models import (
+    Task,
+    TaskReference,
+    TaskStatus,
     Workflow,
     WorkflowStatus,
-    Task,
-    TaskStatus,
-    TaskReference,
     utc_now,
 )
 
@@ -294,9 +293,16 @@ class TasksService:
             task
         )
 
+    @staticmethod
+    def _allowed_statuses(task: Task, workflow: Workflow) -> list[TaskStatus]:
+        if workflow.status == WorkflowStatus.ACTIVE:
+            return sorted(TASK_STATUS_TRANSITIONS[task.status])
+        return []
+
     async def _task_detail_response(
             self,
             task: Task,
+            workflow: Workflow,
     ) -> dto.TaskDetailResponse:
         references = await self._session.scalars(
             select(TaskReference)
@@ -315,6 +321,7 @@ class TasksService:
 
         return dto.TaskDetailResponse(
             **task_response.model_dump(),
+            allowed_statuses=self._allowed_statuses(task, workflow),
             references=[
                 dto.TaskReferenceResponse.model_validate(
                     reference
@@ -754,7 +761,7 @@ class TasksService:
             await self._session.flush()
 
             return await self._task_detail_response(
-                task
+                task, workflow
             )
     async def get_task(
             self,
@@ -765,7 +772,7 @@ class TasksService:
         )
 
         return await self._task_detail_response(
-            task
+            task, await self._get_workflow(task.workflow_id)
         )
 
     async def list_workflow_tasks(
@@ -844,7 +851,7 @@ class TasksService:
 
             if target_status == task.status:
                 return await self._task_detail_response(
-                    task
+                    task, workflow
                 )
 
             allowed = TASK_STATUS_TRANSITIONS[
@@ -896,7 +903,7 @@ class TasksService:
             await self._session.flush()
 
             result = await self._task_detail_response(
-                task
+                task, workflow
             )
 
         return result
@@ -960,6 +967,13 @@ class TasksService:
     # Inbox / notification-like tasks
     # ========================================================
 
+    @staticmethod
+    def _inbox_conditions():
+        return [
+            col(Workflow.status) == WorkflowStatus.ACTIVE,
+            col(Task.status).in_([TaskStatus.PENDING, TaskStatus.IN_PROGRESS]),
+        ]
+
     async def get_inbox_count(
             self,
     ) -> int:
@@ -971,38 +985,25 @@ class TasksService:
                 col(Workflow.id)
                 == col(Task.workflow_id),
             )
-            .where(
-                col(Workflow.status)
-                == WorkflowStatus.ACTIVE,
-
-                col(Task.status).in_(
-                    [
-                        TaskStatus.PENDING,
-                        TaskStatus.IN_PROGRESS,
-                    ]
-                ),
-            )
+            .where(*self._inbox_conditions())
         )
 
         return count or 0
 
     async def get_inbox(
             self,
-            query: dto.Pagination,
+            query: dto.InboxQuery,
     ) -> dto.TaskInboxResponse:
-        condition = (
-                col(Workflow.status)
-                == WorkflowStatus.ACTIVE
-        )
-
-        task_condition = (
-            col(Task.status).in_(
-                [
-                    TaskStatus.PENDING,
-                    TaskStatus.IN_PROGRESS,
-                ]
-            )
-        )
+        filters = query.model_dump(mode="json", exclude={"offset", "limit"}, exclude_none=True)
+        conditions = self._inbox_conditions()
+        columns = {
+            "status": col(Task.status),
+            "type": col(Task.type),
+            "reason": col(Task.reason),
+            "source_id": col(Workflow.source_id),
+            "task_id": col(Task.id),
+        }
+        conditions.extend(columns[name] == value for name, value in filters.items())
 
         total = await self._session.scalar(
             select(func.count())
@@ -1012,10 +1013,7 @@ class TasksService:
                 col(Workflow.id)
                 == col(Task.workflow_id),
             )
-            .where(
-                condition,
-                task_condition,
-            )
+            .where(*conditions)
         )
 
         rows = await self._session.execute(
@@ -1028,12 +1026,9 @@ class TasksService:
                 col(Workflow.id)
                 == col(Task.workflow_id),
             )
-            .where(
-                condition,
-                task_condition,
-            )
+            .where(*conditions)
             .order_by(
-                col(Task.created_at).desc()
+                col(Task.created_at).desc(), col(Task.id).desc()
             )
             .offset(query.offset)
             .limit(query.limit)
@@ -1059,6 +1054,7 @@ class TasksService:
                     workflow_key=(
                         workflow.key
                     ),
+                    allowed_statuses=self._allowed_statuses(task, workflow),
                 )
             )
 
@@ -1068,4 +1064,5 @@ class TasksService:
             total=total or 0,
             offset=query.offset,
             limit=query.limit,
+            applied_filters=filters,
         )

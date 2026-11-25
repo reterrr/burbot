@@ -4,12 +4,13 @@ import os
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.routing import APIRoute
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from monitoring.attention import AttentionIssue, AttentionSort, attention_sources
 from monitoring.contracts import (
     AgentSourcesUpdate,
     Approval,
@@ -28,6 +29,7 @@ from monitoring.onboarding_config import MonitoringMode, onboarding_config
 from monitoring.queue import MonitoringQueue, status
 from monitoring.review import review_detail
 from monitoring.security import MonitoringError, authenticate_agent, authorize_admin
+from monitoring.workspace import check_history, field_review, source_review
 from shared.database import get_session
 
 
@@ -65,6 +67,8 @@ Session = Annotated[AsyncSession, Depends(get_session)]
 Credentials = Annotated[HTTPAuthorizationCredentials | None, Depends(bearer)]
 SourceCursor = Annotated[int, Query(alias="afterSourceId", ge=0, le=9223372036854775807)]
 PageLimit = Annotated[int, Query(ge=1, le=100)]
+PageOffset = Annotated[int, Query(ge=0, le=2147483647)]
+SourceId = Annotated[int, Path(ge=1, le=9223372036854775807)]
 
 
 def token(credentials):
@@ -209,18 +213,77 @@ async def request_check(source_id: int, session: Session):
 async def history(
     source_id: int,
     session: Session,
+    response: Response,
     offset: Annotated[int, Query(ge=0)] = 0,
     limit: Annotated[int, Query(ge=1, le=100)] = 50,
+    summary: bool = False,
 ):
+    response.headers["Cache-Control"] = "no-store"
+    if summary:
+        return await check_history(session, source_id, offset, limit)
     return await MonitoringQueue(session).history(source_id, offset, limit)
 
 
+@router.get("/attention/sources", dependencies=[Depends(operator)])
+async def get_attention_sources(
+    session: Session,
+    response: Response,
+    search: Annotated[str, Query(max_length=2048)] = "",
+    issue: AttentionIssue | None = None,
+    sort: AttentionSort = "priority",
+    include_all: Annotated[bool, Query(alias="includeAll")] = False,
+    offset: PageOffset = 0,
+    limit: PageLimit = 20,
+):
+    response.headers["Cache-Control"] = "no-store"
+    return await attention_sources(
+        session,
+        search=search,
+        issue=issue,
+        sort=sort,
+        include_all=include_all,
+        offset=offset,
+        limit=limit,
+    )
+
+
+@router.get("/sources/{source_id}/review", dependencies=[Depends(operator)])
+async def get_source_review(
+    source_id: SourceId,
+    session: Session,
+    response: Response,
+    check_id: Annotated[UUID | None, Query(alias="checkId")] = None,
+    tasks_offset: Annotated[int, Query(alias="tasksOffset", ge=0, le=2147483647)] = 0,
+    tasks_limit: Annotated[int, Query(alias="tasksLimit", ge=1, le=100)] = 20,
+):
+    response.headers["Cache-Control"] = "no-store"
+    return await source_review(
+        session,
+        source_id,
+        check_id=check_id,
+        tasks_offset=tasks_offset,
+        tasks_limit=tasks_limit,
+    )
+
+
+@router.get(
+    "/sources/{source_id}/review/{check_id}/{selector_uuid}", dependencies=[Depends(operator)]
+)
+async def get_field_review(
+    source_id: SourceId, check_id: UUID, selector_uuid: UUID, session: Session, response: Response
+):
+    response.headers["Cache-Control"] = "no-store"
+    return await field_review(session, source_id, check_id, selector_uuid)
+
+
 @router.get("/reviews/{task_id}", dependencies=[Depends(operator)])
-async def get_review(task_id: int, session: Session):
+async def get_review(task_id: int, session: Session, response: Response):
     try:
-        return await review_detail(session, task_id)
+        detail = await review_detail(session, task_id)
     except MonitoringError as error:
         raise as_http(error) from error
+    response.headers["Cache-Control"] = "no-store"
+    return detail
 
 
 async def agent_operation(

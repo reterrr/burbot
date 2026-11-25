@@ -1,9 +1,16 @@
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
-from tasks.schemas.models import TaskType, TaskReason, TaskReferenceRole, TaskReferenceType, TaskStatus, WorkflowStatus
+from tasks.schemas.models import (
+    TaskReason,
+    TaskReferenceRole,
+    TaskReferenceType,
+    TaskStatus,
+    TaskType,
+    WorkflowStatus,
+)
 
 
 class Pagination(BaseModel):
@@ -17,6 +24,14 @@ class Pagination(BaseModel):
         ge=1,
         le=100,
     )
+
+
+class InboxQuery(Pagination):
+    status: Literal[TaskStatus.PENDING, TaskStatus.IN_PROGRESS] | None = None
+    type: TaskType | None = None
+    reason: TaskReason | None = None
+    source_id: int | None = Field(default=None, gt=0, le=9223372036854775807)
+    task_id: int | None = Field(default=None, gt=0, le=9223372036854775807)
 
 
 class TaskReferenceCreate(BaseModel):
@@ -102,6 +117,7 @@ class TaskResponse(BaseModel):
 
 class TaskDetailResponse(TaskResponse):
     references: list[TaskReferenceResponse]
+    allowed_statuses: list[TaskStatus] = Field(default_factory=list)
 
 
 class TaskListResponse(BaseModel):
@@ -195,6 +211,7 @@ class TaskInboxItem(BaseModel):
     source_snapshot_id: int
 
     workflow_key: str
+    allowed_statuses: list[TaskStatus] = Field(default_factory=list)
 
 
 class TaskInboxResponse(BaseModel):
@@ -203,3 +220,4 @@ class TaskInboxResponse(BaseModel):
     total: int
     offset: int
     limit: int
+    applied_filters: dict[str, str | int] = Field(default_factory=dict)

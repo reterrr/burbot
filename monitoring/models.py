@@ -106,6 +106,7 @@ class MonitoringJob(SQLModel, table=True):
             postgresql_where=text("status NOT IN ('completed','failed','cancelled')"),
         ),
         Index("ix_monitoring_jobs_queue", "status", "available_at"),
+        Index("ix_monitoring_jobs_source_created", "source_id", "created_at", "id"),
     )
     id: UUID = Field(default_factory=uuid4, sa_column=Column(Uuid, primary_key=True))
     source_id: int = Field(sa_column=reference("monitoring_sources.source_id"))
