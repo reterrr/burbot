@@ -180,6 +180,11 @@ async def older_tasks(session, source_id, latest_id, offset, limit):
     query = f"""
         FROM ({MONITORING_TASKS}) t WHERE {OPEN_TASKS} AND source_id = :source
         AND job_id IS DISTINCT FROM CAST(:latest AS uuid)
+        AND (t.type <> 'review_business_object' OR NOT EXISTS (
+            SELECT 1 FROM source_check_runs c
+            WHERE c.job_id = CAST(:latest AS uuid)
+              AND c.field_results @> jsonb_build_array(jsonb_build_object('taskId', t.id))
+        ))
     """
     params = {"source": source_id, "latest": latest_id, "offset": offset, "limit": limit}
     total = await session.scalar(text(f"SELECT count(*) {query}"), params)

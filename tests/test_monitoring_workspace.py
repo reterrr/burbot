@@ -61,7 +61,7 @@ async def test_workspace_groups_tasks_and_reads_the_selected_capture(domain, cli
     next_version = await change_locator(client, uuid, etag, "#second")
     second = await monitor(client, domain, headers, row.id, html)
     second_task = second["fields"][0]["taskId"]
-    assert first_task != second_task
+    assert first_task == second_task
     assert first["sourceSnapshotId"] == second["sourceSnapshotId"]
     assert second["changeStatus"] == "UNCHANGED"
     failed = tree(recipe(part(css("["))))
@@ -75,7 +75,7 @@ async def test_workspace_groups_tasks_and_reads_the_selected_capture(domain, cli
     next_page = await read(client, ATTENTION, limit=1, offset=1)
     assert first_page["total"] == next_page["total"] == 2
     a, b = sorted(first_page["items"] + next_page["items"], key=lambda item: item["id"])
-    assert a["id"] == row.id and a["openTaskCount"] == 2
+    assert a["id"] == row.id and a["openTaskCount"] == 1
     assert a["counts"]["changed"] == 1 and a["counts"]["problems"] == 1
     assert b["id"] == other.id and b["counts"]["missing"] == b["counts"]["extractionFailed"] == 1
     assert b["counts"]["unchanged"] == 0 and b["counts"]["problems"] == 2
@@ -94,8 +94,8 @@ async def test_workspace_groups_tasks_and_reads_the_selected_capture(domain, cli
     assert field["selectorVersionUuid"] == next_version
     assert "selector" not in field and "evaluation" not in field
     assert current["latestCheck"]["id"] == second["jobId"]
-    assert field["task"]["originCheckId"] == second["jobId"]
-    assert current["earlierTasks"]["items"][0]["id"] == first_task
+    assert field["task"]["originCheckId"] == first["jobId"]
+    assert current["earlierTasks"]["total"] == 0
 
     historic = await read(client, path, checkId=first["jobId"])
     assert historic["latestCheck"]["id"] == second["jobId"]
@@ -144,6 +144,7 @@ async def test_workspace_groups_tasks_and_reads_the_selected_capture(domain, cli
     assert updated["earlierTasks"]["total"] == 0
     assert updated["fields"][0]["canonicalValueId"] == slot.value_id
     assert updated["fields"][0]["canonicalValue"] == "Original"
+    assert updated["fields"][0]["task"]["status"] == "completed"
     async with domain.factory.begin() as session:
         task = await session.get(Task, second_task)
         workflow = await session.get(Workflow, task.workflow_id)

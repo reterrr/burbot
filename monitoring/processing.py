@@ -23,6 +23,7 @@ from monitoring.models import (
     MonitoringUpload,
     SourceCheckRun,
 )
+from monitoring.object_tasks import Finding, assign_object_reviews, previous_findings
 from monitoring.queue import PROCESSING_LIMIT, MonitoringQueue, retry_delay
 from monitoring.review import (
     EVIDENCE_STATUS,
@@ -230,7 +231,7 @@ class MonitoringProcessor:
                 "root_element_client_key": "document",
             }
         ]
-        values, issues, evaluations = [], [], {}
+        values, issues, evaluations, owners = [], [], {}, {}
         await self.capture.repo.get_or_create(TokenClass, {"id": "text"}, {"name": "Text"})
         for _, version, selector in pins:
             key = f"selector-{selector.uuid}"
@@ -243,6 +244,7 @@ class MonitoringProcessor:
                 )
                 if slot is None or slot.business_entity_field_id != field.id:
                     raise MonitoringError(409, "SELECTOR_BINDING_CHANGED")
+                owners[selector.uuid] = slot.business_object_id
             scopes.append(
                 {
                     "client_key": key,
@@ -292,24 +294,28 @@ class MonitoringProcessor:
                         "business_entity_field_id": field.id,
                     }
                 )
-        return capture_dto.CaptureRequest.model_validate(
-            {
-                "capture_key": f"monitoring:{job.id}",
-                "scopes": scopes,
-                "scope_instances": instances,
-                "values": values,
-                "issues": issues,
-                "elements": [
-                    {
-                        "client_key": "document",
-                        "element_from": "HTML",
-                        "html": {"tag_name": "html"},
-                        "structural_hash": data["structureHash"],
-                    }
-                ],
-            },
-            context={"selector_evidence": True},
-        ), evaluations
+        return (
+            capture_dto.CaptureRequest.model_validate(
+                {
+                    "capture_key": f"monitoring:{job.id}",
+                    "scopes": scopes,
+                    "scope_instances": instances,
+                    "values": values,
+                    "issues": issues,
+                    "elements": [
+                        {
+                            "client_key": "document",
+                            "element_from": "HTML",
+                            "html": {"tag_name": "html"},
+                            "structural_hash": data["structureHash"],
+                        }
+                    ],
+                },
+                context={"selector_evidence": True},
+            ),
+            evaluations,
+            owners,
+        )
 
     async def review_task(
         self,
@@ -458,9 +464,7 @@ class MonitoringProcessor:
             return baseline_id, None, None, None
         return baseline_id, previous, await repo.observation_value(previous), "previous_observation"
 
-    async def _outcome(
-        self, job, selector, evaluation, observation_id, observed_at, previous_task_id
-    ):
+    async def _outcome(self, job, selector, evaluation, observation_id, observed_at, owner):
         baseline_id, previous, prior_value, comparison = await self._comparison_evidence(
             job, selector, observed_at
         )
@@ -490,22 +494,7 @@ class MonitoringProcessor:
                     comparable_value(current),
                 )
 
-        task = (
-            await self.review_task(
-                job,
-                outcome,
-                reason,
-                selector=selector,
-                observation=observed,
-                previous=previous,
-                values=values,
-                legacy_values=legacy_values,
-                previous_task_id=previous_task_id,
-            )
-            if reason is not None
-            else None
-        )
-        return {
+        result = {
             "selectorUuid": str(selector.uuid),
             "selectorVersionId": evaluation.selector_version_id,
             "selectorVersionUuid": evaluation.result_json["selectorVersionUuid"],
@@ -513,38 +502,59 @@ class MonitoringProcessor:
             "status": outcome,
             "evidenceStatus": EVIDENCE_STATUS[outcome],
             "evidenceChanged": evidence_changed(outcome),
-            "requiresReview": task is not None and task.status in OPEN_REVIEW_STATUSES,
+            "requiresReview": False,
+            "businessObjectId": owner,
+            "businessFieldId": selector.business_entity_field_id,
             "businessObjectFieldId": selector.business_object_field_id,
             "observationId": observation_id,
             "previousObservationId": previous.id if previous else None,
             "baselineObservationId": baseline_id,
             "comparison": comparison,
-            "taskId": task.id if task else None,
+            "taskId": None,
         }
+        if reason is not None and owner is not None:
+            result["findingKey"] = fingerprint(
+                [
+                    result["businessObjectFieldId"],
+                    result["selectorUuid"],
+                    outcome,
+                    evaluation.result_json["status"],
+                    values,
+                ]
+            )
+        return Finding(result, reason, values, legacy_values), observed, previous
 
-    async def _previous_tasks(self, source_id):
-        fields = await self.session.scalar(
-            select(SourceCheckRun.field_results)
-            .join(MonitoringJob, MonitoringJob.id == SourceCheckRun.job_id)
-            .where(MonitoringJob.source_id == source_id, MonitoringJob.status == "completed")
-            .order_by(SourceCheckRun.processed_at.desc(), MonitoringJob.id.desc())
-            .limit(1)
-        )
-        return {
-            row["selectorUuid"]: row["taskId"]
-            for row in fields or []
-            if row.get("selectorUuid") and row.get("taskId") is not None
-        }
+    async def _advance_review_workflow(self, job):
+        workflow = await self.tasks._get_current_workflow(job.source_id, for_update=True)
+        if (
+            workflow is not None
+            and workflow.source_snapshot_id != job.source_snapshot_id
+            and await self.session.scalar(
+                select(Task.id)
+                .where(
+                    Task.workflow_id == workflow.id,
+                    Task.status.in_(OPEN_REVIEW_STATUSES),
+                    Task.metadata_json["monitoringKey"].as_string().is_not(None),
+                )
+                .limit(1)
+            )
+            is not None
+        ):
+            await self.tasks.start_source_workflow(
+                job.source_id,
+                WorkflowStartRequest(source_snapshot_id=job.source_snapshot_id),
+            )
 
     async def process(self, job_id, *, expected_flow_id=None):
         job, check = await self._lock(job_id, lock_workflow=True, expected_flow_id=expected_flow_id)
         if job is None or check.acquired_at is None:
             return False
         pins = await self.queue._pins(job)
+        await self._advance_review_workflow(job)
         results = []
+        pending = []
         if pins:
-            previous_tasks = await self._previous_tasks(job.source_id)
-            request, evaluations = await self._payload(job, pins)
+            request, evaluations, owners = await self._payload(job, pins)
             capture = await self.capture.register_capture(
                 job.extraction_run_id,
                 request,
@@ -553,16 +563,43 @@ class MonitoringProcessor:
             )
             for _, _, selector in pins:
                 key = f"selector-{selector.uuid}"
-                results.append(
-                    await self._outcome(
-                        job,
-                        selector,
-                        evaluations[key],
-                        capture.observation_ids_by_client_key.get(key),
-                        check.acquired_at,
-                        previous_tasks.get(str(selector.uuid)),
-                    )
+                owner = owners.get(selector.uuid)
+                finding, observed, previous = await self._outcome(
+                    job,
+                    selector,
+                    evaluations[key],
+                    capture.observation_ids_by_client_key.get(key),
+                    check.acquired_at,
+                    owner,
                 )
+                results.append(finding.result)
+                if finding.reason is not None:
+                    pending.append((selector, finding, observed, previous))
+        if pending:
+            past = await previous_findings(
+                self.session, job.source_id, [str(selector.uuid) for selector, *_ in pending]
+            )
+            bound = []
+            for selector, finding, observed, previous in pending:
+                row = finding.result
+                if row["businessObjectId"] is not None:
+                    bound.append(finding)
+                    continue
+                task = await self.review_task(
+                    job,
+                    row["status"],
+                    finding.reason,
+                    selector=selector,
+                    observation=observed,
+                    previous=previous,
+                    values=finding.values,
+                    legacy_values=finding.legacy_values,
+                    previous_task_id=past.get(str(selector.uuid), {}).get("taskId"),
+                )
+                row.update(taskId=task.id, requiresReview=task.status in OPEN_REVIEW_STATUSES)
+            if bound:
+                workflow = await self.tasks._get_current_workflow(job.source_id, for_update=True)
+                await assign_object_reviews(self.session, self.tasks, job, workflow, bound, past)
         check.field_results = results
         check.processed_at = utc_now()
         self.queue._finish(job, "completed")

@@ -21,7 +21,8 @@ AttentionSort = Literal["priority", "last_checked"]
 
 # A carried task belongs to the job that created it, even when a later check reuses its ID.
 MONITORING_TASKS = """
-    SELECT t.id, t.title, t.status, t.created_at, w.status AS workflow_status,
+    SELECT t.id, t.title, t.type, t.status, t.created_at, t.metadata_json, t.workflow_id,
+           w.status AS workflow_status,
            j.id AS job_id, j.source_id, j.source_snapshot_id, j.completed_at,
            t.metadata_json ->> 'evidenceStatus' AS evidence_status
     FROM tasks t

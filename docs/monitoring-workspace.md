@@ -12,6 +12,9 @@ Each route uses the existing Monitoring operator Bearer credential and returns
 
 | Path | Query parameters | Response |
 | --- | --- | --- |
+| `/monitoring/objects` | `offset`, `limit` | Open reviews grouped by BusinessObject ID, with the name, stored code, entity, distinct affected slots and Sources, task count, severity, status, and last check time. |
+| `/monitoring/objects/{object_id}/review` | `offset`, `limit`, optional `taskId` | Object display data and a page of Source-scoped tasks. Open tasks appear first. Each task includes recorded findings, unchanged fields from the latest completed check when available, and allowed status transitions. |
+| `/monitoring/object-reviews/{task_id}/history` | `offset`, `limit` | Captures associated with the task, newest first, with the field, selector version, evaluation, observation, and snapshot IDs. |
 | `/monitoring/attention/sources` | `offset`, `limit`, `search`, `issue`, `sort`, `includeAll` | `{items, total, offset, limit}`. Each source includes `id`, `name`, `url`, `state`, `lastCheck`, `counts`, `openTaskCount`, `severity` and `reason`. |
 | `/monitoring/sources/{source_id}/review` | Optional `checkId`, `tasksOffset`, `tasksLimit` | Source metadata, `latestCheck`, `latestCompletedCheck`, `selectedCheck`, its `snapshot`, `fields`, and the `earlierTasks` page. |
 | `/monitoring/reviews/{task_id}` | None | Evidence and canonical value for the task's originating check, captured diagnostics, and readable task references. |
@@ -26,6 +29,36 @@ in-flight or cancelled job does not replace a settled result. A failed job
 without evaluations leaves configured fields unchecked. Use `checkId` to
 inspect a historical job and the snapshot from that particular acquisition.
 The history view includes checks which reused an earlier snapshot.
+
+## Object reviews
+
+Monitoring creates one open `REVIEW_BUSINESS_OBJECT` task per affected object
+and Source. The object's slot owner is the `business_object` target. The task
+remains in the Source workflow and carries forward with its original ID when a
+snapshot advances the workflow. Different Sources keep independent task statuses
+and share one Inbox row for the object. A slot contributes once to the Inbox
+field count even when several selectors or Sources monitor it.
+
+Each check stores its slot, selector version, evaluation, observation and
+outcome in `SourceCheckRun.field_results`. Multiple field results can reference
+the same task. The task retains the originating check, an index of the latest
+distinct findings per selector, and context references to the relevant
+captures, slots, and observations. The recorded check retains the evidence and
+the executed SelectorTree version. Identical findings reuse the existing task,
+and a materially different finding can start a new review after completion.
+A failed review can be retried while its object and Source have no replacement
+open review.
+
+Legacy `REVIEW_SOURCE_CHANGE` tasks remain available through the original review
+endpoint and appear under their object when the recorded slot identifies a
+single owner. Unbound observations still use `RESOLVE_OBSERVATION` and the
+explicit `POST /extraction/observations/{observation_id}/resolve-object`
+operation. HTTP failures and page timeouts
+belong to the Source and appear in Attention. The Inbox ranks missing,
+ambiguous, conflicting and failed extraction findings above changed evidence,
+followed by initial evidence.
+
+## Source and field review
 
 Attention counts come from the latest settled check, with one outcome per
 selector-backed field binding. Open tasks are counted independently from live
@@ -59,14 +92,22 @@ declared reference entity, while `source` targets use Source. A linked target ha
 an optional `target` descriptor and `resolved` status. Missing or incompatible
 targets display their ID when available. Unknown types use their raw JSON.
 
-Object names come from the current textual field named by the entity version's
-`definition_json.display_field` persistent key when supplied. With no configured
-display field, the lookup tries `name` and then `title`. An unavailable name uses
-`BusinessObject #<id>`. Source values use the URL or original file name. A resolved
-label has `labelBasis: "current"`, including when the observed evidence comes from
-an earlier capture. The task and source review read the effective canonical value
-at request time. Resolution describes the stored target and leaves extracted
-evidence unvalidated.
+Object names use the current textual field identified by the entity version's
+`definition_json.display_field` persistent key when it has a value. For the
+Firefox model, `BusinessModel.metadata_json.extensionEntities` maps an exact
+entity table to the corresponding type in the extension sync manifest. Its
+`primaryLabelField` identifies the synced canonical value, such as Project
+`name` or Recruitment `external_number`. Extension records bind to a stable
+BusinessObject ID through their workspace and external ID. The browser-local
+`object.label` has no sync field. The fallback order is `name`, `title`, then
+`BusinessObject #<id>` in Studio. A stored `code_field`, Project `number`, or
+`code` can appear alongside the name.
+
+Source values use the URL or original file name. A resolved label has
+`labelBasis: "current"`, including when the evidence comes from an earlier
+capture. The task and source review read the effective canonical value at
+request time. Reference resolution describes the stored target. Extracted
+evidence retains its recorded text and validation state.
 
 The shared `businessField` presentation includes `persistentKey`, the field
 `kind`, and `referenceEntity` where applicable. Task reviews also expose the
@@ -77,7 +118,7 @@ status, or recorded observation/field text where available.
 ## HTML Snapshot Viewer
 
 Open **View snapshot** in Source Review, Monitoring History, Task Details,
-Evidence Review, or the Field Inspector. The Studio opens
+Evidence Review, Object Review history, or the Field Inspector. The Studio opens
 `#/monitoring/sources/:sourceId/snapshots/:snapshotId` with the snapshot ID from
 that check or task. A check that reused a snapshot opens the same viewer URL.
 
@@ -96,5 +137,6 @@ stored bytes. The local Vite proxy forwards the three explicit GET routes with
 its server-side operator credential. Production Studio keeps operator snapshot
 access disabled.
 
-Completing tasks uses the existing Task status operation. Baseline acceptance
-and canonical value changes use separate Business Layer operations.
+Completing a review uses the existing Task status operation. Field statuses
+describe extraction outcomes from their recorded checks. Baseline acceptance
+and canonical value changes use separate operations.

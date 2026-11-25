@@ -307,7 +307,11 @@ async def test_task_and_source_review_share_presentation_for_recorded_evidence(
             select(BusinessObjectFieldValue).where(BusinessObjectFieldValue.id == slot.value_id)
         )
         assert persisted.value_json == project.object_id
-    refs = {ref.reference_type: now["referenceDisplays"][str(ref.id)] for ref in task.references}
+    refs = {
+        ref.reference_type: now["referenceDisplays"][str(ref.id)]
+        for ref in task.references
+        if str(ref.id) in now["referenceDisplays"]
+    }
     assert refs["source"]["label"] == monitored.url
     assert refs["source_snapshot"]["capturedAt"] == now["snapshot"]["fetched_at"]
     assert refs["extraction_run"]["status"] == "succeeded"
