@@ -144,6 +144,20 @@ async def review(client, task_id):
     return response.json()
 
 
+async def field_review(client, source_id, check, field):
+    path = f"/monitoring/sources/{source_id}/review"
+    full = await client.get(path, params={"checkId": check["jobId"]}, headers=OPERATOR)
+    assert full.status_code == 200, full.text
+    captured = await client.get(
+        f"{path}/{check['jobId']}/{field['selectorUuid']}", headers=OPERATOR
+    )
+    assert captured.status_code == 200, captured.text
+    context = next(
+        row for row in full.json()["fields"] if row["selectorUuid"] == field["selectorUuid"]
+    )
+    return {**context, **captured.json(), "snapshot": full.json()["snapshot"]}
+
+
 def operation(job, action):
     return f"/monitoring/jobs/{job['jobId']}/{action}"
 
@@ -352,7 +366,9 @@ async def add_tree(client, domain, source_id, slot, definition, etag=None):
             "tree": definition,
             "binding": {
                 "sourceId": source_id,
-                "businessEntityFieldId": domain.fields["name"],
+                "businessEntityFieldId": (
+                    slot.business_entity_field_id if slot else domain.fields["name"]
+                ),
                 **({"businessObjectFieldId": slot.object_field_id} if slot else {}),
             },
         },
@@ -432,11 +448,13 @@ async def test_detected_evidence_baseline_version_pins_and_review_carry(domain, 
     await complete(client, headers, pinned, wrong, 422)
     await complete(client, headers, pinned, payload)
     await process(domain, pinned, retry=True)
-    fields = (await history(client, row.id))[0]["fields"]
+    changed = (await history(client, row.id))[0]
+    fields = changed["fields"]
     assert fields[0]["selectorVersionUuid"] == version["uuid"]
     assert fields[0]["status"] == "FIELD_CHANGED"
     assert fields[0]["baselineObservationId"] == old_observation_id
-    changed_review = await review(client, fields[0]["taskId"])
+    assert fields[0]["taskId"] == first_field["taskId"]
+    changed_review = await field_review(client, row.id, changed, fields[0])
     assert changed_review["selector"] == {
         "identity": {
             key: value for key, value in initial["selector"].items() if key != "activeVersionUuid"
@@ -456,10 +474,9 @@ async def test_detected_evidence_baseline_version_pins_and_review_carry(domain, 
         "canonicalValue": "B2B",
         "previousEvidence": original_evidence,
         "currentEvidence": "New",
-        "evidenceStatus": "CHANGED",
-        "evidenceChanged": True,
-        "requiresReview": True,
     }.items() <= changed_review.items()
+    assert fields[0]["evidenceStatus"] == "CHANGED"
+    assert fields[0]["evidenceChanged"] and fields[0]["requiresReview"]
 
     repeated = await monitor(client, domain, headers, row.id, html + b" ")
     assert repeated["fields"][0]["selectorVersionUuid"] == next_version["uuid"]
@@ -468,11 +485,12 @@ async def test_detected_evidence_baseline_version_pins_and_review_carry(domain, 
     assert missing["fields"][0]["status"] == "FIELD_MISSING"
     assert missing["fields"][0]["observationId"] is None
     missing_task = missing["fields"][0]["taskId"]
-    missing_review = await review(client, missing_task)
-    assert missing_review["evidenceStatus"] == "MISSING"
+    assert missing_task == first_field["taskId"]
+    missing_review = await field_review(client, row.id, missing, missing["fields"][0])
+    assert missing["fields"][0]["evidenceStatus"] == "MISSING"
     assert missing_review["previousEvidence"] == original_evidence
     assert missing_review["currentEvidence"] is None
-    assert missing_review["evidenceChanged"] is None
+    assert missing["fields"][0]["evidenceChanged"] is None
     assert missing_review["canonicalValue"] == "B2B"
     again = await monitor(client, domain, headers, row.id, b"<p>still no match</p>")
     assert again["fields"][0]["taskId"] == missing_task
@@ -480,7 +498,7 @@ async def test_detected_evidence_baseline_version_pins_and_review_carry(domain, 
     assert await domain.count(FieldObservation) == await domain.count(ConcreteValue) == 4
     assert await domain.count(SelectorEvaluation, provenance="browser_agent_reported") == 6
     assert await domain.count(SourceSnapshot, source_id=row.id) == 5
-    assert await domain.count(Task) == 3
+    assert await domain.count(Task) == 1
     assert await domain.count(BusinessObject) == 1
     async with domain.factory() as session:
         canonical = await session.scalar(
@@ -518,7 +536,7 @@ async def test_detected_evidence_baseline_version_pins_and_review_carry(domain, 
             expected_value_ids={slot.object_field_id: slot.value_id},
         )
     )
-    updated_review = await review(client, fields[0]["taskId"])
+    updated_review = await field_review(client, row.id, changed, fields[0])
     assert updated_review["canonicalValue"] == "B2C"
     assert updated_review["previousEvidence"] == original_evidence
     assert updated_review["currentEvidence"] == "New"
@@ -536,7 +554,7 @@ async def test_detected_evidence_baseline_version_pins_and_review_carry(domain, 
         same = await monitor(client, domain, headers, row.id, html)
         assert same["fields"][0]["taskId"] == done.id
         assert same["fields"][0]["requiresReview"] is False
-    assert await domain.count(Task) == 3
+    assert await domain.count(Task) == 1
     assert (await review(client, done.id))["requiresReview"] is False
 
 
@@ -630,7 +648,8 @@ async def test_initial_evidence_uses_only_previous_observation_of_same_selector(
     assert len(first["fields"]) == 2
     assert {field["evidenceStatus"] for field in first["fields"]} == {"INITIAL_EVIDENCE"}
     assert all(field["requiresReview"] for field in first["fields"])
-    assert await domain.count(Task, reason=TaskReason.MANUAL) == 2
+    assert await domain.count(Task, reason=TaskReason.MANUAL) == 1
+    assert len({field["taskId"] for field in first["fields"]}) == 1
     initial = {field["selectorUuid"]: field for field in first["fields"]}
 
     repeated = await monitor(client, domain, headers, row.id, original)
@@ -646,11 +665,11 @@ async def test_initial_evidence_uses_only_previous_observation_of_same_selector(
     assert {field["evidenceStatus"] for field in changed["fields"]} == {"CHANGED", "UNCHANGED"}
     pending = next(field for field in changed["fields"] if field["requiresReview"])
     assert pending["comparison"] == "previous_observation"
-    detail = await review(client, pending["taskId"])
+    detail = await field_review(client, row.id, changed, pending)
     assert detail["canonicalValue"] == "B2B"
     assert detail["previousEvidence"] == "Business participants"
     assert detail["currentEvidence"] == "New eligibility text"
-    assert await domain.count(Task) == 3
+    assert await domain.count(Task) == 1
 
     async with domain.factory() as session:
         tracking = await session.scalar(

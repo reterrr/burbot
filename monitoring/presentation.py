@@ -7,10 +7,12 @@ from sqlalchemy import and_, func, select
 
 from business_layer.schemas.enums import BusinessDefinitionStatus
 from business_layer.schemas.models import (
+    BusinessEntity,
     BusinessEntityField,
     BusinessEntityFieldVersion,
     BusinessEntityRelationVersion,
     BusinessEntityVersion,
+    BusinessModel,
     BusinessObject,
     BusinessObjectField,
     BusinessObjectFieldValue,
@@ -25,6 +27,7 @@ from business_layer.schemas.models.dtos import (
 from business_layer.services.data import DataService
 from business_layer.services.schema_language import Sema
 from business_layer.services.value_history import temporal_predicates
+from extension_sync.schema import DEFINITIONS, manifest_field
 from monitoring.security import MonitoringError
 from sources.schemas.api import SourceResponse
 from sources.schemas.models import Source, StoredFile
@@ -65,39 +68,79 @@ async def source_labels(session, ids):
     }
 
 
-async def object_labels(session, ids, now):
+def object_name_keys(table, model_metadata, definition):
+    model_metadata = model_metadata if isinstance(model_metadata, dict) else {}
+    tables = model_metadata.get("extensionEntities", {})
+    tables = tables if isinstance(tables, dict) else {}
+    kind = next((kind for kind in DEFINITIONS if tables.get(kind) == table), None)
+    primary = DEFINITIONS[kind].get("primaryLabelField") if kind else None
+    manifest = manifest_field(kind, primary) if primary else None
+    definition = definition if isinstance(definition, dict) else {}
+    names = tuple(
+        filter(
+            None,
+            (
+                display_text(definition.get("display_field")),
+                manifest["persistentKey"] if manifest else None,
+                *NAME_KEYS,
+            ),
+        )
+    )
+    codes = tuple(
+        filter(
+            None,
+            (
+                display_text(definition.get("code_field")),
+                "number" if kind == "project" else None,
+                "code",
+            ),
+        )
+    )
+    return names, codes
+
+
+async def object_presentations(session, ids, now=None):
+    """Resolve display fields using stable entity tables and persistent field keys."""
     if not ids:
         return {}
+    now = now or datetime.now(UTC)
     entity = BusinessEntityVersion
-    field = BusinessEntityField
-    version = BusinessEntityFieldVersion
-    slot = BusinessObjectField
-    value = BusinessObjectFieldValue
-    display_key = entity.definition_json["display_field"].as_string()
-    rows = await session.execute(
-        select(
-            BusinessObject.id,
-            BusinessObject.business_entity_id,
-            display_key,
-            field.persistent_key,
-            value.value_json,
+    rows = (
+        await session.execute(
+            select(
+                BusinessObject.id,
+                BusinessObject.business_entity_id,
+                entity.label,
+                BusinessEntity.table_name,
+                BusinessModel.metadata_json,
+                entity.definition_json,
+            )
+            .join(BusinessEntity, BusinessEntity.id == BusinessObject.business_entity_id)
+            .join(BusinessModel, BusinessModel.id == BusinessEntity.business_model_id)
+            .outerjoin(
+                entity,
+                and_(
+                    entity.business_entity_id == BusinessEntity.id,
+                    *temporal_predicates(entity, now, now),
+                ),
+            )
+            .where(BusinessObject.id.in_(ids))
         )
-        .outerjoin(
-            entity,
-            and_(
-                entity.business_entity_id == BusinessObject.business_entity_id,
-                *temporal_predicates(entity, now, now),
-            ),
-        )
-        .outerjoin(
-            field,
-            and_(
-                field.business_entity_id == BusinessObject.business_entity_id,
-                (field.persistent_key == display_key)
-                | (display_key.is_(None) & func.lower(field.persistent_key).in_(NAME_KEYS)),
-            ),
-        )
-        .outerjoin(
+    ).all()
+    if not rows:
+        return {}
+    keys = {
+        row.id: object_name_keys(row.table_name, row.metadata_json, row.definition_json)
+        for row in rows
+    }
+    wanted = {key.lower() for names, codes in keys.values() for key in (*names, *codes)}
+    field, version = BusinessEntityField, BusinessEntityFieldVersion
+    slot, value = BusinessObjectField, BusinessObjectFieldValue
+    values = {}
+    for object_id, key, raw in await session.execute(
+        select(slot.business_object_id, field.persistent_key, value.value_json)
+        .join(field, field.id == slot.business_entity_field_id)
+        .join(
             version,
             and_(
                 version.business_entity_field_id == field.id,
@@ -106,34 +149,37 @@ async def object_labels(session, ids, now):
                 *temporal_predicates(version, now, now),
             ),
         )
-        .outerjoin(
-            slot,
-            and_(
-                slot.business_object_id == BusinessObject.id,
-                slot.business_entity_field_id == version.business_entity_field_id,
-            ),
-        )
-        .outerjoin(
+        .join(
             value,
             and_(
                 value.business_object_field_id == slot.id,
                 *temporal_predicates(value, now, now),
             ),
         )
-        .where(BusinessObject.id.in_(ids))
+        .where(slot.business_object_id.in_(keys), func.lower(field.persistent_key).in_(wanted))
         .order_by(field.id)
-    )
+    ):
+        if label := display_text(raw):
+            values.setdefault(object_id, {}).setdefault(key.lower(), label)
     objects = {}
-    for object_id, entity_id, explicit_key, key, raw in rows:
-        candidates = (explicit_key,) if explicit_key is not None else NAME_KEYS
-        name = display_text(raw)
-        priority = len(candidates)
-        if key is not None and name is not None:
-            priority = candidates.index(key if explicit_key is not None else key.lower())
-        previous = objects.get(object_id)
-        if previous is None or priority < previous[2]:
-            objects[object_id] = (entity_id, name, priority)
-    return {identity: (entity_id, name) for identity, (entity_id, name, _) in objects.items()}
+    for row in rows:
+        names, codes = keys[row.id]
+        fields = values.get(row.id, {})
+        name = next((fields[key.lower()] for key in names if key.lower() in fields), None)
+        code = next((fields[key.lower()] for key in codes if key.lower() in fields), None)
+        objects[row.id] = {
+            "id": row.id,
+            "name": name,
+            "code": code if code != name else None,
+            "entityId": row.business_entity_id,
+            "entityName": row.label,
+        }
+    return objects
+
+
+async def object_labels(session, ids, now):
+    objects = await object_presentations(session, ids, now)
+    return {identity: (obj["entityId"], obj["name"]) for identity, obj in objects.items()}
 
 
 @dataclass(frozen=True)

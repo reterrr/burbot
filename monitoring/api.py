@@ -20,8 +20,12 @@ from monitoring.contracts import (
     Completion,
     EvidenceReviewResponse,
     Failure,
+    FindingCapture,
     Heartbeat,
     JobStatus,
+    MonitoringPage,
+    ObjectInboxItem,
+    ObjectReviewResponse,
     RegisterAgent,
     SnapshotContent,
     SourceReviewResponse,
@@ -29,6 +33,7 @@ from monitoring.contracts import (
     UploadURL,
 )
 from monitoring.diagnostics import coverage, overview
+from monitoring.object_reviews import finding_history, object_inbox, object_review
 from monitoring.onboarding import OnboardingRequest, OnboardingService
 from monitoring.onboarding_config import MonitoringMode, onboarding_config
 from monitoring.queue import MonitoringQueue, status
@@ -291,6 +296,49 @@ async def history(
     if summary:
         return await check_history(session, source_id, offset, limit)
     return await MonitoringQueue(session).history(source_id, offset, limit)
+
+
+@router.get(
+    "/objects", dependencies=[Depends(operator)], response_model=MonitoringPage[ObjectInboxItem]
+)
+async def get_object_inbox(
+    session: Session, response: Response, offset: PageOffset = 0, limit: PageLimit = 20
+):
+    response.headers["Cache-Control"] = "no-store"
+    return await object_inbox(session, offset, limit)
+
+
+@router.get(
+    "/objects/{object_id}/review",
+    dependencies=[Depends(operator)],
+    response_model=ObjectReviewResponse,
+)
+async def get_object_review(
+    object_id: SourceId,
+    session: Session,
+    response: Response,
+    offset: PageOffset = 0,
+    limit: PageLimit = 20,
+    task_id: Annotated[int | None, Query(alias="taskId", ge=1, le=9223372036854775807)] = None,
+):
+    response.headers["Cache-Control"] = "no-store"
+    return await object_review(session, object_id, offset, limit, task_id=task_id)
+
+
+@router.get(
+    "/object-reviews/{task_id}/history",
+    dependencies=[Depends(operator)],
+    response_model=MonitoringPage[FindingCapture],
+)
+async def get_finding_history(
+    task_id: SourceId,
+    session: Session,
+    response: Response,
+    offset: PageOffset = 0,
+    limit: PageLimit = 20,
+):
+    response.headers["Cache-Control"] = "no-store"
+    return await finding_history(session, task_id, offset, limit)
 
 
 @router.get("/attention/sources", dependencies=[Depends(operator)])

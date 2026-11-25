@@ -24,6 +24,7 @@ from tasks.schemas.models import (
     Task,
     TaskReference,
     TaskStatus,
+    TaskType,
     Workflow,
     WorkflowStatus,
     utc_now,
@@ -299,6 +300,22 @@ class TasksService:
             return sorted(TASK_STATUS_TRANSITIONS[task.status])
         return []
 
+    async def _has_open_object_review(self, task: Task) -> bool:
+        key = (task.metadata_json or {}).get("monitoringKey")
+        if task.type != TaskType.REVIEW_BUSINESS_OBJECT or not isinstance(key, str):
+            return False
+        return await self._session.scalar(
+            select(Task.id)
+            .where(
+                col(Task.workflow_id) == task.workflow_id,
+                col(Task.id) != task.id,
+                col(Task.type) == TaskType.REVIEW_BUSINESS_OBJECT,
+                col(Task.status).in_([TaskStatus.PENDING, TaskStatus.IN_PROGRESS]),
+                col(Task.metadata_json)["monitoringKey"].as_string() == key,
+            )
+            .limit(1)
+        ) is not None
+
     async def _task_detail_response(
             self,
             task: Task,
@@ -318,10 +335,13 @@ class TasksService:
         task_response = self._task_response(
             task
         )
+        allowed = self._allowed_statuses(task, workflow)
+        if TaskStatus.PENDING in allowed and await self._has_open_object_review(task):
+            allowed = [TaskStatus.CANCELLED]
 
         return dto.TaskDetailResponse(
             **task_response.model_dump(),
-            allowed_statuses=self._allowed_statuses(task, workflow),
+            allowed_statuses=allowed,
             references=[
                 dto.TaskReferenceResponse.model_validate(
                     reference
@@ -820,32 +840,23 @@ class TasksService:
     # Task status
     # ========================================================
 
+    async def _lock_task_workflow(self, task_id: int) -> tuple[Task, Workflow]:
+        task = await self._get_task(task_id)
+        workflow = await self._get_workflow(task.workflow_id, for_update=True)
+        # Workflow carry and monitoring aggregation also lock the workflow first.
+        task = await self._get_task(task_id, for_update=True)
+        if task.workflow_id != workflow.id:
+            raise TaskConflict("Task moved to a new workflow. Reload the task.")
+        self._ensure_workflow_active(workflow)
+        return task, workflow
+
     async def change_task_status(
             self,
             task_id: int,
             request: dto.TaskStatusChangeRequest,
     ) -> dto.TaskDetailResponse:
         async with self._transaction():
-            task = await self._get_task(
-                task_id,
-                for_update=True,
-            )
-
-            workflow = await self._get_workflow(
-                task.workflow_id,
-                for_update=True,
-            )
-
-            # ------------------------------------------------
-            # This is THE important stale-task guard.
-            #
-            # Even if frontend somehow still has an old task,
-            # it cannot mutate it after source refresh.
-            # ------------------------------------------------
-
-            self._ensure_workflow_active(
-                workflow
-            )
+            task, workflow = await self._lock_task_workflow(task_id)
 
             target_status = request.status
 
@@ -876,6 +887,8 @@ class TasksService:
                 TaskStatus.IN_PROGRESS,
             }
             ):
+                if await self._has_open_object_review(task):
+                    raise TaskConflict("An open review already exists for this object and source.")
                 task.completed_at = None
 
                 if target_status == TaskStatus.PENDING:
@@ -918,19 +931,7 @@ class TasksService:
             request: dto.TaskReferenceCreate,
     ) -> dto.TaskReferenceResponse:
         async with self._transaction():
-            task = await self._get_task(
-                task_id,
-                for_update=True,
-            )
-
-            workflow = await self._get_workflow(
-                task.workflow_id,
-                for_update=True,
-            )
-
-            self._ensure_workflow_active(
-                workflow
-            )
+            await self._lock_task_workflow(task_id)
 
             reference = TaskReference(
                 task_id=task_id,

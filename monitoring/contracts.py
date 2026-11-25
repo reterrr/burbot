@@ -110,6 +110,69 @@ class SourceReviewResponse(BaseModel):
     earlierTasks: dict[str, Any]
 
 
+class ObjectReviewName(ReviewedObject):
+    code: str | None
+    entityId: int
+    entityName: str | None
+
+
+class MonitoringPage[T](BaseModel):
+    total: int
+    offset: int
+    limit: int
+    items: list[T]
+
+
+class ObjectInboxItem(BaseModel):
+    object: ObjectReviewName
+    sourceCount: int
+    taskCount: int
+    fieldCount: int
+    lastCheckedAt: datetime | None
+    status: Literal["pending", "in_progress"]
+    severity: Literal["high", "normal", "informational"]
+
+
+class ObjectFinding(BaseModel):
+    businessField: BusinessFieldDisplay
+    businessObjectFieldId: int
+    selectorUuid: UUID
+    selectorVersionUuid: UUID | None
+    status: str
+    checkId: UUID
+    checkedAt: datetime | None
+    snapshotId: int | None
+    observationId: int | None
+    evaluationId: int | None
+
+
+class ObjectReviewTask(BaseModel):
+    id: int
+    type: str
+    title: str | None
+    status: str
+    workflowStatus: str
+    originCheckId: UUID
+    snapshotId: int | None
+    checkedAt: datetime | None
+    requiresReview: bool
+    source: ReviewedSource
+    allowedStatuses: list[str]
+    fields: list[ObjectFinding]
+
+
+class ObjectReviewResponse(BaseModel):
+    object: ObjectReviewName
+    tasks: MonitoringPage[ObjectReviewTask]
+
+
+class FindingCapture(BaseModel):
+    checkId: UUID
+    checkedAt: datetime | None
+    snapshotId: int | None
+    fields: list[ObjectFinding]
+
+
 class Approval(PortableModel):
     enabled: bool = True
     additional_origins: list[URL] = Field(default_factory=list, max_length=20)

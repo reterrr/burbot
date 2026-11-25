@@ -16,7 +16,14 @@ from monitoring.presentation import display_text, field_presentations, recorded_
 from monitoring.security import MonitoringError
 from sources.schemas.api import SourceSnapshotResponse
 from sources.schemas.models import SourceSnapshot
-from tasks.schemas.models import Task, TaskReference, TaskReferenceType, TaskStatus, Workflow
+from tasks.schemas.models import (
+    Task,
+    TaskReference,
+    TaskReferenceType,
+    TaskStatus,
+    TaskType,
+    Workflow,
+)
 
 OPEN_REVIEW_STATUSES = (TaskStatus.PENDING, TaskStatus.IN_PROGRESS)
 
@@ -188,12 +195,17 @@ async def review_detail(session, task_id):
             select(TaskReference).where(TaskReference.task_id == task_id).order_by(TaskReference.id)
         )
     ).all()
-    if any(
-        (identity := job_references.get(ref.reference_type)) is not None
-        and identity != ref.reference_id
-        for ref in references
-    ):
-        raise MonitoringError(404, "MONITORING_REVIEW_NOT_FOUND")
+    object_review = task.type == TaskType.REVIEW_BUSINESS_OBJECT
+    for kind, identity in job_references.items():
+        if identity is None:
+            continue
+        attached = {ref.reference_id for ref in references if ref.reference_type == kind}
+        # The legacy endpoint keeps reading the originating capture. Object reviews can
+        # also reference later, distinct findings from the same source.
+        if (object_review and identity not in attached) or (
+            not object_review and attached - {identity}
+        ):
+            raise MonitoringError(404, "MONITORING_REVIEW_NOT_FOUND")
 
     source = await source_record(session, job.source_id)
     snapshot = (
@@ -229,7 +241,7 @@ async def review_detail(session, task_id):
             ),
             None,
         )
-    field_id = next(
+    field_id = field.get("businessFieldId") or next(
         (
             ref.reference_id
             for ref in references
