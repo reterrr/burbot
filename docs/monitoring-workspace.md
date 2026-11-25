@@ -17,6 +17,9 @@ Each route uses the existing Monitoring operator Bearer credential and returns
 | `/monitoring/reviews/{task_id}` | None | Evidence and canonical value for the task's originating check, captured diagnostics, and readable task references. |
 | `/monitoring/sources/{source_id}/review/{check_id}/{selector_uuid}` | None | `{selector, evaluation, extractionRunId}` for the recorded field result. |
 | `/monitoring/sources/{source_id}/history?summary=true` | `offset`, `limit` | Paginated check summaries with check status, time, change status, error code, run ID, and snapshot ID. The existing history response is still available with the default query. |
+| `/monitoring/sources/{source_id}/snapshots/{snapshot_id}/preview` | None | Passive `text/html` with a restrictive CSP. Use an iframe with an empty `sandbox` attribute. |
+| `/monitoring/sources/{source_id}/snapshots/{snapshot_id}/content` | Optional `metadataOnly=true` | JSON with `source`, `snapshot`, `artifact` and the UTF-8 HTML in `html`. Metadata-only reads return `html: null` and read the database record. |
+| `/monitoring/sources/{source_id}/snapshots/{snapshot_id}/download` | None | Exact stored bytes as an `application/octet-stream` attachment named `snapshot-{snapshot_id}.html`. |
 
 Most recent means the latest completed or failed job by creation order. An
 in-flight or cancelled job does not replace a settled result. A failed job
@@ -70,6 +73,28 @@ The shared `businessField` presentation includes `persistentKey`, the field
 slot owner as `businessObject` and `referenceDisplays` keyed by TaskReference ID.
 Reference displays use the source label, snapshot capture time, extraction run
 status, or recorded observation/field text where available.
+
+## HTML Snapshot Viewer
+
+Open **View snapshot** in Source Review, Monitoring History, Task Details,
+Evidence Review, or the Field Inspector. The Studio opens
+`#/monitoring/sources/:sourceId/snapshots/:snapshotId` with the snapshot ID from
+that check or task. A check that reused a snapshot opens the same viewer URL.
+
+The backend validates ownership, reads through the private SnapshotStorage S3
+client, enforces the 5 MiB capture limit, and verifies recorded size and artifact
+SHA-256. The artifact digest comes from StoredFile. Snapshot content and
+structure hashes describe comparisons. `artifact` is `null` when the file
+record is missing. Preview, source, and download return errors for missing,
+corrupt, oversized, or unsupported artifacts. The Details tab still shows the
+recorded capture metadata.
+
+Preview rebuilds HTML from passive tags and attributes with script execution,
+forms, navigation, and resource loading disabled. HTML Source displays the
+stored text in the read-only Monaco editor. The original download uses the
+stored bytes. The local Vite proxy forwards the three explicit GET routes with
+its server-side operator credential. Production Studio keeps operator snapshot
+access disabled.
 
 Completing tasks uses the existing Task status operation. Baseline acceptance
 and canonical value changes use separate Business Layer operations.
