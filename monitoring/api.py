@@ -16,10 +16,12 @@ from monitoring.contracts import (
     Approval,
     ClaimedJob,
     Completion,
+    EvidenceReviewResponse,
     Failure,
     Heartbeat,
     JobStatus,
     RegisterAgent,
+    SourceReviewResponse,
     UploadRequest,
     UploadURL,
 )
@@ -247,7 +249,12 @@ async def get_attention_sources(
     )
 
 
-@router.get("/sources/{source_id}/review", dependencies=[Depends(operator)])
+@router.get(
+    "/sources/{source_id}/review",
+    dependencies=[Depends(operator)],
+    response_model=SourceReviewResponse,
+    response_model_exclude_unset=True,
+)
 async def get_source_review(
     source_id: SourceId,
     session: Session,
@@ -276,7 +283,12 @@ async def get_field_review(
     return await field_review(session, source_id, check_id, selector_uuid)
 
 
-@router.get("/reviews/{task_id}", dependencies=[Depends(operator)])
+@router.get(
+    "/reviews/{task_id}",
+    dependencies=[Depends(operator)],
+    response_model=EvidenceReviewResponse,
+    response_model_exclude_unset=True,
+)
 async def get_review(task_id: int, session: Session, response: Response):
     try:
         detail = await review_detail(session, task_id)

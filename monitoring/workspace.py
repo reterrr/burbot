@@ -6,31 +6,17 @@ from uuid import UUID
 from sqlalchemy import and_, bindparam, func, or_, select, text
 from sqlalchemy.orm import load_only
 
-from business_layer.schemas.models import (
-    BusinessEntityField,
-    BusinessEntityFieldVersion,
-    BusinessObjectField,
-)
-from business_layer.services.data import DataService
-from business_layer.services.value_history import temporal_predicates
-from extraction.schemas.common import utc_now
 from extraction.schemas.models import ConcreteValue, ExtractionRun, FieldObservation
 from extraction.schemas.selector import Selector, SelectorEvaluation, SelectorVersion
 from monitoring.attention import MONITORING_TASKS, OPEN_TASKS
 from monitoring.models import MonitoringJob, MonitoringJobSelector, SourceCheckRun
-from monitoring.review import EVIDENCE_STATUS, OPEN_REVIEW_STATUSES, recorded_id, recorded_selector
+from monitoring.presentation import field_presentations, recorded_id, source_record
+from monitoring.review import EVIDENCE_STATUS, OPEN_REVIEW_STATUSES, recorded_selector
 from monitoring.security import MonitoringError
-from sources.schemas.api import SourceResponse, SourceSnapshotResponse
-from sources.schemas.models import Source, SourceSnapshot
+from sources.schemas.api import SourceSnapshotResponse
+from sources.schemas.models import SourceSnapshot
 
 SETTLED = ("completed", "failed")
-
-
-async def source_record(session, source_id):
-    source = await session.get(Source, source_id)
-    if source is None:
-        raise MonitoringError(404, "SOURCE_NOT_FOUND")
-    return {**SourceResponse.model_validate(source).model_dump(), "name": None}
 
 
 async def check_record(session, source_id, *, check_id=None, completed=False):
@@ -248,61 +234,16 @@ async def evidence_values(session, source_id, identities):
 
 
 async def field_contexts(session, source_id, selectors, results, job):
-    slot_ids = {
-        selector.uuid: results.get(selector.uuid, {}).get(
+    field_slots = {}
+    for selector in selectors:
+        slot_id = results.get(selector.uuid, {}).get(
             "businessObjectFieldId", selector.business_object_field_id
         )
-        for selector in selectors
-    }
-    slots = {
-        slot.id: slot
-        for slot in await session.scalars(
-            select(BusinessObjectField).where(
-                BusinessObjectField.id.in_(
-                    {identity for identity in slot_ids.values() if recorded_id(identity)}
-                )
-            )
+        field_slots[selector.uuid] = (
+            selector.business_entity_field_id,
+            slot_id if recorded_id(slot_id) else None,
         )
-    }
-    objects = await DataService(session).get_objects(
-        {slot.business_object_id for slot in slots.values()}
-    )
-    values = {item.object_field_id: item for obj in objects for item in obj.fields}
-    field_ids = {selector.business_entity_field_id for selector in selectors} | {
-        item.business_entity_field_id for item in values.values()
-    }
-    now = utc_now()
-    fields = {
-        row.id: (row.persistent_key, row.label)
-        for row in (
-            await session.execute(
-                select(
-                    BusinessEntityField.id,
-                    BusinessEntityField.persistent_key,
-                    BusinessEntityFieldVersion.label,
-                )
-                .outerjoin(
-                    BusinessEntityFieldVersion,
-                    and_(
-                        BusinessEntityFieldVersion.business_entity_field_id
-                        == BusinessEntityField.id,
-                        *temporal_predicates(BusinessEntityFieldVersion, now, now),
-                    ),
-                )
-                .where(BusinessEntityField.id.in_(field_ids))
-            )
-        ).all()
-    }
-    object_names = {}
-    for obj in objects:
-        names = {
-            fields[item.business_entity_field_id][0].lower(): item.value
-            for item in obj.fields
-            if item.business_entity_field_id in fields
-            and isinstance(item.value, str)
-            and item.value.strip()
-        }
-        object_names[obj.id] = names.get("name") or names.get("title")
+    presentations = await field_presentations(session, field_slots.values())
     observations = await evidence_values(
         session,
         source_id,
@@ -320,32 +261,17 @@ async def field_contexts(session, source_id, selectors, results, job):
     contexts = []
     for selector in selectors:
         row = results.get(selector.uuid, {})
-        field_id = selector.business_entity_field_id
-        slot = slots.get(slot_ids[selector.uuid])
-        if slot is not None and slot.business_entity_field_id != field_id:
-            slot = None
-        canonical = values.get(slot.id) if slot is not None else None
         previous = row.get("previousObservationId", row.get("baselineObservationId"))
         current = row.get("observationId")
         current_run, current_value = observations.get(current, (None, None))
-        key, name = fields.get(field_id, (None, None))
         contexts.append(
             {
+                **presentations[field_slots[selector.uuid]],
                 "selectorUuid": selector.uuid,
                 "selectorVersionId": row.get("selectorVersionId"),
                 "selectorVersionUuid": row.get("selectorVersionUuid"),
                 "configured": selector.active_version_id is not None,
-                "businessField": {"id": field_id, "name": name or key},
-                "businessObjectFieldId": slot.id if slot else None,
-                "businessObject": {
-                    "id": slot.business_object_id,
-                    "name": object_names.get(slot.business_object_id),
-                }
-                if slot
-                else None,
                 "status": row.get("status"),
-                "canonicalValueId": canonical.value_id if canonical else None,
-                "canonicalValue": canonical.value if canonical else None,
                 "previousObservationId": previous,
                 "observationId": current,
                 "previousEvidence": observations.get(previous, (None, None))[1],

@@ -492,7 +492,7 @@ class DataService:
             raise HTTPException(404, "Business object not found")
         return (await self._read_objects([obj], at=at, known_at=known_at))[0]
 
-    async def get_objects(self, object_ids):
+    async def get_objects(self, object_ids, *, at=None, known_at=None):
         """Read effective values for known object identities in one batch."""
         if not object_ids:
             return []
@@ -501,7 +501,7 @@ class DataService:
                 select(BusinessObject).where(BusinessObject.id.in_(object_ids))
             )
         )
-        return await self._read_objects(objects)
+        return await self._read_objects(objects, at=at, known_at=known_at)
 
     async def list_objects(
         self, entity_id: int, *, offset=0, limit=100, include_archived=False, at=None, known_at=None

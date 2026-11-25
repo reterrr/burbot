@@ -4,6 +4,8 @@ from typing import Literal
 
 from sqlalchemy import text
 
+from monitoring.presentation import display_text
+
 AttentionIssue = Literal[
     "changed",
     "missing",
@@ -34,8 +36,9 @@ OPEN_TASKS = "status IN ('pending', 'in_progress') AND workflow_status = 'active
 
 ATTENTION = text(f"""
     WITH candidates AS (
-        SELECT s.id, s.url, s.state
+        SELECT s.id, s.url, s.state, f.original_name AS name
         FROM monitoring_sources ms JOIN sources s ON s.id = ms.source_id
+        LEFT JOIN stored_files f ON f.id = s.file_id
         WHERE CASE WHEN CAST(:source_id AS bigint) IS NOT NULL THEN s.id = :source_id
                    ELSE :search = '' OR strpos(lower(s.url), lower(:search)) > 0 END
     ),
@@ -170,7 +173,7 @@ async def attention_sources(session, *, search, issue, sort, include_all, offset
             {
                 "id": row["id"],
                 "url": row["url"],
-                "name": None,
+                "name": display_text(row["name"]),
                 "state": row["state"],
                 "lastCheck": {
                     "id": row["job_id"],
