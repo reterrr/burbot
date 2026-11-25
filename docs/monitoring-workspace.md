@@ -14,6 +14,7 @@ Each route uses the existing Monitoring operator Bearer credential and returns
 | --- | --- | --- |
 | `/monitoring/attention/sources` | `offset`, `limit`, `search`, `issue`, `sort`, `includeAll` | `{items, total, offset, limit}`. Each source includes `id`, `name`, `url`, `state`, `lastCheck`, `counts`, `openTaskCount`, `severity` and `reason`. |
 | `/monitoring/sources/{source_id}/review` | Optional `checkId`, `tasksOffset`, `tasksLimit` | Source metadata, `latestCheck`, `latestCompletedCheck`, `selectedCheck`, its `snapshot`, `fields`, and the `earlierTasks` page. |
+| `/monitoring/reviews/{task_id}` | None | Evidence and canonical value for the task's originating check, captured diagnostics, and readable task references. |
 | `/monitoring/sources/{source_id}/review/{check_id}/{selector_uuid}` | None | `{selector, evaluation, extractionRunId}` for the recorded field result. |
 | `/monitoring/sources/{source_id}/history?summary=true` | `offset`, `limit` | Paginated check summaries with check status, time, change status, error code, run ID, and snapshot ID. The existing history response is still available with the default query. |
 
@@ -37,7 +38,8 @@ informational. Healthy monitored sources are available with `includeAll=true`.
 Sort by `priority` or `last_checked`. Issue values are `changed`, `missing`,
 `extraction_failed`, `initial`, `ambiguous`, `conflict`, `source_changed`,
 `job_failed`, and `open_tasks`. Search accepts a source ID or a case-insensitive
-URL substring. The current Source model has no title field.
+URL substring. A Source's `name` is its original file name when available. The
+Studio can use the hostname for a Source with a URL.
 
 Field rows contain the business field and optional named business object, live
 canonical value and value ID, previous/current evidence, captured selector and
@@ -45,6 +47,29 @@ evaluation identifiers, and any linked task. Missing evidence and unchecked
 fields have distinct statuses. Definitions and diagnostics are read only when
 the inspector opens and use the job's pinned version. Legacy results may have
 unavailable evidence or diagnostics. Snapshot viewing uses authorized metadata.
+
+Task and source review expose optional `canonicalDisplay` alongside
+`canonicalValue` and `canonicalValueId`. It contains the field `kind` from the
+definition that validated the value and its unchanged `rawValue`. Lists include
+`itemKind` and typed `items`. `reference` targets use BusinessObject and the
+declared reference entity, while `source` targets use Source. A linked target has
+an optional `target` descriptor and `resolved` status. Missing or incompatible
+targets display their ID when available. Unknown types use their raw JSON.
+
+Object names come from the current textual field named by the entity version's
+`definition_json.display_field` persistent key when supplied. With no configured
+display field, the lookup tries `name` and then `title`. An unavailable name uses
+`BusinessObject #<id>`. Source values use the URL or original file name. A resolved
+label has `labelBasis: "current"`, including when the observed evidence comes from
+an earlier capture. The task and source review read the effective canonical value
+at request time. Resolution describes the stored target and leaves extracted
+evidence unvalidated.
+
+The shared `businessField` presentation includes `persistentKey`, the field
+`kind`, and `referenceEntity` where applicable. Task reviews also expose the
+slot owner as `businessObject` and `referenceDisplays` keyed by TaskReference ID.
+Reference displays use the source label, snapshot capture time, extraction run
+status, or recorded observation/field text where available.
 
 Completing tasks uses the existing Task status operation. Baseline acceptance
 and canonical value changes use separate Business Layer operations.

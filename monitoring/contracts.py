@@ -1,11 +1,12 @@
-"""Browser Agent wire contracts and versioned snapshot representation."""
+"""Browser Agent and operator workspace wire contracts."""
 
 from datetime import datetime
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 from uuid import UUID
 
-from pydantic import Field, StringConstraints, model_validator
+from pydantic import BaseModel, Field, StringConstraints, model_validator
 
+from business_layer.schemas.models.dtos import BusinessFieldDisplay, BusinessValueDisplay
 from extraction.schemas.api import Identifier
 from extraction.schemas.selector_tree import (
     PortableModel,
@@ -13,6 +14,7 @@ from extraction.schemas.selector_tree import (
     SelectorVersionDefinition,
 )
 from monitoring.onboarding_config import PolicyName
+from sources.schemas.api import SourceSnapshotResponse
 
 REPRESENTATION = "rendered_dom"
 REPRESENTATION_VERSION = "firefox-dom-1"
@@ -23,6 +25,73 @@ MAX_SELECTORS = 64
 
 Digest = Annotated[str, StringConstraints(pattern=r"^[a-f0-9]{64}$")]
 URL = Annotated[str, StringConstraints(min_length=1, max_length=2048)]
+
+
+class ReviewedSource(BaseModel):
+    id: int
+    url: str | None
+    name: str | None = None
+
+
+class ReviewedObject(BaseModel):
+    id: int
+    name: str | None
+
+
+class TaskReferenceDisplay(BaseModel):
+    label: str | None = None
+    capturedAt: datetime | None = None
+    status: str | None = None
+
+
+class ReviewedFieldValues(BaseModel):
+    businessField: BusinessFieldDisplay | None = None
+    businessObjectFieldId: int | None
+    businessObject: ReviewedObject | None = None
+    canonicalValueId: int | None
+    canonicalValue: Any
+    canonicalDisplay: BusinessValueDisplay | None = None
+    previousObservationId: int | None
+    observationId: int | None
+    previousEvidence: str | list[str] | None
+    currentEvidence: str | list[str] | None
+    evaluationId: int | None
+
+
+class EvidenceReviewResponse(ReviewedFieldValues):
+    taskId: int
+    taskStatus: str
+    source: ReviewedSource
+    snapshot: SourceSnapshotResponse | None
+    extractionRunId: int | None
+    selector: dict[str, Any] | None
+    evaluation: dict[str, Any] | None
+    baselineObservationId: int | None
+    comparison: str | None
+    evidenceStatus: str | None
+    evidenceChanged: bool | None
+    requiresReview: bool
+    referenceDisplays: dict[int, TaskReferenceDisplay] | None = None
+
+
+class TrackedFieldResponse(ReviewedFieldValues):
+    selectorUuid: UUID
+    selectorVersionId: int | None
+    selectorVersionUuid: UUID | None
+    configured: bool
+    status: str | None
+    task: dict[str, Any] | None
+
+
+class SourceReviewResponse(BaseModel):
+    id: int
+    source: dict[str, Any]
+    latestCheck: dict[str, Any] | None
+    latestCompletedCheck: dict[str, Any] | None
+    selectedCheck: dict[str, Any] | None
+    snapshot: SourceSnapshotResponse | None
+    fields: list[TrackedFieldResponse]
+    earlierTasks: dict[str, Any]
 
 
 class Approval(PortableModel):

@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, Field
 
 from business_layer.schemas.enums import (
     BusinessDefinitionStatus,
 )
+from business_layer.services.schema_language import Sema
 
 
 class CreateObjectResponse(BaseModel):
@@ -88,3 +89,38 @@ class EntityDefinitionRead(BaseModel):
     label: str
     status: BusinessDefinitionStatus
     fields: list[FieldDefinitionRead]
+
+
+DisplayKind = Sema.Type | Literal["unknown"]
+
+
+class BusinessValueTarget(BaseModel):
+    type: Literal["business_object", "source"]
+    id: int
+    entityId: int | None = None
+    idText: str | None = None
+
+
+class BusinessValueDisplay(BaseModel):
+    kind: DisplayKind
+    rawValue: Any
+    label: str | None = None
+    labelBasis: Literal["current"] | None = None
+    target: BusinessValueTarget | None = None
+    resolved: bool | None = None
+    itemKind: DisplayKind | None = None
+    items: list[BusinessValueDisplay] | None = None
+
+
+class ReferenceEntityDisplay(BaseModel):
+    id: int
+    name: str | None = None
+
+
+class BusinessFieldDisplay(BaseModel):
+    id: int
+    name: str | None = None
+    persistentKey: str | None = None
+    kind: DisplayKind = "unknown"
+    itemKind: DisplayKind | None = None
+    referenceEntity: ReferenceEntityDisplay | None = None

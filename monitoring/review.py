@@ -5,8 +5,6 @@ from uuid import UUID
 from pydantic import ValidationError
 from sqlalchemy import select
 
-from business_layer.schemas.models import BusinessObjectField
-from business_layer.services.data import DataService
 from extraction.schemas.models import ExtractionRun, FieldObservation
 from extraction.schemas.selector import Selector, SelectorEvaluation, SelectorVersion
 from extraction.schemas.selector_tree import SelectorDefinition
@@ -14,10 +12,10 @@ from extraction.services.repositories import ExtractionRepository
 from extraction.services.selector_execution import response as evaluation_response
 from extraction.services.selectors import SelectorService
 from monitoring.models import MonitoringJob, MonitoringJobSelector, SourceCheckRun
+from monitoring.presentation import display_text, field_presentations, recorded_id, source_record
 from monitoring.security import MonitoringError
 from sources.schemas.api import SourceSnapshotResponse
 from sources.schemas.models import SourceSnapshot
-from sources.services.sources import SourcesService
 from tasks.schemas.models import Task, TaskReference, TaskReferenceType, TaskStatus, Workflow
 
 OPEN_REVIEW_STATUSES = (TaskStatus.PENDING, TaskStatus.IN_PROGRESS)
@@ -52,10 +50,6 @@ async def observation_text(repo, observation_id):
     observation = await repo.get(FieldObservation, observation_id)
     values = [value.raw_value for value in await repo.observation_values(observation)]
     return values[0] if len(values) == 1 else values
-
-
-def recorded_id(value):
-    return type(value) is int and 0 < value < 2**63
 
 
 async def recorded_selector(session, job, run, field):
@@ -135,6 +129,33 @@ async def recorded_selector(session, job, run, field):
     }, diagnostics
 
 
+def reference_displays(references, source, snapshot, run, context, observations):
+    labels = {(TaskReferenceType.SOURCE, source["id"]): {"label": source["name"] or source["url"]}}
+    if snapshot is not None:
+        labels[TaskReferenceType.SOURCE_SNAPSHOT, snapshot.id] = {"capturedAt": snapshot.fetched_at}
+    if run is not None:
+        labels[TaskReferenceType.EXTRACTION_RUN, run.id] = {"status": run.status}
+    for observation_id, evidence in observations.items():
+        texts = evidence if isinstance(evidence, list) else [evidence]
+        if text := " · ".join(filter(None, map(display_text, texts))):
+            labels[TaskReferenceType.OBSERVATION, observation_id] = {"label": text}
+    field, obj = context["businessField"], context["businessObject"]
+    if field is not None and field["name"]:
+        labels[TaskReferenceType.BUSINESS_FIELD, field["id"]] = {"label": field["name"]}
+        if obj is not None:
+            slot_label = " · ".join(filter(None, (field["name"], obj["name"])))
+            labels[TaskReferenceType.BUSINESS_OBJECT_FIELD, context["businessObjectFieldId"]] = {
+                "label": slot_label,
+            }
+    if obj is not None and obj["name"]:
+        labels[TaskReferenceType.BUSINESS_OBJECT, obj["id"]] = {"label": obj["name"]}
+    return {
+        ref.id: display
+        for ref in references
+        if (display := labels.get((ref.reference_type, ref.reference_id)))
+    }
+
+
 async def review_detail(session, task_id):
     task = await session.get(Task, task_id)
     metadata = (task.metadata_json or {}) if task else {}
@@ -163,28 +184,24 @@ async def review_detail(session, task_id):
         TaskReferenceType.EXTRACTION_RUN: job.extraction_run_id,
     }
     references = (
-        await session.execute(
-            select(TaskReference.reference_type, TaskReference.reference_id).where(
-                TaskReference.task_id == task_id,
-                TaskReference.reference_type.in_(
-                    (*job_references, TaskReferenceType.BUSINESS_OBJECT_FIELD)
-                ),
-            )
+        await session.scalars(
+            select(TaskReference).where(TaskReference.task_id == task_id).order_by(TaskReference.id)
         )
     ).all()
     if any(
-        job_references.get(kind) is not None and job_references[kind] != identity
-        for kind, identity in references
+        (identity := job_references.get(ref.reference_type)) is not None
+        and identity != ref.reference_id
+        for ref in references
     ):
         raise MonitoringError(404, "MONITORING_REVIEW_NOT_FOUND")
 
-    source = await SourcesService(session).get_source(job.source_id)
+    source = await source_record(session, job.source_id)
     snapshot = (
         await session.get(SourceSnapshot, job.source_snapshot_id)
         if job.source_snapshot_id is not None
         else None
     )
-    if snapshot is not None and snapshot.source_id != source.id:
+    if snapshot is not None and snapshot.source_id != source["id"]:
         raise MonitoringError(404, "MONITORING_REVIEW_NOT_FOUND")
     run = (
         await session.get(ExtractionRun, job.extraction_run_id)
@@ -192,7 +209,7 @@ async def review_detail(session, task_id):
         else None
     )
     if run is not None and (
-        run.source_id != source.id
+        run.source_id != source["id"]
         or run.source_snapshot_id != snapshot.id
         or run.workflow_id not in (None, workflow.id)
     ):
@@ -206,36 +223,45 @@ async def review_detail(session, task_id):
         # Older jobs stored the slot only as a TaskReference.
         slot_id = next(
             (
-                identity
-                for kind, identity in references
-                if kind == TaskReferenceType.BUSINESS_OBJECT_FIELD
+                ref.reference_id
+                for ref in references
+                if ref.reference_type == TaskReferenceType.BUSINESS_OBJECT_FIELD
             ),
             None,
         )
-    slot = await session.get(BusinessObjectField, slot_id) if slot_id is not None else None
-    canonical = None
-    if slot is not None:
-        obj = await DataService(session).get_object(slot.business_object_id)
-        canonical = next((item for item in obj.fields if item.object_field_id == slot.id), None)
+    field_id = next(
+        (
+            ref.reference_id
+            for ref in references
+            if ref.reference_type == TaskReferenceType.BUSINESS_FIELD
+        ),
+        None,
+    )
+    pair = (field_id, slot_id if recorded_id(slot_id) else None)
+    context = (await field_presentations(session, [pair]))[pair]
 
     previous = field.get("previousObservationId", field.get("baselineObservationId"))
     current = field.get("observationId")
     status = field.get("status")
     repo = ExtractionRepository(session)
+    previous_evidence = await observation_text(repo, previous)
+    current_evidence = await observation_text(repo, current)
+    review_source = {"id": source["id"], "url": source["url"]}
+    if source["name"] is not None:
+        review_source["name"] = source["name"]
     return {
+        **context,
         "taskId": task.id,
         "taskStatus": task.status,
         "businessObjectFieldId": slot_id,
-        "canonicalValueId": canonical.value_id if canonical else None,
-        "canonicalValue": canonical.value if canonical else None,
         "previousObservationId": previous,
         "observationId": current,
-        "previousEvidence": await observation_text(repo, previous),
-        "currentEvidence": await observation_text(repo, current),
+        "previousEvidence": previous_evidence,
+        "currentEvidence": current_evidence,
         "evaluationId": field.get("evaluationId"),
         "selector": selector,
         "evaluation": evaluation,
-        "source": {"id": source.id, "url": source.url},
+        "source": review_source,
         "snapshot": SourceSnapshotResponse.model_validate(snapshot)
         if snapshot is not None
         else None,
@@ -245,4 +271,12 @@ async def review_detail(session, task_id):
         "evidenceStatus": field.get("evidenceStatus", EVIDENCE_STATUS.get(status)),
         "evidenceChanged": field.get("evidenceChanged", evidence_changed(status)),
         "requiresReview": task.status in OPEN_REVIEW_STATUSES,
+        "referenceDisplays": reference_displays(
+            references,
+            source,
+            snapshot,
+            run,
+            context,
+            {previous: previous_evidence, current: current_evidence},
+        ),
     }
