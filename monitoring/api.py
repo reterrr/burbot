@@ -1,11 +1,13 @@
 """The operator enrolls agents. Source-scoped agents poll and report under a lease."""
 
+import asyncio
 import os
 from typing import Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
+from fastapi.responses import HTMLResponse
 from fastapi.routing import APIRoute
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -21,6 +23,7 @@ from monitoring.contracts import (
     Heartbeat,
     JobStatus,
     RegisterAgent,
+    SnapshotContent,
     SourceReviewResponse,
     UploadRequest,
     UploadURL,
@@ -31,6 +34,13 @@ from monitoring.onboarding_config import MonitoringMode, onboarding_config
 from monitoring.queue import MonitoringQueue, status
 from monitoring.review import review_detail
 from monitoring.security import MonitoringError, authenticate_agent, authorize_admin
+from monitoring.snapshots import (
+    SNAPSHOT_HEADERS,
+    artifact_bytes,
+    sanitized_preview,
+    snapshot_content,
+    snapshot_record,
+)
 from monitoring.workspace import check_history, field_review, source_review
 from shared.database import get_session
 
@@ -63,6 +73,22 @@ class MonitoringRoute(APIRoute):
         return bounded
 
 
+class SnapshotRoute(MonitoringRoute):
+    def get_route_handler(self):
+        handler = super().get_route_handler()
+
+        async def protect(request):
+            try:
+                response = await handler(request)
+            except HTTPException as error:
+                error.headers = {**(error.headers or {}), **SNAPSHOT_HEADERS}
+                raise
+            response.headers.update(SNAPSHOT_HEADERS)
+            return response
+
+        return protect
+
+
 router = APIRouter(prefix="/monitoring", tags=["monitoring"], route_class=MonitoringRoute)
 bearer = HTTPBearer(auto_error=False)
 Session = Annotated[AsyncSession, Depends(get_session)]
@@ -92,6 +118,47 @@ async def operator(credentials: Credentials):
         authorize_admin(token(credentials), os.getenv("MONITORING_ADMIN_TOKEN"))
     except MonitoringError as error:
         raise as_http(error) from error
+
+
+snapshot_routes = APIRouter(
+    prefix="/sources/{source_id}/snapshots/{snapshot_id}",
+    route_class=SnapshotRoute,
+    dependencies=[Depends(operator)],
+)
+
+
+@snapshot_routes.get("/preview", response_class=HTMLResponse)
+async def get_snapshot_preview(source_id: SourceId, snapshot_id: SourceId, session: Session):
+    _, file = await snapshot_record(session, source_id, snapshot_id)
+    body = await artifact_bytes(file)
+    return HTMLResponse(await asyncio.to_thread(sanitized_preview, body))
+
+
+@snapshot_routes.get("/content", response_model=SnapshotContent)
+async def get_snapshot_content(
+    source_id: SourceId,
+    snapshot_id: SourceId,
+    session: Session,
+    metadata_only: Annotated[bool, Query(alias="metadataOnly")] = False,
+):
+    return await snapshot_content(session, source_id, snapshot_id, metadata_only=metadata_only)
+
+
+@snapshot_routes.get(
+    "/download",
+    response_class=Response,
+    responses={200: {"content": {"application/octet-stream": {}}}},
+)
+async def get_snapshot_download(source_id: SourceId, snapshot_id: SourceId, session: Session):
+    _, file = await snapshot_record(session, source_id, snapshot_id)
+    return Response(
+        await artifact_bytes(file),
+        media_type="application/octet-stream",
+        headers={"Content-Disposition": f'attachment; filename="snapshot-{snapshot_id}.html"'},
+    )
+
+
+router.include_router(snapshot_routes)
 
 
 @router.put("/sources/{source_id}/approval", dependencies=[Depends(operator)])

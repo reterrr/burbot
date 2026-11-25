@@ -105,6 +105,41 @@ class SnapshotStorage:
     async def seal(self, temp_key, final_key, size, digest):
         await asyncio.to_thread(self._seal, temp_key, final_key, size, digest)
 
+    def _read_snapshot(self, file):
+        from botocore.exceptions import BotoCoreError, ClientError, IncompleteReadError
+
+        if file.size_bytes is not None and file.size_bytes > MAX_BYTES:
+            raise MonitoringError(413, "SNAPSHOT_TOO_LARGE")
+        try:
+            response = self.reader.get_object(Bucket=self.bucket, Key=file.storage_key)
+            with closing(response["Body"]) as stream:
+                size = response.get("ContentLength")
+                if type(size) is not int or size < 0:
+                    raise MonitoringError(422, "SNAPSHOT_INTEGRITY_MISMATCH")
+                if size > MAX_BYTES:
+                    raise MonitoringError(413, "SNAPSHOT_TOO_LARGE")
+                if file.size_bytes is not None and file.size_bytes != size:
+                    raise MonitoringError(422, "SNAPSHOT_INTEGRITY_MISMATCH")
+                body = stream.read(size + 1)
+            if len(body) > MAX_BYTES:
+                raise MonitoringError(413, "SNAPSHOT_TOO_LARGE")
+            if len(body) != size or (
+                file.sha256 is not None and hashlib.sha256(body).hexdigest() != file.sha256.lower()
+            ):
+                raise MonitoringError(422, "SNAPSHOT_INTEGRITY_MISMATCH")
+            return body
+        except IncompleteReadError as error:
+            raise MonitoringError(422, "SNAPSHOT_INTEGRITY_MISMATCH") from error
+        except ClientError as error:
+            if error.response["Error"]["Code"] in {"NoSuchKey", "NotFound", "404"}:
+                raise MonitoringError(404, "SNAPSHOT_ARTIFACT_NOT_FOUND") from error
+            raise MonitoringError(503, "STORAGE_UNAVAILABLE") from error
+        except BotoCoreError as error:
+            raise MonitoringError(503, "STORAGE_UNAVAILABLE") from error
+
+    async def read_snapshot(self, file):
+        return await asyncio.to_thread(self._read_snapshot, file)
+
     async def delete(self, key):
         from botocore.exceptions import BotoCoreError, ClientError
 

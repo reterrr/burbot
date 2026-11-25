@@ -33,6 +33,22 @@ class ReviewedSource(BaseModel):
     name: str | None = None
 
 
+class SnapshotArtifactDetails(BaseModel):
+    mimeType: str
+    sizeBytes: int | None
+    sha256: str | None
+
+
+class SnapshotDetails(BaseModel):
+    source: ReviewedSource
+    snapshot: SourceSnapshotResponse
+    artifact: SnapshotArtifactDetails | None
+
+
+class SnapshotContent(SnapshotDetails):
+    html: str | None = None
+
+
 class ReviewedObject(BaseModel):
     id: int
     name: str | None
