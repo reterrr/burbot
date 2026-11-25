@@ -12,11 +12,14 @@ from fastapi.routing import APIRoute
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from extraction.schemas.common import utc_now
 from monitoring.attention import AttentionIssue, AttentionSort, attention_sources
 from monitoring.contracts import (
+    MIME_TYPE,
     AgentSourcesUpdate,
     Approval,
     ClaimedJob,
+    ClaimedSnapshotCommand,
     Completion,
     EvidenceReviewResponse,
     Failure,
@@ -26,7 +29,11 @@ from monitoring.contracts import (
     MonitoringPage,
     ObjectInboxItem,
     ObjectReviewResponse,
+    OpenSnapshotRequest,
     RegisterAgent,
+    SnapshotAgentChoice,
+    SnapshotCommandAck,
+    SnapshotCommandResponse,
     SnapshotContent,
     SourceReviewResponse,
     UploadRequest,
@@ -39,6 +46,17 @@ from monitoring.onboarding_config import MonitoringMode, onboarding_config
 from monitoring.queue import MonitoringQueue, status
 from monitoring.review import review_detail
 from monitoring.security import MonitoringError, authenticate_agent, authorize_admin
+from monitoring.snapshot_commands import (
+    acknowledge_command,
+    agent_choices,
+    claim_command,
+    command_artifact,
+    command_row,
+    create_command,
+)
+from monitoring.snapshot_commands import (
+    response as snapshot_command_response,
+)
 from monitoring.snapshots import (
     SNAPSHOT_HEADERS,
     artifact_bytes,
@@ -164,6 +182,80 @@ async def get_snapshot_download(source_id: SourceId, snapshot_id: SourceId, sess
 
 
 router.include_router(snapshot_routes)
+
+
+bridge_routes = APIRouter(route_class=SnapshotRoute)
+OPEN_COMMANDS = "/snapshots/open-commands"
+AGENT_COMMANDS = "/agents/snapshot-commands"
+
+
+@bridge_routes.get(
+    "/sources/{source_id}/snapshot-agents",
+    dependencies=[Depends(operator)],
+    response_model=list[SnapshotAgentChoice],
+)
+async def snapshot_agents(source_id: SourceId, session: Session):
+    return await agent_choices(session, source_id)
+
+
+@bridge_routes.post(
+    OPEN_COMMANDS, dependencies=[Depends(operator)], response_model=SnapshotCommandResponse
+)
+async def open_snapshot(request: OpenSnapshotRequest, session: Session):
+    async with session.begin():
+        return await create_command(session, request)
+
+
+@bridge_routes.get(
+    OPEN_COMMANDS + "/{command_id}",
+    dependencies=[Depends(operator)],
+    response_model=SnapshotCommandResponse,
+)
+async def snapshot_command(command_id: UUID, session: Session):
+    async with session.begin():
+        return snapshot_command_response(await command_row(session, command_id))
+
+
+@bridge_routes.post(AGENT_COMMANDS + "/claim", response_model=ClaimedSnapshotCommand)
+async def claim_snapshot_command(session: Session, credentials: Credentials):
+    async with session.begin():
+        agent = await authenticate_agent(session, token(credentials))
+        command = await claim_command(session, agent)
+    return command if command is not None else Response(status_code=204)
+
+
+@bridge_routes.get(AGENT_COMMANDS + "/{command_id}/artifact", response_class=Response)
+async def snapshot_command_artifact(command_id: UUID, session: Session, credentials: Credentials):
+    async with session.begin():
+        agent = await authenticate_agent(session, token(credentials), lock=False)
+        file, digest, expires_at = await command_artifact(session, agent, command_id)
+        # End the DB transaction before waiting for storage. Carry only the verified file record.
+        session.expunge(file)
+    content = await artifact_bytes(file)
+    if expires_at <= utc_now():
+        raise MonitoringError(410, "SNAPSHOT_COMMAND_EXPIRED")
+    return Response(
+        content,
+        media_type="application/octet-stream",
+        headers={
+            "Content-Disposition": 'attachment; filename="snapshot.html"',
+            "X-Burbot-Snapshot-Mime": MIME_TYPE,
+            "X-Burbot-Snapshot-SHA256": digest,
+            "X-Burbot-Snapshot-Size": str(len(content)),
+        },
+    )
+
+
+@bridge_routes.post(AGENT_COMMANDS + "/{command_id}/ack", response_model=SnapshotCommandResponse)
+async def ack_snapshot_command(
+    command_id: UUID, request: SnapshotCommandAck, session: Session, credentials: Credentials
+):
+    async with session.begin():
+        agent = await authenticate_agent(session, token(credentials))
+        return await acknowledge_command(session, agent, command_id, request)
+
+
+router.include_router(bridge_routes)
 
 
 @router.put("/sources/{source_id}/approval", dependencies=[Depends(operator)])

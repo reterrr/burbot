@@ -62,6 +62,7 @@ class MonitoringAgent(SQLModel, table=True):
     )
     created_at: datetime = Field(default_factory=utc_now, sa_column=timestamp())
     last_seen_at: datetime | None = Field(default=None, sa_column=timestamp(nullable=True))
+    snapshot_seen_at: datetime | None = Field(default=None, sa_column=timestamp(nullable=True))
 
 
 class MonitoringAgentSource(SQLModel, table=True):
@@ -81,6 +82,43 @@ class MonitoringAgentSource(SQLModel, table=True):
     enabled: bool = Field(
         default=True, sa_column=Column(Boolean, nullable=False, server_default=text("true"))
     )
+
+
+class SnapshotOpenCommand(SQLModel, table=True):
+    __tablename__ = "monitoring_snapshot_open_commands"
+    __table_args__ = (
+        CheckConstraint(
+            "state IN ('pending','claimed','opened','failed','expired')",
+            name="monitoring_snapshot_command_state",
+        ),
+        Index(
+            "ix_monitoring_snapshot_commands_agent",
+            "target_agent_id",
+            "created_at",
+            "id",
+            postgresql_where=text("state IN ('pending','claimed')"),
+        ),
+    )
+
+    id: UUID = Field(sa_column=Column(Uuid, primary_key=True))
+    source_id: int = Field(
+        sa_column=Column(BigInteger, ForeignKey("sources.id", ondelete="CASCADE"), nullable=False)
+    )
+    snapshot_id: int = Field(
+        sa_column=Column(
+            BigInteger, ForeignKey("source_snapshots.id", ondelete="CASCADE"), nullable=False
+        )
+    )
+    target_agent_id: UUID = Field(
+        sa_column=Column(
+            Uuid, ForeignKey("monitoring_agents.id", ondelete="CASCADE"), nullable=False
+        )
+    )
+    created_at: datetime = Field(sa_column=timestamp())
+    expires_at: datetime = Field(sa_column=timestamp())
+    state: str = Field(default="pending", sa_column=Column(String(12), nullable=False))
+    error_code: str | None = Field(default=None, sa_column=Column(String(64)))
+    selector_context: dict[str, Any] | None = Field(default=None, sa_column=Column(JSONB))
 
 
 class MonitoringJob(SQLModel, table=True):

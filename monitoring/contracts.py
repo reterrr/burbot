@@ -49,6 +49,73 @@ class SnapshotContent(SnapshotDetails):
     html: str | None = None
 
 
+SnapshotCommandState = Literal["pending", "claimed", "opened", "failed", "expired"]
+SnapshotCommandError = Literal[
+    "SNAPSHOT_ARTIFACT_NOT_FOUND",
+    "SNAPSHOT_INTEGRITY_MISMATCH",
+    "SNAPSHOT_TOO_LARGE",
+    "SNAPSHOT_NOT_HTML",
+    "SNAPSHOT_DIGEST_UNAVAILABLE",
+    "SNAPSHOT_SOURCE_FORBIDDEN",
+    "SNAPSHOT_UNAVAILABLE",
+    "BACKEND_TIMEOUT",
+    "INVALID_ARTIFACT",
+    "VIEWER_OPEN_FAILED",
+    "VIEWER_INTERRUPTED",
+]
+
+
+class SnapshotSelectorContext(PortableModel):
+    extraction_run_id: Identifier
+    selector_uuid: UUID
+    selector_version_uuid: UUID
+
+
+class OpenSnapshotRequest(PortableModel):
+    request_id: UUID
+    source_id: Identifier
+    snapshot_id: Identifier
+    target_agent_id: UUID | None = None
+    action: Literal["open_snapshot"] = "open_snapshot"
+    selector_context: SnapshotSelectorContext | None = None
+
+
+class SnapshotAgentChoice(PortableModel):
+    agent_id: UUID
+    name: str
+
+
+class SnapshotCommandResponse(PortableModel):
+    command_id: UUID
+    source_id: int
+    snapshot_id: int
+    target_agent_id: UUID
+    action: Literal["open_snapshot"] = "open_snapshot"
+    created_at: datetime
+    expires_at: datetime
+    state: SnapshotCommandState
+    error_code: SnapshotCommandError | None = None
+
+
+class ClaimedSnapshotCommand(SnapshotCommandResponse):
+    source_url: str | None
+    captured_at: datetime
+    selector_context: SnapshotSelectorContext | None = None
+    selector: dict[str, Any] | None = None
+    evaluation: dict[str, Any] | None = None
+
+
+class SnapshotCommandAck(PortableModel):
+    state: Literal["opened", "failed"]
+    error_code: SnapshotCommandError | None = None
+
+    @model_validator(mode="after")
+    def validate_result(self):
+        if (self.state == "failed") != (self.error_code is not None):
+            raise ValueError("A failed result requires an error code")
+        return self
+
+
 class ReviewedObject(BaseModel):
     id: int
     name: str | None
