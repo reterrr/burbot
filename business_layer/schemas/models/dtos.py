@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -65,6 +65,24 @@ class BusinessObjectFieldValueRead(BaseModel):
     transaction_to: datetime | None
 
     created_at: datetime
+
+
+class ValueDisplayTarget(BaseModel):
+    type: Literal["business_object", "source"]
+    id: int
+    entity_id: int | None = Field(default=None, serialization_alias="entityId")
+    entity_name: str | None = Field(default=None, serialization_alias="entityName")
+
+
+class ValueDisplay(BaseModel):
+    kind: str | None
+    raw_value: Any = Field(serialization_alias="rawValue")
+    label: str | None = None
+    target: ValueDisplayTarget | None = None
+    resolved: bool | None = None
+    label_is_current: bool | None = Field(default=None, serialization_alias="labelIsCurrent")
+    item_kind: str | None = Field(default=None, serialization_alias="itemKind")
+    items: list[ValueDisplay] | None = None
 
 
 class FieldDefinitionRead(BaseModel):

@@ -5,8 +5,7 @@ from uuid import UUID
 from pydantic import ValidationError
 from sqlalchemy import select
 
-from business_layer.schemas.models import BusinessObjectField
-from business_layer.services.data import DataService
+from business_layer.services.presentation import BusinessPresentation
 from extraction.schemas.models import ExtractionRun, FieldObservation
 from extraction.schemas.selector import Selector, SelectorEvaluation, SelectorVersion
 from extraction.schemas.selector_tree import SelectorDefinition
@@ -76,15 +75,15 @@ async def recorded_selector(session, job, run, field):
             for value in (field.get("selectorUuid"), field.get("selectorVersionUuid"))
         )
     except ValueError:
-        return None, None
+        return None, None, None
     version_id = field.get("selectorVersionId")
     if version_id is not None and not recorded_id(version_id):
-        return None, None
+        return None, None, None
     if version_id is None and version_uuid is None:
         if evaluation is not None:
             version_id = evaluation.selector_version_id
         elif selector_uuid is None:
-            return None, None
+            return None, None, None
 
     # The job pin identifies the executed definition even after another version is approved.
     query = (
@@ -106,7 +105,7 @@ async def recorded_selector(session, job, run, field):
         query = query.where(SelectorVersion.id == version_id)
     pair = (await session.execute(query)).one_or_none()
     if pair is None:
-        return None, None
+        return None, None, None
     selector, version = pair
 
     identity_data = {**selector.metadata_json, "uuid": selector.uuid}
@@ -116,7 +115,7 @@ async def recorded_selector(session, job, run, field):
         identity = SelectorDefinition.model_validate(identity_data)
         definition = await SelectorService(session).definition(version, selector.uuid)
     except ValidationError:
-        return None, None
+        return None, None, selector.business_entity_field_id
 
     diagnostics = None
     if evaluation is not None and evaluation.selector_version_id == version.id:
@@ -128,11 +127,15 @@ async def recorded_selector(session, job, run, field):
         else:
             if stored.result.selector_version_uuid == version.uuid:
                 diagnostics = stored.portable()
-    return {
-        "identity": identity.portable(),
-        "versionId": version.id,
-        "version": definition.portable(),
-    }, diagnostics
+    return (
+        {
+            "identity": identity.portable(),
+            "versionId": version.id,
+            "version": definition.portable(),
+        },
+        diagnostics,
+        selector.business_entity_field_id,
+    )
 
 
 async def review_detail(session, task_id):
@@ -164,12 +167,18 @@ async def review_detail(session, task_id):
     }
     references = (
         await session.execute(
-            select(TaskReference.reference_type, TaskReference.reference_id).where(
+            select(TaskReference.reference_type, TaskReference.reference_id)
+            .where(
                 TaskReference.task_id == task_id,
                 TaskReference.reference_type.in_(
-                    (*job_references, TaskReferenceType.BUSINESS_OBJECT_FIELD)
+                    (
+                        *job_references,
+                        TaskReferenceType.BUSINESS_FIELD,
+                        TaskReferenceType.BUSINESS_OBJECT_FIELD,
+                    )
                 ),
             )
+            .order_by(TaskReference.id)
         )
     ).all()
     if any(
@@ -197,8 +206,10 @@ async def review_detail(session, task_id):
         or run.workflow_id not in (None, workflow.id)
     ):
         run = None
-    selector, evaluation = (
-        await recorded_selector(session, job, run, field) if snapshot is not None else (None, None)
+    selector, evaluation, field_id = (
+        await recorded_selector(session, job, run, field)
+        if snapshot is not None
+        else (None, None, None)
     )
 
     slot_id = field.get("businessObjectFieldId")
@@ -212,11 +223,13 @@ async def review_detail(session, task_id):
             ),
             None,
         )
-    slot = await session.get(BusinessObjectField, slot_id) if slot_id is not None else None
-    canonical = None
-    if slot is not None:
-        obj = await DataService(session).get_object(slot.business_object_id)
-        canonical = next((item for item in obj.fields if item.object_field_id == slot.id), None)
+    if field_id is None and slot_id is None:
+        field_id = next(
+            (identity for kind, identity in references if kind == TaskReferenceType.BUSINESS_FIELD),
+            None,
+        )
+    binding = (slot_id, field_id)
+    context = (await BusinessPresentation(session).business_contexts([binding]))[binding]
 
     previous = field.get("previousObservationId", field.get("baselineObservationId"))
     current = field.get("observationId")
@@ -225,9 +238,8 @@ async def review_detail(session, task_id):
     return {
         "taskId": task.id,
         "taskStatus": task.status,
+        **context,
         "businessObjectFieldId": slot_id,
-        "canonicalValueId": canonical.value_id if canonical else None,
-        "canonicalValue": canonical.value if canonical else None,
         "previousObservationId": previous,
         "observationId": current,
         "previousEvidence": await observation_text(repo, previous),
@@ -240,6 +252,7 @@ async def review_detail(session, task_id):
         if snapshot is not None
         else None,
         "extractionRunId": run.id if run is not None else None,
+        "extractionRunStatus": run.status if run is not None else None,
         "baselineObservationId": field.get("baselineObservationId"),
         "comparison": field.get("comparison", "accepted_baseline" if previous else None),
         "evidenceStatus": field.get("evidenceStatus", EVIDENCE_STATUS.get(status)),
