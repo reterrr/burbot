@@ -5,7 +5,7 @@ import os
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, Response
+from fastapi import APIRouter, Depends, Header, HTTPException, Path, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import HTMLResponse
 from fastapi.routing import APIRoute
@@ -15,7 +15,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from extraction.schemas.common import utc_now
 from monitoring.attention import AttentionIssue, AttentionSort, attention_sources
 from monitoring.contracts import (
+    MAX_BYTES,
+    MAX_VISUAL_ARCHIVE_BYTES,
     MIME_TYPE,
+    VISUAL_ARCHIVE_VERSION,
     AgentSourcesUpdate,
     Approval,
     ClaimedJob,
@@ -38,6 +41,7 @@ from monitoring.contracts import (
     SourceReviewResponse,
     UploadRequest,
     UploadURL,
+    VisualArchiveUpload,
 )
 from monitoring.diagnostics import coverage, overview
 from monitoring.object_reviews import finding_history, object_inbox, object_review
@@ -225,13 +229,22 @@ async def claim_snapshot_command(session: Session, credentials: Credentials):
 
 
 @bridge_routes.get(AGENT_COMMANDS + "/{command_id}/artifact", response_class=Response)
-async def snapshot_command_artifact(command_id: UUID, session: Session, credentials: Credentials):
+async def snapshot_command_artifact(
+    command_id: UUID,
+    session: Session,
+    credentials: Credentials,
+    archive_format: Annotated[str | None, Header(alias="X-Burbot-Snapshot-Accept")] = None,
+):
     async with session.begin():
         agent = await authenticate_agent(session, token(credentials), lock=False)
-        file, digest, expires_at = await command_artifact(session, agent, command_id)
+        file, digest, expires_at, visual = await command_artifact(
+            session, agent, command_id, prefer_visual=archive_format == VISUAL_ARCHIVE_VERSION
+        )
         # End the DB transaction before waiting for storage. Carry only the verified file record.
         session.expunge(file)
-    content = await artifact_bytes(file)
+    content = await artifact_bytes(
+        file, max_bytes=MAX_VISUAL_ARCHIVE_BYTES if visual else MAX_BYTES
+    )
     if expires_at <= utc_now():
         raise MonitoringError(410, "SNAPSHOT_COMMAND_EXPIRED")
     return Response(
@@ -242,6 +255,7 @@ async def snapshot_command_artifact(command_id: UUID, session: Session, credenti
             "X-Burbot-Snapshot-Mime": MIME_TYPE,
             "X-Burbot-Snapshot-SHA256": digest,
             "X-Burbot-Snapshot-Size": str(len(content)),
+            **({"X-Burbot-Snapshot-Format": VISUAL_ARCHIVE_VERSION} if visual else {}),
         },
     )
 
@@ -568,6 +582,19 @@ async def upload(job_id: UUID, request: UploadRequest, session: Session, credent
         session,
         credentials,
         MonitoringQueue.grant_upload,
+        job_id=job_id,
+        payload=request,
+    )
+
+
+@router.post("/jobs/{job_id}/archive-uploads", response_model=UploadURL)
+async def upload_visual_archive(
+    job_id: UUID, request: VisualArchiveUpload, session: Session, credentials: Credentials
+):
+    return await agent_operation(
+        session,
+        credentials,
+        MonitoringQueue.grant_visual_upload,
         job_id=job_id,
         payload=request,
     )

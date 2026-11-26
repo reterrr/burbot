@@ -21,6 +21,7 @@ from monitoring.models import (
     MonitoringJob,
     MonitoringSource,
     MonitoringUpload,
+    MonitoringVisualArchive,
     SourceCheckRun,
 )
 from monitoring.object_tasks import Finding, assign_object_reviews, previous_findings
@@ -180,6 +181,7 @@ class MonitoringProcessor:
                 ),
             )
             snapshot_id = snapshot.id
+            await self._attach_visual_archive(job, snapshot_id)
 
         await self.sources.set_metadata(
             job.source_id,
@@ -206,6 +208,30 @@ class MonitoringProcessor:
         job.status = "processing"
         check.acquired_at = now
         return True
+
+    async def _attach_visual_archive(self, job, snapshot_id):
+        upload_id = job.completion_json.get("visualArchiveUploadId")
+        if not upload_id:
+            return
+        intent = await self.session.get(MonitoringUpload, UUID(upload_id))
+        if (
+            intent is None
+            or not intent.sealed_key
+            or intent.kind != "visual"
+            or intent.job_id != job.id
+            or intent.lease_id != job.lease_id
+            or intent.cleaned_at is not None
+        ):
+            return
+        file = await self.sources.register_file(
+            source_dto.StoredFileCreateRequest(
+                storage_key=intent.sealed_key,
+                mime_type=job.completion_json["mimeType"],
+                size_bytes=intent.content_size,
+                sha256=intent.content_hash,
+            )
+        )
+        self.session.add(MonitoringVisualArchive(snapshot_id=snapshot_id, file_id=file.id))
 
     async def _payload(self, job, pins):
         data = job.completion_json

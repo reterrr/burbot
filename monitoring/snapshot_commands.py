@@ -9,6 +9,7 @@ from sqlalchemy.dialects.postgresql import insert
 from extraction.schemas.common import utc_now
 from monitoring.contracts import (
     MAX_BYTES,
+    MAX_VISUAL_ARCHIVE_BYTES,
     MIME_TYPE,
     ClaimedSnapshotCommand,
     SnapshotAgentChoice,
@@ -21,13 +22,14 @@ from monitoring.models import (
     MonitoringAgentSource,
     MonitoringJob,
     MonitoringSource,
+    MonitoringVisualArchive,
     SnapshotOpenCommand,
 )
 from monitoring.onboarding_config import onboarding_config
 from monitoring.security import MonitoringError
 from monitoring.snapshots import snapshot_record
 from monitoring.workspace import field_review
-from sources.schemas.models import Source, SourceSnapshot
+from sources.schemas.models import Source, SourceSnapshot, StoredFile
 
 COMMAND_TTL = timedelta(seconds=90)
 PRESENCE_TTL = timedelta(seconds=45)
@@ -129,12 +131,12 @@ def repeat(command, request, context):
     return response(command)
 
 
-def verified_digest(file):
+def verified_digest(file, *, max_bytes=MAX_BYTES):
     if file is None:
         raise MonitoringError(404, "SNAPSHOT_ARTIFACT_NOT_FOUND")
     if file.mime_type.partition(";")[0].strip().lower() != MIME_TYPE:
         raise MonitoringError(415, "SNAPSHOT_NOT_HTML")
-    if file.size_bytes is not None and file.size_bytes > MAX_BYTES:
+    if file.size_bytes is not None and file.size_bytes > max_bytes:
         raise MonitoringError(413, "SNAPSHOT_TOO_LARGE")
     if not re.fullmatch(r"[0-9a-fA-F]{64}", file.sha256 or ""):
         raise MonitoringError(422, "SNAPSHOT_DIGEST_UNAVAILABLE")
@@ -251,7 +253,7 @@ async def claim_command(session, agent):
     )
 
 
-async def command_artifact(session, agent, command_id):
+async def command_artifact(session, agent, command_id, *, prefer_visual=False):
     command = await command_row(session, command_id, agent_id=agent.id, lock=False)
     if command.expires_at <= utc_now():
         raise MonitoringError(410, "SNAPSHOT_COMMAND_EXPIRED")
@@ -259,7 +261,16 @@ async def command_artifact(session, agent, command_id):
         raise MonitoringError(409, "SNAPSHOT_COMMAND_NOT_CLAIMED")
     await assert_source_scope(session, agent, command.source_id)
     _, file = await snapshot_record(session, command.source_id, command.snapshot_id)
-    return file, verified_digest(file), command.expires_at
+    if prefer_visual:
+        archive = await session.scalar(
+            select(StoredFile)
+            .join(MonitoringVisualArchive, MonitoringVisualArchive.file_id == StoredFile.id)
+            .where(MonitoringVisualArchive.snapshot_id == command.snapshot_id)
+        )
+        if archive is not None:
+            digest = verified_digest(archive, max_bytes=MAX_VISUAL_ARCHIVE_BYTES)
+            return archive, digest, command.expires_at, True
+    return file, verified_digest(file), command.expires_at, False
 
 
 async def acknowledge_command(session, agent, command_id, ack):

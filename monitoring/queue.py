@@ -13,7 +13,9 @@ from extraction.schemas.selector_tree import validate_selector_evaluation
 from extraction.services.selectors import SelectorService
 from monitoring.contracts import (
     MAX_SELECTORS,
+    MAX_VISUAL_ARCHIVE_BYTES,
     REPRESENTATION,
+    VISUAL_ARCHIVE_VERSION,
     ClaimedJob,
     JobStatus,
     PinnedSelector,
@@ -745,6 +747,7 @@ class MonitoringQueue:
             lease_id=job.lease_id,
             lease_expires_at=job.lease_expires_at,
             representation=REPRESENTATION,
+            visual_archive_version=VISUAL_ARCHIVE_VERSION,
             selectors=definitions,
             **(
                 {
@@ -812,7 +815,10 @@ class MonitoringQueue:
         job.lease_expires_at = utc_now() + timedelta(seconds=LEASE_SECONDS)
         return {"leaseExpiresAt": job.lease_expires_at, "status": job.status}
 
-    async def grant_upload(self, job, request):
+    async def grant_visual_upload(self, job, request):
+        return await self.grant_upload(job, request, kind="visual")
+
+    async def grant_upload(self, job, request, *, kind="evidence"):
         await self._lease(job, request.lease_id)
         now = utc_now()
         ttl = min(UPLOAD_SECONDS, math.floor((job.lease_expires_at - now).total_seconds()))
@@ -820,13 +826,18 @@ class MonitoringQueue:
             raise MonitoringError(409, "LEASE_LOST")
         intent = await self.session.scalar(
             select(MonitoringUpload)
-            .where(MonitoringUpload.job_id == job.id, MonitoringUpload.lease_id == job.lease_id)
+            .where(
+                MonitoringUpload.job_id == job.id,
+                MonitoringUpload.lease_id == job.lease_id,
+                MonitoringUpload.kind == kind,
+            )
             .with_for_update()
         )
         if intent is None:
             intent = MonitoringUpload(
                 job_id=job.id,
                 lease_id=job.lease_id,
+                kind=kind,
                 storage_key=f"monitoring/pending/{uuid4()}",
                 content_hash=request.content_hash,
                 content_size=request.content_size,
@@ -848,6 +859,9 @@ class MonitoringQueue:
 
     async def complete(self, job, request):
         supplied = request.portable()
+        if request.visual_archive_upload_id is None:
+            # Completions queued by older agents retain the same replay digest.
+            supplied.pop("visualArchiveUploadId", None)
         digest = fingerprint(supplied)
         if job.completion_key is not None:
             if job.completion_key != request.completion_key or job.completion_digest != digest:
@@ -861,6 +875,7 @@ class MonitoringQueue:
             intent is None
             or intent.job_id != job.id
             or intent.lease_id != job.lease_id
+            or intent.kind != "evidence"
             or intent.cleaned_at is not None
         ):
             raise MonitoringError(404, "UPLOAD_INTENT_NOT_FOUND")
@@ -908,12 +923,42 @@ class MonitoringQueue:
             intent.storage_key, sealed_key, intent.content_size, intent.content_hash
         )
         intent.sealed_key = sealed_key
+        if request.visual_archive_upload_id is not None:
+            await self._seal_visual_upload(job, request.visual_archive_upload_id)
         job.completion_key = request.completion_key
         job.completion_digest = digest
         job.completion_json = supplied
         job.status = "uploaded"
         job.available_at = utc_now()
         return status(job)
+
+    async def _seal_visual_upload(self, job, upload_id):
+        intent = await self.session.scalar(
+            select(MonitoringUpload)
+            .where(
+                MonitoringUpload.id == upload_id,
+                MonitoringUpload.job_id == job.id,
+                MonitoringUpload.lease_id == job.lease_id,
+                MonitoringUpload.kind == "visual",
+                MonitoringUpload.cleaned_at.is_(None),
+            )
+            .with_for_update()
+        )
+        if intent is None:
+            return
+        key = f"monitoring/snapshots/{intent.id}/{intent.content_hash}.html"
+        try:
+            await self.store.seal(
+                intent.storage_key,
+                key,
+                intent.content_size,
+                intent.content_hash,
+                max_bytes=MAX_VISUAL_ARCHIVE_BYTES,
+            )
+        except MonitoringError:
+            # Visual delivery is optional. The sealed evidence remains usable.
+            return
+        intent.sealed_key = key
 
     async def fail(self, job, request):
         await self._lease(job, request.lease_id)

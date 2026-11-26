@@ -21,6 +21,8 @@ REPRESENTATION_VERSION = "firefox-dom-1"
 STRUCTURE_HASH_VERSION = "dom-shape-1"
 MIME_TYPE = "text/html"
 MAX_BYTES = 5 * 1024 * 1024
+VISUAL_ARCHIVE_VERSION = "visual-html-1"
+MAX_VISUAL_ARCHIVE_BYTES = 16 * 1024 * 1024
 MAX_SELECTORS = 64
 
 Digest = Annotated[str, StringConstraints(pattern=r"^[a-f0-9]{64}$")]
@@ -284,6 +286,12 @@ class UploadRequest(Lease):
     mime_type: Literal["text/html"]
 
 
+class VisualArchiveUpload(Lease):
+    content_hash: Digest
+    content_size: Annotated[int, Field(strict=True, gt=0, le=MAX_VISUAL_ARCHIVE_BYTES)]
+    mime_type: Literal["text/html"]
+
+
 class SelectorReport(PortableModel):
     definition_fingerprint: Digest
     result: SelectorEvaluationResult
@@ -291,6 +299,7 @@ class SelectorReport(PortableModel):
 
 class Completion(UploadRequest):
     upload_intent_id: UUID
+    visual_archive_upload_id: UUID | None = None
     completion_key: UUID
     representation_version: Literal["firefox-dom-1"]
     structure_hash_version: Literal["dom-shape-1"]
@@ -343,6 +352,7 @@ class ClaimedJob(PortableModel):
     representation: Literal["rendered_dom"] = "rendered_dom"
     selectors: list[PinnedSelector]
     navigation: TrustedNavigation | None = None
+    visual_archive_version: Literal["visual-html-1"] = VISUAL_ARCHIVE_VERSION
 
 
 class UploadURL(PortableModel):

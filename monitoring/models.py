@@ -200,18 +200,35 @@ class MonitoringUpload(SQLModel, table=True):
     __tablename__ = "monitoring_uploads"
     __table_args__ = (
         CheckConstraint("content_size > 0", name="monitoring_upload_positive_size"),
-        UniqueConstraint("job_id", "lease_id", name="uq_monitoring_upload_per_attempt"),
+        CheckConstraint("kind IN ('evidence','visual')", name="monitoring_upload_kind"),
+        UniqueConstraint("job_id", "lease_id", "kind", name="uq_monitoring_upload_per_artifact"),
         Index("ix_monitoring_uploads_cleanup", "expires_at", "cleaned_at"),
     )
     id: UUID = Field(default_factory=uuid4, sa_column=Column(Uuid, primary_key=True))
     job_id: UUID = Field(sa_column=Column(Uuid, ForeignKey("monitoring_jobs.id"), nullable=False))
     lease_id: UUID = Field(sa_column=Column(Uuid, nullable=False))
+    kind: str = Field(
+        default="evidence",
+        sa_column=Column(String(8), nullable=False, server_default=text("'evidence'")),
+    )
     storage_key: str = Field(sa_column=Column(Text, nullable=False, unique=True))
     content_hash: str = Field(sa_column=Column(String(64), nullable=False))
     content_size: int = Field(sa_column=Column(BigInteger, nullable=False))
     expires_at: datetime = Field(sa_column=timestamp())
     sealed_key: str | None = Field(default=None, sa_column=Column(Text))
     cleaned_at: datetime | None = Field(default=None, sa_column=timestamp(nullable=True))
+
+
+class MonitoringVisualArchive(SQLModel, table=True):
+    __tablename__ = "monitoring_visual_archives"
+    __table_args__ = (UniqueConstraint("file_id", name="uq_monitoring_visual_archive_file"),)
+
+    snapshot_id: int = Field(
+        sa_column=Column(
+            BigInteger, ForeignKey("source_snapshots.id", ondelete="CASCADE"), primary_key=True
+        )
+    )
+    file_id: int = Field(sa_column=reference("stored_files.id"))
 
 
 class SourceCheckRun(SQLModel, table=True):

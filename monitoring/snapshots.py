@@ -8,6 +8,7 @@ from lxml import etree, html
 from sqlalchemy import select
 
 from monitoring.contracts import (
+    MAX_BYTES,
     MIME_TYPE,
     ReviewedSource,
     SnapshotArtifactDetails,
@@ -64,12 +65,12 @@ async def snapshot_record(session, source_id, snapshot_id):
     return record
 
 
-async def artifact_bytes(file):
+async def artifact_bytes(file, *, max_bytes=MAX_BYTES):
     if file is None:
         raise MonitoringError(404, "SNAPSHOT_ARTIFACT_NOT_FOUND")
     if file.mime_type.partition(";")[0].strip().lower() != MIME_TYPE:
         raise MonitoringError(415, "SNAPSHOT_NOT_HTML")
-    return await storage_from_env().read_snapshot(file)
+    return await storage_from_env().read_snapshot(file, max_bytes=max_bytes)
 
 
 async def snapshot_content(session, source_id, snapshot_id, *, metadata_only):

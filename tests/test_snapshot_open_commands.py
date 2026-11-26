@@ -8,7 +8,21 @@ from uuid import UUID, uuid4
 import pytest
 from test_collections_postgres import database as database
 from test_collections_postgres import domain as domain
-from test_monitoring_postgres import OPERATOR, add_tree, agent, monitor, source
+from test_monitoring_postgres import (
+    OPERATOR,
+    add_tree,
+    agent,
+    complete,
+    enqueue,
+    history,
+    monitor,
+    operation,
+    prepare,
+    process,
+    put,
+    source,
+)
+from test_monitoring_postgres import claim as claim_job
 from test_monitoring_postgres import client as client
 from test_monitoring_postgres import minio as minio
 from test_monitoring_snapshots import CAPTURE, store_capture
@@ -16,7 +30,13 @@ from test_monitoring_workspace import change_locator
 from test_selector_tree import css, part, recipe, tree
 
 from extraction.schemas.common import utc_now
-from monitoring.models import MonitoringAgent, MonitoringJob, SnapshotOpenCommand
+from monitoring.contracts import VISUAL_ARCHIVE_VERSION
+from monitoring.models import (
+    MonitoringAgent,
+    MonitoringJob,
+    MonitoringVisualArchive,
+    SnapshotOpenCommand,
+)
 
 pytestmark = pytest.mark.asyncio
 COMMANDS = "/monitoring/snapshots/open-commands"
@@ -49,6 +69,72 @@ async def open_command(client, body, expected=200, *, headers=OPERATOR):
     assert response.status_code == expected, response.text
     assert response.headers["cache-control"] == "no-store"
     return response.json()
+
+
+async def test_visual_archive_is_separate_and_never_replaces_evidence(domain, client, minio):
+    owner = await source(domain, client)
+    credentials, agent_id = await agent(client, owner.id)
+    evidence = b"<p>Captured evidence</p>"
+    visual = b"<style>p{color:blue}</style><p>Captured evidence</p>"
+
+    async def capture(evidence, archive, *, digest=None):
+        await enqueue(client, owner.id)
+        job = await claim_job(client, credentials)
+        assert job["visualArchiveVersion"] == VISUAL_ARCHIVE_VERSION
+        grant, completion = await prepare(client, credentials, job, evidence, "a" * 64)
+        response = await client.post(
+            operation(job, "archive-uploads"),
+            headers=credentials,
+            json={
+                "leaseId": job["leaseId"],
+                "contentSize": len(archive),
+                "contentHash": digest or sha256(archive).hexdigest(),
+                "mimeType": "text/html",
+            },
+        )
+        assert response.status_code == 200, response.text
+        archive_grant = response.json()
+        assert archive_grant["uploadIntentId"] != grant["uploadIntentId"]
+        await put(grant, evidence)
+        await put(archive_grant, archive)
+        completion["visualArchiveUploadId"] = archive_grant["uploadIntentId"]
+        assert await complete(client, credentials, job, completion) == await complete(
+            client, credentials, job, completion
+        )
+        await process(domain, job)
+        return (await history(client, owner.id))[0]["sourceSnapshotId"]
+
+    snapshot_id = await capture(evidence, visual)
+    assert await capture(evidence, visual.replace(b"blue", b"red")) == snapshot_id
+    newer = await capture(b"<p>New evidence</p>", visual, digest="0" * 64)
+    assert newer != snapshot_id
+    assert await domain.count(MonitoringVisualArchive) == 1
+
+    download = await client.get(
+        f"/monitoring/sources/{owner.id}/snapshots/{snapshot_id}/download", headers=OPERATOR
+    )
+    assert download.content == evidence
+    await claim(client, credentials, 204)
+    command = await open_command(
+        client,
+        {
+            "requestId": str(uuid4()),
+            "sourceId": owner.id,
+            "snapshotId": snapshot_id,
+            "targetAgentId": agent_id,
+        },
+    )
+    await claim(client, credentials)
+    path = f"{AGENT}/{command['commandId']}/artifact"
+    requested = {**credentials, "X-Burbot-Snapshot-Accept": VISUAL_ARCHIVE_VERSION}
+    saved = await client.get(path, headers=requested)
+    assert saved.status_code == 200, saved.text
+    assert saved.content == visual
+    assert saved.headers["X-Burbot-Snapshot-Format"] == VISUAL_ARCHIVE_VERSION
+    assert saved.headers["X-Burbot-Snapshot-SHA256"] == sha256(visual).hexdigest()
+    default = await client.get(path, headers=credentials)
+    assert default.content == evidence
+    assert "X-Burbot-Snapshot-Format" not in default.headers
 
 
 async def test_agent_selection_authorization_and_single_delivery(domain, client, minio):

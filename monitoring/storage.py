@@ -71,13 +71,13 @@ class SnapshotStorage:
             ExpiresIn=seconds,
         )
 
-    def _seal(self, temp_key, final_key, size, digest):
+    def _seal(self, temp_key, final_key, size, digest, max_bytes):
         from botocore.exceptions import BotoCoreError, ClientError
 
         try:
             response = self.reader.get_object(Bucket=self.bucket, Key=temp_key)
             with closing(response["Body"]) as stream:
-                if response["ContentLength"] != size or not 0 < size <= MAX_BYTES:
+                if response["ContentLength"] != size or not 0 < size <= max_bytes:
                     raise MonitoringError(422, "UPLOAD_SIZE_MISMATCH")
                 if response.get("ContentType") != MIME_TYPE:
                     raise MonitoringError(422, "UPLOAD_MEDIA_TYPE_MISMATCH")
@@ -102,13 +102,13 @@ class SnapshotStorage:
         except BotoCoreError as error:
             raise MonitoringError(503, "STORAGE_UNAVAILABLE") from error
 
-    async def seal(self, temp_key, final_key, size, digest):
-        await asyncio.to_thread(self._seal, temp_key, final_key, size, digest)
+    async def seal(self, temp_key, final_key, size, digest, *, max_bytes=MAX_BYTES):
+        await asyncio.to_thread(self._seal, temp_key, final_key, size, digest, max_bytes)
 
-    def _read_snapshot(self, file):
+    def _read_snapshot(self, file, max_bytes):
         from botocore.exceptions import BotoCoreError, ClientError, IncompleteReadError
 
-        if file.size_bytes is not None and file.size_bytes > MAX_BYTES:
+        if file.size_bytes is not None and file.size_bytes > max_bytes:
             raise MonitoringError(413, "SNAPSHOT_TOO_LARGE")
         try:
             response = self.reader.get_object(Bucket=self.bucket, Key=file.storage_key)
@@ -116,12 +116,12 @@ class SnapshotStorage:
                 size = response.get("ContentLength")
                 if type(size) is not int or size < 0:
                     raise MonitoringError(422, "SNAPSHOT_INTEGRITY_MISMATCH")
-                if size > MAX_BYTES:
+                if size > max_bytes:
                     raise MonitoringError(413, "SNAPSHOT_TOO_LARGE")
                 if file.size_bytes is not None and file.size_bytes != size:
                     raise MonitoringError(422, "SNAPSHOT_INTEGRITY_MISMATCH")
                 body = stream.read(size + 1)
-            if len(body) > MAX_BYTES:
+            if len(body) > max_bytes:
                 raise MonitoringError(413, "SNAPSHOT_TOO_LARGE")
             if len(body) != size or (
                 file.sha256 is not None and hashlib.sha256(body).hexdigest() != file.sha256.lower()
@@ -137,8 +137,8 @@ class SnapshotStorage:
         except BotoCoreError as error:
             raise MonitoringError(503, "STORAGE_UNAVAILABLE") from error
 
-    async def read_snapshot(self, file):
-        return await asyncio.to_thread(self._read_snapshot, file)
+    async def read_snapshot(self, file, *, max_bytes=MAX_BYTES):
+        return await asyncio.to_thread(self._read_snapshot, file, max_bytes)
 
     async def delete(self, key):
         from botocore.exceptions import BotoCoreError, ClientError
