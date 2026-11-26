@@ -112,12 +112,9 @@ def authorize_admin(offered, configured):
         raise MonitoringError(401, "INVALID_OPERATOR_TOKEN")
 
 
-async def authenticate_agent(session, token) -> MonitoringAgent:
-    agent = await session.scalar(
-        select(MonitoringAgent)
-        .where(MonitoringAgent.token_digest == token_digest(token))
-        .with_for_update()
-    )
+async def authenticate_agent(session, token, *, lock=True) -> MonitoringAgent:
+    query = select(MonitoringAgent).where(MonitoringAgent.token_digest == token_digest(token))
+    agent = await session.scalar(query.with_for_update() if lock else query)
     if agent is None or not agent.enabled:
         raise MonitoringError(401, "INVALID_AGENT_TOKEN")
     return agent

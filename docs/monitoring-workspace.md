@@ -117,6 +117,10 @@ status, or recorded observation/field text where available.
 
 ## HTML Snapshot Viewer
 
+Use **Open in Firefox** to send a capture to the installed Firefox extension.
+The command, authentication, and local setup are documented in the snapshot
+bridge guide. [Snapshot bridge](snapshot-bridge.md)
+
 Open **View snapshot** in Source Review, Monitoring History, Task Details,
 Evidence Review, Object Review history, or the Field Inspector. The Studio opens
 `#/monitoring/sources/:sourceId/snapshots/:snapshotId` with the snapshot ID from
