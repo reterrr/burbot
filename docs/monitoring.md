@@ -671,6 +671,42 @@ these unverified diagnostics through their recorded evaluation. A successful
 selector evaluation creates an observation for review. Canonical acceptance
 uses the existing business layer workflow.
 
+## Snapshot archival modes
+
+Set the mode in the backend .env file and recreate the API and worker
+containers so they receive the new environment.
+
+```dotenv
+# Store the canonical evidence and its provenance. This is the default.
+BURBOT_MONITORING_SNAPSHOT_MODE=minimal
+```
+
+```dotenv
+# Store evidence and an offline visual archive.
+BURBOT_MONITORING_SNAPSHOT_MODE=full
+BURBOT_MONITORING_FULL_SNAPSHOT_MAX_MB=256
+BURBOT_MONITORING_FULL_RESOURCE_MAX_MB=32
+```
+
+The byte limits use MiB. The total accepts 1–512 MiB and the individual
+resource limit accepts 1–64 MiB, up to the total. The rendered document
+has a 16 MiB cap. During archive preparation CSS and SVG have a 2 MiB cap
+per resource. Each manifest tracks up to 512 resource URLs.
+
+Apply migration m106 and deploy the updated API, worker and Firefox
+extension before enabling full. Studio displays the recorded archive status
+and counts for the selected check. For Compose, recreate the services
+with `docker compose up -d --no-deps --force-recreate bot worker`.
+For a standalone deployment, restart the services with the updated environment.
+
+Each claim records its mode and limits. Both modes load the page with
+the same navigation and readiness policy. Firefox freezes the sanitized DOM,
+hashes and selector results at the usual capture boundary. Full mode
+additionally records loaded static resources for an independent archive.
+The archive follows the check even when canonical evidence reuses the same
+SourceSnapshot. An archive failure leaves a status for review while evidence
+processing proceeds through the usual workflow.
+
 ## Source access
 
 Monitor public content whose rendered HTML may be stored. The agent uses a

@@ -7,10 +7,11 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Path, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.routing import APIRoute
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.background import BackgroundTask
 
 from extraction.schemas.common import utc_now
 from monitoring.attention import AttentionIssue, AttentionSort, attention_sources
@@ -21,9 +22,14 @@ from monitoring.contracts import (
     VISUAL_ARCHIVE_VERSION,
     AgentSourcesUpdate,
     Approval,
+    ArchiveObjectGrant,
+    ArchiveObjectTarget,
+    ArchiveReport,
+    ArchiveSummary,
     ClaimedJob,
     ClaimedSnapshotCommand,
     Completion,
+    Digest,
     EvidenceReviewResponse,
     Failure,
     FindingCapture,
@@ -54,6 +60,7 @@ from monitoring.snapshot_commands import (
     acknowledge_command,
     agent_choices,
     claim_command,
+    command_archive_object,
     command_artifact,
     command_row,
     create_command,
@@ -61,6 +68,7 @@ from monitoring.snapshot_commands import (
 from monitoring.snapshot_commands import (
     response as snapshot_command_response,
 )
+from monitoring.snapshot_config import MAX_MANIFEST_BYTES
 from monitoring.snapshots import (
     SNAPSHOT_HEADERS,
     artifact_bytes,
@@ -68,6 +76,7 @@ from monitoring.snapshots import (
     snapshot_content,
     snapshot_record,
 )
+from monitoring.storage import ARCHIVE_CHUNK_BYTES, ARCHIVE_MEDIA_TYPE, storage_from_env
 from monitoring.workspace import check_history, field_review, source_review
 from shared.database import get_session
 
@@ -79,7 +88,12 @@ class MonitoringRoute(APIRoute):
         async def bounded(request: Request):
             if request.method in {"POST", "PUT"}:
                 body = bytearray()
-                limit = 8 * 1024 * 1024 if request.url.path.endswith("/complete") else 32 * 1024
+                if request.url.path.endswith("/complete"):
+                    limit = 8 * 1024 * 1024
+                elif request.url.path.endswith("/full-archive"):
+                    limit = MAX_MANIFEST_BYTES
+                else:
+                    limit = 32 * 1024
                 async for chunk in request.stream():
                     if len(body) + len(chunk) > limit:
                         raise HTTPException(413, detail={"code": "REQUEST_TOO_LARGE"})
@@ -258,6 +272,41 @@ async def snapshot_command_artifact(
             **({"X-Burbot-Snapshot-Format": VISUAL_ARCHIVE_VERSION} if visual else {}),
         },
     )
+
+
+async def archive_response(session, credentials, command_id, digest=None):
+    async with session.begin():
+        agent = await authenticate_agent(session, token(credentials), lock=False)
+        key, size, checksum, expires = await command_archive_object(
+            session, agent, command_id, digest
+        )
+    handle = await storage_from_env().read_archive_file(key, size, checksum)
+    if expires <= utc_now():
+        handle.close()
+        raise MonitoringError(410, "SNAPSHOT_COMMAND_EXPIRED")
+    return StreamingResponse(
+        iter(lambda: handle.read(ARCHIVE_CHUNK_BYTES), b""),
+        media_type=ARCHIVE_MEDIA_TYPE,
+        headers={
+            "Content-Length": str(size),
+            "Content-Disposition": "attachment",
+            "X-Burbot-Snapshot-Size": str(size),
+            "X-Burbot-Snapshot-SHA256": checksum,
+        },
+        background=BackgroundTask(handle.close),
+    )
+
+
+@bridge_routes.get(AGENT_COMMANDS + "/{command_id}/archive-manifest")
+async def snapshot_command_manifest(command_id: UUID, session: Session, credentials: Credentials):
+    return await archive_response(session, credentials, command_id)
+
+
+@bridge_routes.get(AGENT_COMMANDS + "/{command_id}/archive-objects/{digest}")
+async def snapshot_command_object(
+    command_id: UUID, digest: Digest, session: Session, credentials: Credentials
+):
+    return await archive_response(session, credentials, command_id, digest)
 
 
 @bridge_routes.post(AGENT_COMMANDS + "/{command_id}/ack", response_model=SnapshotCommandResponse)
@@ -597,6 +646,33 @@ async def upload_visual_archive(
         MonitoringQueue.grant_visual_upload,
         job_id=job_id,
         payload=request,
+    )
+
+
+@router.post("/jobs/{job_id}/full-archive/uploads", response_model=ArchiveObjectTarget)
+async def upload_archive_object(
+    job_id: UUID, request: ArchiveObjectGrant, session: Session, credentials: Credentials
+):
+    return await agent_operation(
+        session, credentials, MonitoringQueue.grant_archive_object, job_id=job_id, payload=request
+    )
+
+
+@router.post("/jobs/{job_id}/full-archive/seal", response_model=ArchiveObjectTarget)
+async def seal_archive_object(
+    job_id: UUID, request: ArchiveObjectGrant, session: Session, credentials: Credentials
+):
+    return await agent_operation(
+        session, credentials, MonitoringQueue.seal_archive_object, job_id=job_id, payload=request
+    )
+
+
+@router.post("/jobs/{job_id}/full-archive", response_model=ArchiveSummary)
+async def report_full_archive(
+    job_id: UUID, request: ArchiveReport, session: Session, credentials: Credentials
+):
+    return await agent_operation(
+        session, credentials, MonitoringQueue.report_archive, job_id=job_id, payload=request
     )
 
 

@@ -119,6 +119,9 @@ class SnapshotOpenCommand(SQLModel, table=True):
     state: str = Field(default="pending", sa_column=Column(String(12), nullable=False))
     error_code: str | None = Field(default=None, sa_column=Column(String(64)))
     selector_context: dict[str, Any] | None = Field(default=None, sa_column=Column(JSONB))
+    check_id: UUID | None = Field(
+        default=None, sa_column=Column(Uuid, ForeignKey("monitoring_jobs.id", ondelete="SET NULL"))
+    )
 
 
 class MonitoringJob(SQLModel, table=True):
@@ -177,6 +180,8 @@ class MonitoringJob(SQLModel, table=True):
     completion_key: UUID | None = Field(default=None, sa_column=Column(Uuid))
     completion_digest: str | None = Field(default=None, sa_column=Column(String(64)))
     completion_json: dict[str, Any] | None = Field(default=None, sa_column=Column(JSONB))
+    snapshot_policy: dict[str, Any] | None = Field(default=None, sa_column=Column(JSONB))
+    archive_result: dict[str, Any] | None = Field(default=None, sa_column=Column(JSONB))
     error_code: str | None = Field(default=None, sa_column=Column(String(64)))
 
 
@@ -216,6 +221,22 @@ class MonitoringUpload(SQLModel, table=True):
     content_size: int = Field(sa_column=Column(BigInteger, nullable=False))
     expires_at: datetime = Field(sa_column=timestamp())
     sealed_key: str | None = Field(default=None, sa_column=Column(Text))
+    cleaned_at: datetime | None = Field(default=None, sa_column=timestamp(nullable=True))
+
+
+class MonitoringArchiveUpload(SQLModel, table=True):
+    __tablename__ = "monitoring_archive_uploads"
+    __table_args__ = (
+        CheckConstraint("size_bytes > 0", name="monitoring_archive_positive_size"),
+        Index("ix_monitoring_archive_cleanup", "expires_at", "cleaned_at"),
+    )
+    job_id: UUID = Field(sa_column=Column(Uuid, ForeignKey("monitoring_jobs.id"), primary_key=True))
+    lease_id: UUID = Field(sa_column=Column(Uuid, primary_key=True))
+    sha256: str = Field(sa_column=Column(String(64), primary_key=True))
+    size_bytes: int = Field(sa_column=Column(BigInteger, nullable=False))
+    expires_at: datetime = Field(sa_column=timestamp())
+    sealed: bool = Field(default=False, sa_column=Column(Boolean, nullable=False))
+    included: bool = Field(default=False, sa_column=Column(Boolean, nullable=False))
     cleaned_at: datetime | None = Field(default=None, sa_column=timestamp(nullable=True))
 
 

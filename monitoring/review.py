@@ -11,6 +11,7 @@ from extraction.schemas.selector_tree import SelectorDefinition
 from extraction.services.repositories import ExtractionRepository
 from extraction.services.selector_execution import response as evaluation_response
 from extraction.services.selectors import SelectorService
+from monitoring.archives import archive_summary
 from monitoring.models import MonitoringJob, MonitoringJobSelector, SourceCheckRun
 from monitoring.presentation import display_text, field_presentations, recorded_id, source_record
 from monitoring.security import MonitoringError
@@ -264,6 +265,8 @@ async def review_detail(session, task_id):
     return {
         **context,
         "taskId": task.id,
+        "checkId": job.id,
+        "archive": archive_summary(job),
         "taskStatus": task.status,
         "businessObjectFieldId": slot_id,
         "previousObservationId": previous,

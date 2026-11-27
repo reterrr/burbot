@@ -8,6 +8,7 @@ from sqlalchemy.orm import load_only
 
 from extraction.schemas.models import ConcreteValue, ExtractionRun, FieldObservation
 from extraction.schemas.selector import Selector, SelectorEvaluation, SelectorVersion
+from monitoring.archives import archive_summary, summarize_archive
 from monitoring.attention import MONITORING_TASKS, OPEN_TASKS
 from monitoring.models import MonitoringJob, MonitoringJobSelector, SourceCheckRun
 from monitoring.presentation import field_presentations, recorded_id, source_record
@@ -33,6 +34,8 @@ async def check_record(session, source_id, *, check_id=None, completed=False):
                 MonitoringJob.error_code,
                 MonitoringJob.source_snapshot_id,
                 MonitoringJob.extraction_run_id,
+                MonitoringJob.snapshot_policy,
+                MonitoringJob.archive_result,
                 raiseload=True,
             )
         )
@@ -62,6 +65,7 @@ def check_summary(pair):
         "snapshotId": job.source_snapshot_id,
         "extractionRunId": job.extraction_run_id,
         "errorCode": job.error_code,
+        "archive": archive_summary(job),
     }
 
 
@@ -76,6 +80,8 @@ async def check_history(session, source_id, offset, limit):
                 job.source_snapshot_id.label("snapshotId"),
                 job.extraction_run_id.label("extractionRunId"),
                 job.error_code.label("errorCode"),
+                job.snapshot_policy,
+                job.archive_result,
                 check.change_status.label("changeStatus"),
                 func.coalesce(job.completed_at, check.processed_at, job.created_at).label(
                     "checkedAt"
@@ -88,7 +94,12 @@ async def check_history(session, source_id, offset, limit):
             .limit(limit)
         )
     ).mappings()
-    return [dict(row) for row in rows]
+    items = []
+    for row in rows:
+        item = dict(row)
+        item["archive"] = summarize_archive(item.pop("snapshot_policy"), item.pop("archive_result"))
+        items.append(item)
+    return items
 
 
 async def capture_snapshot(session, job):
