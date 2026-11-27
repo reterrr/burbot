@@ -39,6 +39,7 @@ class Resolve(PortableModel):
     identity: Identity
     action: Literal["preview", "resolve", "bind", "create"] = "preview"
     existing_business_object_id: Id | None = None
+    expected_schema_revision_id: Id | None = None
 
     @model_validator(mode="after")
     def explicit_target(self):

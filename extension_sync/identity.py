@@ -297,6 +297,11 @@ class IdentityService:
 
     async def resolve(self, request):
         model = await self.model(write=request.action != "preview")
+        if (
+            request.expected_schema_revision_id is not None
+            and request.expected_schema_revision_id != str(model.current_revision_id)
+        ):
+            reject(409, "SCHEMA_REVISION_CHANGED", revisionId=str(model.current_revision_id))
         identity = request.identity
         binding, entity = await self.binding(model, identity)
         if (
