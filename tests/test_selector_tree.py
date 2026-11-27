@@ -7,11 +7,13 @@ import pytest
 from pydantic import TypeAdapter, ValidationError
 
 from extraction.schemas.selector_tree import (
+    SelectorEvaluationResult,
     SelectorLocator,
     SelectorTree,
     validate_selector_evaluation,
 )
 from extraction.services.selector_resolver import HtmlSelectorRuntime, evaluate_selector_version
+from monitoring.report import validate_consensus
 
 PAGE = "http://selector.test/project"
 CREATED = "2026-11-17T10:00:00.000Z"
@@ -73,6 +75,164 @@ def evaluate(definition, html):
     result = evaluate_selector_version(version, HtmlSelectorRuntime(html, PAGE))
     validate_selector_evaluation(result, version)
     return result
+
+
+RECRUITMENT_LOCATOR = "div.info-top p.wp-block-paragraph"
+OLD_ANNOUNCEMENT = "Nabór rozpocznie się 01 października 2026"
+NEW_ANNOUNCEMENT = "Nabór zakończy się 29 listopada 2026"
+
+
+def announcement(value):
+    return (
+        '<!doctype html><meta charset="utf-8"><div class="info-top">'
+        f'<p class="wp-block-paragraph" id="announcement">{value}</p></div>'
+        "<footer>Kontakt i inne informacje</footer>"
+    )
+
+
+def recruitment_tree(extraction):
+    return tree(
+        recipe(
+            part(
+                css(RECRUITMENT_LOCATOR),
+                css("#announcement", order=1),
+                {
+                    "uuid": uuid(),
+                    "kind": "xpath",
+                    "expression": '//div[@class="info-top"]/p',
+                    "order": 2,
+                },
+                {
+                    "uuid": uuid(),
+                    "kind": "text_quote",
+                    "quote": {"exact": OLD_ANNOUNCEMENT},
+                    "order": 3,
+                },
+                extraction=extraction,
+            )
+        )
+    )
+
+
+def locator_results(result):
+    return result.recipe_results[0].part_results[0].locator_results
+
+
+def test_dynamic_announcement_css_and_xpath_agree_after_the_quote_disappears():
+    definition = recruitment_tree({"type": "text"})
+    assert evaluate(definition, announcement(OLD_ANNOUNCEMENT)).raw_value == OLD_ANNOUNCEMENT
+    result = evaluate(definition, announcement(NEW_ANNOUNCEMENT))
+    assert result.status == "success"
+    assert result.raw_value == NEW_ANNOUNCEMENT
+    css_result, fallback, xpath, quote = locator_results(result)
+    for locator in (css_result, fallback, xpath):
+        assert (locator.status, locator.match_count, locator.raw_value) == (
+            "success",
+            1,
+            NEW_ANNOUNCEMENT,
+        )
+    assert quote.status == "not_found"
+    assert quote.candidate is None
+
+    disagreement = evaluate(
+        definition, announcement(NEW_ANNOUNCEMENT) + f"<p>{OLD_ANNOUNCEMENT}</p>"
+    )
+    assert disagreement.status == "conflict"
+    assert evaluate(definition, "<p>Different target</p>").status == "not_found"
+
+
+def test_old_exact_selection_retains_failure_and_exact_public_element_text():
+    exact = {"type": "selection", "quote": {"exact": OLD_ANNOUNCEMENT}}
+    definition = recruitment_tree(exact)
+    assert evaluate(definition, announcement(OLD_ANNOUNCEMENT)).raw_value == OLD_ANNOUNCEMENT
+    original_spacing = f" \n{NEW_ANNOUNCEMENT}  "
+    result = evaluate(
+        definition,
+        announcement(original_spacing + "<textarea>private</textarea><script>private</script>"),
+    )
+    assert result.status == "error" and result.raw_value is None
+    for locator in locator_results(result)[:3]:
+        assert locator.match_count == 1
+        assert locator.extraction_error == "selection_quote_mismatch"
+        assert locator.candidate.portable() == {
+            "rawText": original_spacing,
+            "source": "matched_element_text",
+            "verified": False,
+        }
+    assert locator_results(result)[3].candidate is None
+
+    for value in ("password: private", "x" * 4097, "<input value=private>"):
+        assert locator_results(evaluate(definition, announcement(value)))[0].candidate is None
+    broad = tree(recipe(part(css("body"), extraction=exact)))
+    assert locator_results(evaluate(broad, announcement(NEW_ANNOUNCEMENT)))[0].candidate is None
+    missing = evaluate(definition, "<div>Something else</div>")
+    assert all(locator.candidate is None for locator in locator_results(missing))
+
+
+def test_boundary_extraction_has_no_previous_literal_and_requires_a_unique_span():
+    extraction = {"type": "text_between", "start": "Numer:", "end": "Status:"}
+    definition = recruitment_tree(extraction)
+    for number in ("123-AB", "456-CD"):
+        result = evaluate(definition, announcement(f"Numer: <b>{number}</b> Status: otwarty"))
+        assert result.raw_value == number
+    result = evaluate(definition, announcement("Numer: 123 Status: Numer: 456 Status:"))
+    assert locator_results(result)[0].extraction_error == "text_boundary_ambiguous"
+    result = evaluate(definition, announcement("Numer: 123"))
+    assert locator_results(result)[0].extraction_error == "text_boundary_missing"
+    for start in ("  ", "😀" * 129):
+        with pytest.raises(ValidationError, match="Text boundaries"):
+            SelectorTree.model_validate(recruitment_tree({**extraction, "start": start}))
+
+
+@pytest.mark.parametrize(
+    ("changes", "expected"),
+    [
+        ({"matchCount": 0}, "one located target"),
+        ({"status": "success", "rawValue": "forged"}, "one located target"),
+        ({"rawValue": "forged"}, "no raw value"),
+        ({"extractionError": "attribute_missing"}, "configured method"),
+        ({"extractionError": "not_a_code"}, "extractionError"),
+        ({"candidate": {"verified": True}}, "explicitly unverified"),
+        ({"candidate": {"verified": 0}}, "explicitly unverified"),
+        ({"candidate": {"rawText": "😀" * 2049}}, "bounded, non-sensitive"),
+        ({"candidate": {"rawText": "access_token\u00a0=\u00a0secret"}}, "bounded, non-sensitive"),
+        ({"candidate": {"rawText": "bad\x00data"}}, "bounded, non-sensitive"),
+        ({"candidate": {"source": "page_text"}}, "source"),
+        ({"candidate": {"sourceSnapshotId": 84}}, "Extra inputs"),
+    ],
+)
+def test_diagnostic_candidate_validation(changes, expected):
+    definition = recruitment_tree({"type": "selection", "quote": {"exact": OLD_ANNOUNCEMENT}})
+    version = SelectorTree.model_validate(definition).versions[0]
+    report = evaluate(definition, announcement(NEW_ANNOUNCEMENT)).portable()
+    locator = report["recipeResults"][0]["partResults"][0]["locatorResults"][0]
+    if "candidate" in changes:
+        locator["candidate"].update(changes["candidate"])
+    else:
+        locator.update(changes)
+    with pytest.raises(ValueError, match=expected):
+        result = SelectorEvaluationResult.model_validate(report)
+        validate_selector_evaluation(result, version)
+        validate_consensus(result, version)
+
+
+def test_diagnostic_candidate_cannot_be_attached_to_a_text_quote_locator_or_promoted():
+    definition = recruitment_tree({"type": "selection", "quote": {"exact": OLD_ANNOUNCEMENT}})
+    version = SelectorTree.model_validate(definition).versions[0]
+    failed = evaluate(definition, announcement(NEW_ANNOUNCEMENT))
+    quote = locator_results(failed)[3]
+    report = failed.portable()
+    locators = report["recipeResults"][0]["partResults"][0]["locatorResults"]
+    locators[3] = {**locators[0], "locatorUuid": str(quote.locator_uuid)}
+    result = SelectorEvaluationResult.model_validate(report)
+    with pytest.raises(ValueError, match="requires an element locator"):
+        validate_selector_evaluation(result, version)
+
+    report = failed.portable()
+    report.update(status="success", rawValue=NEW_ANNOUNCEMENT)
+    result = SelectorEvaluationResult.model_validate(report)
+    with pytest.raises(ValueError, match="outcome does not follow"):
+        validate_consensus(result, version)
 
 
 def reserved_locators():

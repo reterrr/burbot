@@ -651,6 +651,26 @@ it when monitoring is disabled. HTML stays out of the outbox.
   run IDs, change classification, selector versions, task IDs and safe error
   codes.
 
+### Selector extraction and diagnostics
+
+Firefox evaluates each locator in the job's pinned version against the sanitized
+DOM used to create the snapshot. A part using element text reads the element's
+current text. A part using text boundaries reads the value between a unique
+ordered pair of markers in an element. Exact selection retains the recorded
+selection semantics. To monitor changing text with an existing selector, create
+and approve a draft with the intended extraction method.
+
+An evaluation can report a uniquely located element and an extraction error.
+It can include up to 4,096 UTF-16 code units of observed element text with
+original whitespace. The resolver excludes document roots, editable controls,
+and suspected credential text from candidates. The completion API validates
+the candidate against the locator, extraction method, and reported outcome.
+The candidate is stored under that locator in the evaluation linked to the
+snapshot, run, and selector version. Both task and source-field review expose
+these unverified diagnostics through their recorded evaluation. A successful
+selector evaluation creates an observation for review. Canonical acceptance
+uses the existing business layer workflow.
+
 ## Source access
 
 Monitor public content whose rendered HTML may be stored. The agent uses a
@@ -687,4 +707,17 @@ pytest -q tests/test_monitoring_discovery.py tests/test_monitoring_onboarding.py
   tests/test_monitoring_trusted.py
 
 docker stop burbot-monitoring-test-pg burbot-monitoring-test-minio
+```
+
+The recruitment announcement integration test can use an installed copy of
+the extension in headless Firefox and the running Studio to exercise the same
+PostgreSQL and storage setup. Build the extension with npm run build, install
+the Studio dependencies, and install the Playwright Firefox and Chromium
+browsers required by their respective repositories. While the test services
+are running, pass the paths to both checkouts.
+
+```bash
+BURBOT_SELECTOR_EXTENSION_DIR=/path/to/extension \
+BURBOT_SELECTOR_STUDIO_DIR=/path/to/burbot-fe \
+pytest -q 'tests/test_monitoring_postgres.py::test_recruitment_selector_monitors_text_changes[firefox-studio]'
 ```

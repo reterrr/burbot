@@ -91,6 +91,8 @@ def status(job):
 
 
 def sanitize_diagnostics(node):
+    # Free-form messages can contain page material. Structured locator errors
+    # and bounded candidates have already been validated against the job pin.
     if "diagnostic" in node:
         node["diagnostic"] = node["status"]
     if node["status"] != "success":
