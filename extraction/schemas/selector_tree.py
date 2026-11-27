@@ -22,6 +22,20 @@ UUID_PATTERN = re.compile(
 )
 MAX_SAFE_INTEGER = 2**53 - 1
 MAX_RAW_LENGTH = 100_000
+MAX_CANDIDATE_LENGTH = 4_096
+MAX_BOUNDARY_LENGTH = 256
+ELEMENT_LOCATOR_KINDS = {"css_path", "xpath", "element_id"}
+JS_SPACE = (
+    " \t\n\r\f\v\u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006"
+    "\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000\ufeff"
+)
+SPACE_CHARACTERS = re.escape(JS_SPACE)
+SENSITIVE_TEXT = re.compile(
+    r"\b(?:[\w%-]*(?:token|password|passwd|secret|session|credential|auth|signature)"
+    rf"[\w%-]*|code)[{SPACE_CHARACTERS}]*[:=][{SPACE_CHARACTERS}]*[^{SPACE_CHARACTERS}]"
+    rf"|https?://[^{SPACE_CHARACTERS}/?#]*@|\bbearer[{SPACE_CHARACTERS}]+[\w.+/=-]+",
+    re.ASCII | re.IGNORECASE,
+)
 
 
 def valid_uuid(value):
@@ -48,6 +62,21 @@ def utf16_length(value: str) -> int:
     return len(value.encode("utf-16-le")) // 2
 
 
+def safe_candidate_text(value: str) -> bool:
+    return (
+        bool(value.strip(JS_SPACE))
+        and "\x00" not in value
+        and utf16_length(value) <= MAX_CANDIDATE_LENGTH
+        and not SENSITIVE_TEXT.search(value)
+    )
+
+
+def text_boundary(value: str) -> str:
+    if not value.strip(JS_SPACE) or "\x00" in value or utf16_length(value) > MAX_BOUNDARY_LENGTH:
+        raise ValueError("Text boundaries must be nonempty and at most 256 characters")
+    return value
+
+
 PortableUUID = Annotated[UUID, BeforeValidator(valid_uuid)]
 Nonempty = Annotated[str, StringConstraints(min_length=1)]
 Timestamp = Annotated[str, AfterValidator(timestamp)]
@@ -59,6 +88,28 @@ Digest = Annotated[str, StringConstraints(pattern=r"^[a-fA-F0-9]{64}$")]
 VersionStatus = Literal["draft", "active", "superseded", "rejected"]
 ArtifactType = Literal["raw_html", "rendered_dom"]
 EvaluationStatus = Literal["success", "not_found", "ambiguous", "conflict", "error", "unsupported"]
+ExtractionError = Literal[
+    "selection_quote_mismatch",
+    "selection_quote_ambiguous",
+    "selection_context_mismatch",
+    "selection_context_ambiguous",
+    "text_boundary_missing",
+    "text_boundary_ambiguous",
+    "element_required",
+    "attribute_missing",
+    "empty_value",
+    "value_too_large",
+    "extraction_failed",
+]
+ERROR_EXTRACTION_TYPES = {
+    "selection_quote_mismatch": "selection",
+    "selection_quote_ambiguous": "selection",
+    "selection_context_mismatch": "selection",
+    "selection_context_ambiguous": "selection",
+    "text_boundary_missing": "text_between",
+    "text_boundary_ambiguous": "text_between",
+    "attribute_missing": "attribute",
+}
 
 
 class PortableModel(BaseModel):
@@ -114,7 +165,15 @@ class SelectionSpec(PortableModel):
     quote: TextQuote
 
 
-ExtractionSpec = Annotated[TextSpec | AttributeSpec | SelectionSpec, Field(discriminator="type")]
+class TextBetweenSpec(PortableModel):
+    type: Literal["text_between"]
+    start: Annotated[str, AfterValidator(text_boundary)]
+    end: Annotated[str, AfterValidator(text_boundary)]
+
+
+ExtractionSpec = Annotated[
+    TextSpec | AttributeSpec | SelectionSpec | TextBetweenSpec, Field(discriminator="type")
+]
 
 
 class ReservedPayload(PortableModel):
@@ -261,6 +320,14 @@ class SelectorPart(PortableModel):
     locators: list[SelectorLocator] = Field(min_length=1)
     join_with: str = None
 
+    @model_validator(mode="after")
+    def element_boundaries(self) -> Self:
+        if self.extraction.type == "text_between" and not any(
+            locator.kind in ELEMENT_LOCATOR_KINDS for locator in self.locators
+        ):
+            raise ValueError("Text boundaries require an element locator")
+        return self
+
 
 class SelectorRecipe(PortableModel):
     uuid: PortableUUID
@@ -373,14 +440,42 @@ class Evaluation(PortableModel):
         return self
 
 
+class DiagnosticCandidate(PortableModel):
+    raw_text: str
+    source: Literal["matched_element_text"]
+    verified: Literal[False]
+
+    @model_validator(mode="before")
+    @classmethod
+    def explicitly_unverified(cls, values):
+        # Literal[False] alone also accepts the integer 0.
+        if isinstance(values, dict) and values.get("verified") is not False:
+            raise ValueError("A diagnostic candidate must be explicitly unverified")
+        return values
+
+    @model_validator(mode="after")
+    def bounded_text(self) -> Self:
+        if not safe_candidate_text(self.raw_text):
+            raise ValueError("A diagnostic candidate requires bounded, non-sensitive text")
+        return self
+
+
 class LocatorEvaluationResult(Evaluation):
     locator_uuid: PortableUUID
     match_count: Order
+    extraction_error: ExtractionError = None
+    candidate: DiagnosticCandidate = None
 
     @model_validator(mode="after")
-    def unique_match(self) -> Self:
+    def extraction_result(self) -> Self:
         if self.status == "success" and self.match_count != 1:
             raise ValueError("A successful locator requires a unique match")
+        if self.extraction_error is not None and (
+            self.status != "error" or self.match_count != 1 or self.raw_value is not None
+        ):
+            raise ValueError("An extraction error requires one located target and no raw value")
+        if self.candidate is not None and self.extraction_error is None:
+            raise ValueError("A diagnostic candidate requires an extraction error")
         return self
 
 
@@ -413,4 +508,18 @@ def validate_selector_evaluation(
 
     for recipe_result, recipe in children(result.recipe_results, version.recipes, "recipe_uuid"):
         for part_result, part in children(recipe_result.part_results, recipe.parts, "part_uuid"):
-            list(children(part_result.locator_results, part.locators, "locator_uuid"))
+            for reported, locator in children(
+                part_result.locator_results, part.locators, "locator_uuid"
+            ):
+                expected_type = ERROR_EXTRACTION_TYPES.get(reported.extraction_error)
+                if expected_type is not None and expected_type != part.extraction.type:
+                    raise ValueError(
+                        "Locator extraction error does not match its configured method"
+                    )
+                if reported.extraction_error == "element_required" and (
+                    locator.kind != "text_quote"
+                    or part.extraction.type not in {"attribute", "text_between"}
+                ):
+                    raise ValueError("Locator and extraction method do not require an element")
+                if reported.candidate is not None and locator.kind not in ELEMENT_LOCATOR_KINDS:
+                    raise ValueError("A diagnostic candidate requires an element locator")

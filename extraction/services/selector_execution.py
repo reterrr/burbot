@@ -269,6 +269,13 @@ class SelectorExecutionService:
                 validate_selector_evaluation(request.result, definition)
             except ValueError as error:
                 raise ExtractionValidationError(str(error)) from error
+            if any(
+                locator.candidate is not None
+                for recipe in request.result.recipe_results
+                for part in recipe.part_results
+                for locator in part.locator_results
+            ):
+                raise ExtractionValidationError("Diagnostic candidates require a captured run")
             if request.source_snapshot_id is not None:
                 snapshot = await self.capture.repo.get_snapshot(request.source_snapshot_id)
                 if selector.source_id != snapshot.source_id or (

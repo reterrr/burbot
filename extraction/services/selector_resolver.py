@@ -13,22 +13,32 @@ from lxml import etree
 from whatwg_url import urljoin
 
 from extraction.schemas.selector_tree import (
+    JS_SPACE,
+    MAX_CANDIDATE_LENGTH,
     MAX_RAW_LENGTH,
+    ExtractionError,
     LocatorEvaluationResult,
     PartEvaluationResult,
     RecipeEvaluationResult,
     SelectorEvaluationResult,
     ordered,
+    safe_candidate_text,
     utf16_length,
 )
 
 FAILURE_ORDER = ("conflict", "ambiguous", "error", "unsupported", "not_found")
-JS_SPACE = (
-    " \t\n\r\f\v\u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006"
-    "\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000\ufeff"
-)
 SPACES = re.compile("[" + re.escape(JS_SPACE) + "]+")
 SKIP_TEXT = {"script", "style", "noscript", "template"}
+PRIVATE_TEXT_TAGS = SKIP_TEXT | {
+    "iframe",
+    "frame",
+    "object",
+    "embed",
+    "input",
+    "textarea",
+    "select",
+    "base",
+}
 HTML_ATTRIBUTE_CASE = str.maketrans(ascii_uppercase, ascii_lowercase)
 
 
@@ -51,14 +61,35 @@ def hidden(node):
     )
 
 
-def text_nodes(node, excluded=False):
+def private_text(node):
+    tag = node.tag
+    if not isinstance(tag, str):
+        return True
+    tag = tag.rsplit("}", 1)[-1]
+    return (
+        hidden(node)
+        or tag in PRIVATE_TEXT_TAGS
+        or "contenteditable" in node.attrib
+        or "data-burbot-import-review-highlight" in node.attrib
+        or (tag == "meta" and "http-equiv" in node.attrib)
+        or (
+            tag == "div"
+            and (
+                "data-burbot-import-review-focused" in node.attrib
+                or node.get("id") == "automa-palette"
+            )
+        )
+    )
+
+
+def text_nodes(node, excluded=False, *, exclude=hidden):
     if not isinstance(node.tag, str) or node.tag == "template":
         return
-    excluded = excluded or hidden(node)
+    excluded = excluded or exclude(node)
     if node.text:
         yield node.text, excluded
     for child in node:
-        yield from text_nodes(child, excluded)
+        yield from text_nodes(child, excluded, exclude=exclude)
         if child.tail:
             yield child.tail, excluded
 
@@ -119,28 +150,44 @@ def quote_matches(index, quote, *, use_context=True):
     return matches
 
 
-def selection_matches(index, quote):
-    prefix, suffix = clean(quote.prefix or ""), clean(quote.suffix or "")
-    if not prefix or not suffix:
-        return quote_matches(index, quote, use_context=False)
-    # Only one ordered context pair may supply the selection.
-    starts = list(islice(hits(index.text, prefix), 201))
-    ends = list(islice(hits(index.text, suffix), 201))
+class ExtractionFailure(ValueError):
+    def __init__(self, code: ExtractionError, message: str):
+        super().__init__(message)
+        self.code = code
+
+
+def boundary_span(text, prefix, suffix):
+    starts = list(islice(hits(text, prefix), 201))
+    ends = list(islice(hits(text, suffix), 201))
     if len(starts) > 200 or len(ends) > 200:
-        raise ValueError("Selection context is too repetitive.")
+        return "ambiguous"
     pairs = [
         (start + len(prefix), end) for start in starts for end in ends if end >= start + len(prefix)
     ]
     if len(pairs) != 1:
-        raise ValueError("Selection context changed or is ambiguous.")
+        return "ambiguous" if pairs else "missing"
     start, end = pairs[0]
-    while start < end and index.text[start] in JS_SPACE:
+    while start < end and text[start] in JS_SPACE:
         start += 1
-    while end > start and index.text[end - 1] in JS_SPACE:
+    while end > start and text[end - 1] in JS_SPACE:
         end -= 1
-    if start == end:
-        raise ValueError("Selected text is now empty.")
-    return [(start, end)]
+    return start, end
+
+
+def selection_matches(index, quote):
+    prefix, suffix = clean(quote.prefix or ""), clean(quote.suffix or "")
+    if not prefix or not suffix:
+        return quote_matches(index, quote, use_context=False)
+    span = boundary_span(index.text, prefix, suffix)
+    if span == "missing":
+        raise ExtractionFailure(
+            "selection_context_mismatch", "Selection context no longer matches."
+        )
+    if span == "ambiguous":
+        raise ExtractionFailure("selection_context_ambiguous", "Selection context is ambiguous.")
+    if span[0] == span[1]:
+        raise ExtractionFailure("empty_value", "Selected text is now empty.")
+    return [span]
 
 
 @dataclass(frozen=True)
@@ -208,11 +255,30 @@ class HtmlSelectorRuntime:
             case _:
                 return None
 
+    def read_candidate(self, target):
+        if isinstance(target, TextRange) or target.tag in {"html", "head", "body"}:
+            return None
+        if private_text(target) or any(private_text(node) for node in target.iterancestors()):
+            return None
+        parts = []
+        size = 0
+        for text, excluded in text_nodes(target, exclude=private_text):
+            if excluded:
+                continue
+            size += utf16_length(text)
+            if size > MAX_CANDIDATE_LENGTH:
+                return None
+            parts.append(text)
+        raw = "".join(parts)
+        return raw if safe_candidate_text(raw) else None
+
     def read(self, target, extraction):
         is_range = isinstance(target, TextRange)
         if extraction.type == "attribute":
             if is_range:
-                raise ValueError("Attribute extraction requires an element locator.")
+                raise ExtractionFailure(
+                    "element_required", "Attribute extraction requires an element locator."
+                )
             name = extraction.name
             owner = target
             if name == "href":
@@ -228,19 +294,43 @@ class HtmlSelectorRuntime:
                 name if owner.tag.startswith("{") else name.translate(HTML_ATTRIBUTE_CASE)
             )
             if attribute is None:
-                raise ValueError(f"Missing attribute: {name}.")
+                raise ExtractionFailure(
+                    "attribute_missing", "The configured attribute was not found."
+                )
             return urljoin(self.base_url, attribute) if name in {"href", "src"} else attribute
         if extraction.type == "text":
             return target.literal() if is_range else self.index(target).text
+        if extraction.type == "text_between":
+            if is_range:
+                raise ExtractionFailure(
+                    "element_required", "Text boundaries require an element locator."
+                )
+            text = self.index(target).text
+            span = boundary_span(text, clean(extraction.start), clean(extraction.end))
+            if span == "missing":
+                raise ExtractionFailure("text_boundary_missing", "Text boundaries no longer match.")
+            if span == "ambiguous":
+                raise ExtractionFailure(
+                    "text_boundary_ambiguous", "Multiple text boundary pairs match."
+                )
+            return text[span[0] : span[1]]
         if is_range:
             raw = target.literal()
             if raw != clean(extraction.quote.exact):
-                raise ValueError("Text locator and selection extraction disagree.")
+                raise ExtractionFailure(
+                    "selection_quote_mismatch", "Text locator and selection extraction disagree."
+                )
             return raw
         index = self.index(target)
         ranges = selection_matches(index, extraction.quote)
-        if len(ranges) != 1:
-            raise ValueError(f"Selection quote matched {len(ranges)} fragments.")
+        if not ranges:
+            raise ExtractionFailure(
+                "selection_quote_mismatch", "The selection quote no longer matches."
+            )
+        if len(ranges) > 1:
+            raise ExtractionFailure(
+                "selection_quote_ambiguous", "The selection quote matches multiple fragments."
+            )
         return index.fragment(*ranges[0])
 
 
@@ -249,33 +339,58 @@ def failure_status(results):
 
 
 def evaluate_locator(locator, extraction, runtime):
-    count = 0
     identity = {"locator_uuid": locator.uuid}
     try:
         targets = runtime.resolve(locator)
-        if targets is None:
-            return LocatorEvaluationResult(
-                **identity,
-                match_count=0,
-                status="unsupported",
-                diagnostic=f"No runtime resolver for {locator.kind}.",
-            )
-        count = len(targets)
-        if count != 1:
-            return LocatorEvaluationResult(
-                **identity,
-                match_count=count,
-                status="ambiguous" if count else "not_found",
-                diagnostic=f"Locator matched {count} fragments.",
-            )
-        raw = runtime.read(targets[0], extraction)
-        if not raw or utf16_length(raw) > MAX_RAW_LENGTH:
-            raise ValueError("Extracted value is empty or too large.")
     except Exception as error:
         return LocatorEvaluationResult(
-            **identity, match_count=count, status="error", diagnostic=str(error)
+            **identity, match_count=0, status="error", diagnostic=str(error)
         )
-    return LocatorEvaluationResult(**identity, match_count=count, status="success", raw_value=raw)
+    if targets is None:
+        return LocatorEvaluationResult(
+            **identity,
+            match_count=0,
+            status="unsupported",
+            diagnostic=f"No runtime resolver for {locator.kind}.",
+        )
+    count = len(targets)
+    if count != 1:
+        return LocatorEvaluationResult(
+            **identity,
+            match_count=count,
+            status="ambiguous" if count else "not_found",
+            diagnostic=f"Locator matched {count} fragments.",
+        )
+    target = targets[0]
+    try:
+        raw = runtime.read(target, extraction)
+        if not raw:
+            raise ExtractionFailure("empty_value", "Extracted value is empty.")
+        if utf16_length(raw) > MAX_RAW_LENGTH:
+            raise ExtractionFailure("value_too_large", "Extracted value is too large.")
+    except Exception as error:
+        details = {}
+        try:
+            observed = runtime.read_candidate(target)
+        except Exception:
+            observed = None
+        if observed is not None:
+            details["candidate"] = {
+                "raw_text": observed,
+                "source": "matched_element_text",
+                "verified": False,
+            }
+        return LocatorEvaluationResult(
+            **identity,
+            match_count=1,
+            status="error",
+            diagnostic=str(error),
+            extraction_error=error.code
+            if isinstance(error, ExtractionFailure)
+            else "extraction_failed",
+            **details,
+        )
+    return LocatorEvaluationResult(**identity, match_count=1, status="success", raw_value=raw)
 
 
 def evaluate_part(part, runtime):

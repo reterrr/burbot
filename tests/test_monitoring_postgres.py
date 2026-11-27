@@ -1,10 +1,13 @@
 """Drive the same REST protocol as Firefox against PostgreSQL and real MinIO."""
 
 import asyncio
+import json
 import os
+import socket
 from copy import deepcopy
 from datetime import timedelta
 from hashlib import sha256
+from pathlib import Path
 from uuid import UUID, uuid4
 
 import pytest
@@ -12,9 +15,20 @@ import pytest_asyncio
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
+from test_collections_postgres import BASE
 from test_collections_postgres import database as database
 from test_collections_postgres import domain as domain
-from test_selector_tree import css, part, recipe, tree, uuid
+from test_selector_tree import (
+    NEW_ANNOUNCEMENT,
+    OLD_ANNOUNCEMENT,
+    announcement,
+    css,
+    part,
+    recipe,
+    recruitment_tree,
+    tree,
+    uuid,
+)
 
 from business_layer.schemas.models import BusinessObject, BusinessObjectFieldValue
 from extraction.schemas import capture as capture_dto
@@ -75,24 +89,33 @@ async def minio(monkeypatch):
         store.reader.delete_bucket(Bucket=name)
 
 
-@pytest_asyncio.fixture
-async def client(domain, monkeypatch):
-    monkeypatch.setenv("MONITORING_ADMIN_TOKEN", OPERATOR["Authorization"].split()[1])
-    monkeypatch.setenv("DCKR_DATABASE_URL", os.environ["COLLECTIONS_TEST_DATABASE_URL"])
+def monitoring_app(domain):
     from extraction.api.routes import capture_router
     from monitoring.api import router
     from shared.database import get_session
+    from tasks.api.database import get_session as task_session
+    from tasks.api.routes import router as task_router
 
     app = FastAPI()
     app.include_router(router)
     app.include_router(capture_router)
+    app.include_router(task_router)
 
     async def sessions():
         async with domain.factory() as session:
             yield session
 
     app.dependency_overrides[get_session] = sessions
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as api:
+    app.dependency_overrides[task_session] = sessions
+    return app
+
+
+@pytest_asyncio.fixture
+async def client(domain, monkeypatch):
+    monkeypatch.setenv("MONITORING_ADMIN_TOKEN", OPERATOR["Authorization"].split()[1])
+    monkeypatch.setenv("DCKR_DATABASE_URL", os.environ["COLLECTIONS_TEST_DATABASE_URL"])
+    transport = ASGITransport(app=monitoring_app(domain))
+    async with AsyncClient(transport=transport, base_url="http://test") as api:
         yield api
 
 
@@ -229,7 +252,7 @@ async def test_scheduler_concurrency_access_and_expired_lease(domain, client):
         )
 
 
-async def prepare(client, headers, job, html, structure, *, digest=None):
+async def prepare(client, headers, job, html, structure, *, digest=None, evaluations=None):
     upload = {
         "leaseId": job["leaseId"],
         "representation": "rendered_dom",
@@ -240,13 +263,15 @@ async def prepare(client, headers, job, html, structure, *, digest=None):
     res = await client.post(operation(job, "uploads"), json=upload, headers=headers)
     assert res.status_code == 200, res.text
     grant = res.json()
-    report = []
-    for pin in job["selectors"]:
-        definition = SelectorVersionDefinition.model_validate(pin["definition"])
-        result = evaluate_selector_version(definition, HtmlSelectorRuntime(html, job["url"]))
-        report.append(
-            {"definitionFingerprint": pin["definitionFingerprint"], "result": result.portable()}
-        )
+    if evaluations is None:
+        runtime = HtmlSelectorRuntime(html, job["url"])
+        evaluations = []
+        for pin in job["selectors"]:
+            definition = SelectorVersionDefinition.model_validate(pin["definition"])
+            result = evaluate_selector_version(definition, runtime)
+            evaluations.append(
+                {"definitionFingerprint": pin["definitionFingerprint"], "result": result.portable()}
+            )
     return grant, {
         **upload,
         "uploadIntentId": grant["uploadIntentId"],
@@ -257,7 +282,7 @@ async def prepare(client, headers, job, html, structure, *, digest=None):
         "structureHash": structure,
         "pageUrl": job["url"],
         "capturedAt": utc_now().isoformat(),
-        "evaluations": report,
+        "evaluations": evaluations,
     }
 
 
@@ -854,6 +879,239 @@ async def test_selector_failure_and_terminal_processing_failure_create_reviews(
         run = await session.get(ExtractionRun, result["extractionRunId"])
         assert task.reason == TaskReason.EXTRACTION_FAILED and run.status == "failed"
     assert await domain.count(BusinessObject) == 0
+
+
+async def run_fixture(*command, cwd, data=None, env=None):
+    process = await asyncio.create_subprocess_exec(
+        *command,
+        cwd=cwd,
+        env=env,
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        async with asyncio.timeout(120):
+            output, errors = await process.communicate(data)
+    except TimeoutError:
+        process.kill()
+        await process.wait()
+        raise
+    assert process.returncode == 0, (output + errors).decode()
+    return output
+
+
+async def verify_live_studio(app, studio, case):
+    from uvicorn import Config, Server
+
+    server = Server(Config(app, log_level="error"))
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        port = listener.getsockname()[1]
+        task = asyncio.create_task(server.serve(sockets=[listener]))
+        try:
+            async with asyncio.timeout(10):
+                while not server.started:
+                    if task.done():
+                        task.result()
+                        raise RuntimeError("Fixture API stopped before it started")
+                    await asyncio.sleep(0.02)
+            await run_fixture(
+                "node",
+                "node_modules/@playwright/test/cli.js",
+                "test",
+                "selector-monitoring.spec.mjs",
+                cwd=studio,
+                env={
+                    **os.environ,
+                    "BURBOT_API_TARGET": f"http://127.0.0.1:{port}",
+                    "BURBOT_SELECTOR_REVIEW_CASE": json.dumps(case),
+                },
+            )
+        finally:
+            server.should_exit = True
+            await task
+
+
+@pytest.mark.parametrize("browser", [False, True], ids=["backend", "firefox-studio"])
+async def test_recruitment_selector_monitors_text_changes(domain, client, minio, browser):
+    extension = os.getenv("BURBOT_SELECTOR_EXTENSION_DIR")
+    studio = os.getenv("BURBOT_SELECTOR_STUDIO_DIR")
+    if browser and not (extension and studio):
+        pytest.skip("Set BURBOT_SELECTOR_EXTENSION_DIR and BURBOT_SELECTOR_STUDIO_DIR")
+
+    await domain.call(
+        lambda service: service.execute(
+            domain.model_id,
+            code=BASE.replace(
+                "    tags: List(String())",
+                '    external_number: String(label="Numer / nazwa naboru")\n'
+                "    tags: List(String())",
+            ),
+        )
+    )
+    model = await domain.call(
+        lambda service: service.entities.resolve_entity(domain.model_id, "Project")
+    )
+    domain.fields.update({field.key: field.field_id for field in model.fields})
+    canonical = "Nabór od 01.10.2026, godz. 09:00"
+    obj = await domain.make(external_number=canonical)
+    slot = domain.slot(obj, "external_number")
+    row = await source(domain, client)
+    definition = recruitment_tree({"type": "selection", "quote": {"exact": OLD_ANNOUNCEMENT}})
+    definition["selector"]["pageUrl"] = row.url
+    definition["selector"]["target"] = {
+        "objectId": str(obj.id),
+        "field": "external_number",
+    }
+    etag = await add_tree(client, domain, row.id, slot, definition)
+    headers, _ = await agent(client, row.id)
+
+    async def check(value, *, reject_bad_reports=False):
+        await enqueue(client, row.id)
+        job = await claim(client, headers)
+        html = announcement(value)
+        if browser:
+            output = await run_fixture(
+                "node",
+                "tests/helpers/monitoring-fixture.mjs",
+                cwd=Path(extension),
+                data=json.dumps({"job": job, "html": html}).encode(),
+            )
+            capture = json.loads(output.splitlines()[-1])
+            body = capture["html"].encode()
+            assert sha256(body).hexdigest() == capture["contentHash"]
+            assert capture["pageUrl"] == job["url"]
+            grant, data = await prepare(
+                client,
+                headers,
+                job,
+                body,
+                capture["structureHash"],
+                evaluations=capture["evaluations"],
+            )
+            data["capturedAt"] = capture["capturedAt"]
+        else:
+            body = html.encode()
+            grant, data = await prepare(client, headers, job, body, "a" * 64)
+        await put(grant, body)
+        if reject_bad_reports:
+            for changes, code in (
+                ({"matchCount": 0}, "INVALID_REQUEST"),
+                ({"rawValue": NEW_ANNOUNCEMENT}, "INVALID_REQUEST"),
+                ({"extractionError": "attribute_missing"}, "INVALID_EVALUATION"),
+            ):
+                bad = deepcopy(data)
+                results = bad["evaluations"][0]["result"]["recipeResults"][0]["partResults"][0]
+                results["locatorResults"][0].update(changes)
+                rejected = await complete(client, headers, job, bad, expected=422)
+                assert rejected == {"detail": {"code": code}}
+        await complete(client, headers, job, data)
+        await process(domain, job)
+        history_entry = next(
+            item for item in await history(client, row.id) if item["jobId"] == job["jobId"]
+        )
+        async with domain.factory() as session:
+            snapshot = await session.get(SourceSnapshot, history_entry["sourceSnapshotId"])
+            assert snapshot.content_hash == sha256(body).hexdigest()
+        return history_entry
+
+    first = await check(OLD_ANNOUNCEMENT)
+    first_field = first["fields"][0]
+    assert first_field["observationId"] is not None
+    assert first_field["status"] == "FIELD_NEW"
+    assert (await review(client, first_field["taskId"]))["currentEvidence"] == OLD_ANNOUNCEMENT
+
+    # Resolve the review task independently of accepting evidence or changing the object.
+    async def close_task(task_id):
+        response = await client.patch(f"/tasks/{task_id}/status", json={"status": "completed"})
+        assert response.status_code == 200, response.text
+
+    await close_task(first_field["taskId"])
+
+    raw = f" \n{NEW_ANNOUNCEMENT}  "
+    failed = await check(raw, reject_bad_reports=True)
+    failed_field = failed["fields"][0]
+    failed_review = await review(client, failed_field["taskId"])
+    assert failed_review["canonicalValue"] == canonical
+    assert failed_review["previousEvidence"] == OLD_ANNOUNCEMENT
+    assert failed_review["currentEvidence"] is None
+    assert failed_review["observationId"] is None
+    assert failed_review["evidenceStatus"] == "EXTRACTION_FAILED"
+    failed_evaluation = failed_review["evaluation"]
+    assert failed_evaluation["sourceSnapshotId"] == failed["sourceSnapshotId"]
+    assert failed_evaluation["extractionRunId"] == failed["extractionRunId"]
+    assert failed_evaluation["provenance"] == "browser_agent_reported"
+    failed_locators = failed_evaluation["result"]["recipeResults"][0]["partResults"][0][
+        "locatorResults"
+    ]
+    assert failed_locators[0]["extractionError"] == "selection_quote_mismatch"
+    assert failed_locators[0]["matchCount"] == 1
+    assert failed_locators[0]["candidate"] == {
+        "rawText": raw,
+        "source": "matched_element_text",
+        "verified": False,
+    }
+    assert "candidate" not in failed_locators[3]
+    assert await domain.count(FieldObservation, extraction_run_id=failed["extractionRunId"]) == 0
+    await close_task(failed_field["taskId"])
+
+    path = f"/extraction/selectors/{definition['selector']['uuid']}/drafts"
+    drafted = await client.post(path, headers={"If-Match": etag})
+    assert drafted.status_code == 200, drafted.text
+    draft = drafted.json()["versions"][-1]
+    draft["recipes"][0]["parts"][0]["extraction"] = {"type": "text"}
+    draft_path = f"{path}/{draft['uuid']}"
+    saved = await client.put(draft_path, json=draft, headers={"If-Match": drafted.headers["etag"]})
+    assert saved.status_code == 200, saved.text
+    approved = await client.post(
+        draft_path + "/approve", headers={"If-Match": saved.headers["etag"]}
+    )
+    assert approved.status_code == 200, approved.text
+    assert approved.json()["versions"][0] == {**definition["versions"][0], "status": "superseded"}
+
+    changed = await check(raw)
+    changed_field = changed["fields"][0]
+    changed_review = await review(client, changed_field["taskId"])
+    assert changed_review["canonicalValue"] == canonical
+    assert changed_review["canonicalValueId"] == slot.value_id
+    assert changed_review["previousEvidence"] == OLD_ANNOUNCEMENT
+    assert changed_review["previousObservationId"] == first_field["observationId"]
+    assert changed_review["currentEvidence"] == NEW_ANNOUNCEMENT
+    assert changed_review["evidenceStatus"] == "CHANGED"
+    assert changed_review["requiresReview"]
+    new_evaluation = changed_review["evaluation"]
+    assert new_evaluation["extractionRunId"] == changed["extractionRunId"]
+    assert new_evaluation["sourceSnapshotId"] == changed["sourceSnapshotId"]
+    assert changed["sourceSnapshotId"] == failed["sourceSnapshotId"]
+    assert new_evaluation["result"]["selectorVersionUuid"] == draft["uuid"]
+    locators = new_evaluation["result"]["recipeResults"][0]["partResults"][0]["locatorResults"]
+    assert [item["status"] for item in locators] == ["success"] * 3 + ["not_found"]
+    async with domain.factory() as session:
+        observation = await session.get(FieldObservation, changed_field["observationId"])
+        assert observation.extraction_run_id == changed["extractionRunId"]
+        assert observation.selector_evaluation_id == changed_field["evaluationId"]
+        assert observation.status == ObservationStatus.DETECTED
+    assert await domain.count(FieldObservation) == 2
+
+    archived = await field_review(client, row.id, failed, failed_field)
+    assert archived["evaluation"] == failed_evaluation
+    assert archived["selector"]["version"]["status"] == "superseded"
+    assert archived["currentEvidence"] is None
+    if browser:
+        await verify_live_studio(
+            monitoring_app(domain),
+            Path(studio),
+            {
+                "failedTaskId": failed_field["taskId"],
+                "changedTaskId": changed_field["taskId"],
+                "snapshotId": changed["sourceSnapshotId"],
+                "canonical": canonical,
+                "previous": OLD_ANNOUNCEMENT,
+                "current": NEW_ANNOUNCEMENT,
+                "rawCandidate": raw,
+            },
+        )
 
 
 @pytest.mark.parametrize(
