@@ -72,6 +72,12 @@ the model, entity type and one-to-one binding within the workspace. Review legac
 Nabór records with no binding and confirm the intended existing Recruitment or
 explicitly create a new identity. Names and import keys remain local hints.
 
+The identity resolve endpoint accepts an optional `expectedSchemaRevisionId`.
+Firefox sends it when creating or binding an identity through Continuous Sync.
+The backend checks the revision under the model lock and returns
+`SCHEMA_REVISION_CHANGED` before making a stale identity change. Older clients
+can still use the endpoint without the precondition.
+
 **Create selected identities** uses DataService to create objects and slots.
 Identity-only creation leaves business defaults for the explicit value-review
 workflow. Existing required fields can require an administrator to create the
@@ -86,6 +92,13 @@ operation UUID in the same transaction as the canonical write. Retry uses the
 same payload. Conflicts show the server head and require a new comparison and
 confirmation. Firefox can keep editing and committing locally while the backend
 is unavailable.
+
+Continuous Sync checks committed SQLite records on enable or reconnect.
+An exact workspace binding is reused even when Firefox has no local cache.
+New approved records can create identities with the workspace's create grant
+after preview. Historical records with no exact binding require an explicit
+match or creation decision. Saving the binding releases waiting records that
+reference it. Historical values go through a separate comparison and approval.
 
 **Selector and capture synchronization** resolves portable targets through their
 bindings. Select an allowed Source and explicitly synchronize the local

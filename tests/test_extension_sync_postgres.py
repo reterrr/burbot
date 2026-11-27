@@ -181,13 +181,22 @@ async def test_identity_resolve_concurrency_scope_and_exact_bigint(workspace):
     )
     assert refused.status_code == 403
     assert (await resolve(workspace))["status"] == "LOCAL_ONLY"
+    schema = await registry(workspace)
+    stale = await resolve(
+        workspace,
+        action="create",
+        expectedSchemaRevisionId=str(int(schema["revisionId"]) + 1),
+        status=409,
+    )
+    assert stale["detail"]["code"] == "SCHEMA_REVISION_CHANGED"
+    assert (await resolve(workspace))["status"] == "LOCAL_ONLY"
     async with factory.begin() as session:
         await session.execute(
             text("SELECT setval(pg_get_serial_sequence('business_objects','id'), 9007199254740994)")
         )
     left, right = await asyncio.gather(
-        resolve(workspace, action="create"),
-        resolve(workspace, action="create"),
+        resolve(workspace, action="create", expectedSchemaRevisionId=schema["revisionId"]),
+        resolve(workspace, action="create", expectedSchemaRevisionId=schema["revisionId"]),
     )
     assert left == right and left["businessObjectId"] == "9007199254740995"
     assert left["objectFields"]["status"]["valueId"] is None
