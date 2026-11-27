@@ -5,10 +5,14 @@ import hashlib
 import os
 from contextlib import closing
 from functools import lru_cache
+from tempfile import TemporaryFile
 from urllib.parse import urlsplit
 
 from monitoring.contracts import MAX_BYTES, MIME_TYPE
 from monitoring.security import MonitoringError
+
+ARCHIVE_MEDIA_TYPE = "application/octet-stream"
+ARCHIVE_CHUNK_BYTES = 256 * 1024
 
 
 class SnapshotStorage:
@@ -59,13 +63,13 @@ class SnapshotStorage:
                 raise
             self.reader.create_bucket(Bucket=self.bucket)
 
-    def presign(self, key, seconds, size):
+    def presign(self, key, seconds, size, *, mime_type=MIME_TYPE):
         return self.signer.generate_presigned_url(
             "put_object",
             Params={
                 "Bucket": self.bucket,
                 "Key": key,
-                "ContentType": MIME_TYPE,
+                "ContentType": mime_type,
                 "ContentLength": size,
             },
             ExpiresIn=seconds,
@@ -139,6 +143,97 @@ class SnapshotStorage:
 
     async def read_snapshot(self, file, *, max_bytes=MAX_BYTES):
         return await asyncio.to_thread(self._read_snapshot, file, max_bytes)
+
+    def _archive_exists(self, key, size, digest):
+        from botocore.exceptions import BotoCoreError, ClientError
+
+        try:
+            metadata = self.reader.head_object(Bucket=self.bucket, Key=key)
+        except ClientError as error:
+            if error.response["Error"]["Code"] in {"NoSuchKey", "NotFound", "404"}:
+                return False
+            raise MonitoringError(503, "STORAGE_UNAVAILABLE") from error
+        except BotoCoreError as error:
+            raise MonitoringError(503, "STORAGE_UNAVAILABLE") from error
+        return (
+            metadata["ContentLength"] == size
+            and metadata.get("Metadata", {}).get("sha256") == digest
+        )
+
+    async def archive_exists(self, key, size, digest):
+        return await asyncio.to_thread(self._archive_exists, key, size, digest)
+
+    def _read_archive_file(self, key, size, digest, *, pending=False):
+        """Verify a single object in bounded chunks before handing it to any consumer."""
+        from botocore.exceptions import BotoCoreError, ClientError, IncompleteReadError
+
+        mismatch = "UPLOAD_HASH_MISMATCH" if pending else "SNAPSHOT_INTEGRITY_MISMATCH"
+        handle = TemporaryFile()
+        verified = False
+        try:
+            response = self.reader.get_object(Bucket=self.bucket, Key=key)
+            with closing(response["Body"]) as body:
+                if response["ContentLength"] != size:
+                    raise MonitoringError(422, "UPLOAD_SIZE_MISMATCH" if pending else mismatch)
+                if pending and response.get("ContentType") != ARCHIVE_MEDIA_TYPE:
+                    raise MonitoringError(422, "UPLOAD_MEDIA_TYPE_MISMATCH")
+                remaining = size
+                digestor = hashlib.sha256()
+                while remaining:
+                    data = body.read(min(ARCHIVE_CHUNK_BYTES, remaining))
+                    if not data:
+                        raise MonitoringError(422, mismatch)
+                    remaining -= len(data)
+                    digestor.update(data)
+                    handle.write(data)
+                if body.read(1) or digestor.hexdigest() != digest:
+                    raise MonitoringError(422, mismatch)
+            handle.seek(0)
+            verified = True
+            return handle
+        except IncompleteReadError as error:
+            raise MonitoringError(422, mismatch) from error
+        except ClientError as error:
+            if error.response["Error"]["Code"] in {"NoSuchKey", "NotFound", "404"}:
+                if pending:
+                    raise MonitoringError(409, "UPLOAD_NOT_FOUND") from error
+                raise MonitoringError(404, "SNAPSHOT_ARCHIVE_UNAVAILABLE") from error
+            raise MonitoringError(503, "STORAGE_UNAVAILABLE") from error
+        except (BotoCoreError, OSError) as error:
+            raise MonitoringError(503, "STORAGE_UNAVAILABLE") from error
+        finally:
+            if not verified:
+                handle.close()
+
+    async def read_archive_file(self, key, size, digest):
+        return await asyncio.to_thread(self._read_archive_file, key, size, digest)
+
+    def _write_archive(self, key, body, size, digest):
+        from botocore.exceptions import BotoCoreError, ClientError
+
+        try:
+            self.reader.put_object(
+                Bucket=self.bucket,
+                Key=key,
+                Body=body,
+                ContentLength=size,
+                ContentType=ARCHIVE_MEDIA_TYPE,
+                ContentDisposition="attachment",
+                Metadata={"sha256": digest},
+            )
+        except (BotoCoreError, ClientError, OSError) as error:
+            raise MonitoringError(503, "STORAGE_UNAVAILABLE") from error
+
+    def _seal_archive(self, pending, key, size, digest):
+        if not self._archive_exists(key, size, digest):
+            with self._read_archive_file(pending, size, digest, pending=True) as handle:
+                self._write_archive(key, handle, size, digest)
+
+    async def seal_archive(self, pending, key, size, digest):
+        await asyncio.to_thread(self._seal_archive, pending, key, size, digest)
+
+    async def write_archive_manifest(self, key, data, digest):
+        await asyncio.to_thread(self._write_archive, key, data, len(data), digest)
 
     async def delete(self, key):
         from botocore.exceptions import BotoCoreError, ClientError

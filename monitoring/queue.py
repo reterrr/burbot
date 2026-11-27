@@ -11,11 +11,11 @@ from extraction.schemas.common import utc_now
 from extraction.schemas.selector import Selector, SelectorVersion
 from extraction.schemas.selector_tree import validate_selector_evaluation
 from extraction.services.selectors import SelectorService
+from monitoring.archives import ArchiveUploads, archive_summary, bind_archive
 from monitoring.contracts import (
     MAX_SELECTORS,
     MAX_VISUAL_ARCHIVE_BYTES,
     REPRESENTATION,
-    VISUAL_ARCHIVE_VERSION,
     ClaimedJob,
     JobStatus,
     PinnedSelector,
@@ -60,6 +60,7 @@ from monitoring.security import (
     token_digest,
     trusted_origin,
 )
+from monitoring.snapshot_config import snapshot_policy
 from monitoring.storage import storage_from_env
 from sources.schemas.enums import SourceState as State
 from sources.schemas.enums import SourceStateTrigger as Trigger
@@ -689,6 +690,7 @@ class MonitoringQueue:
         if job is None:
             return None
 
+        snapshot_mode, full_archive = snapshot_policy()
         pinned = await self._pins(job)
         definitions = []
         if job.attempt_count == 0:
@@ -740,6 +742,10 @@ class MonitoringQueue:
         job.lease_id = uuid4()
         job.lease_expires_at = now + timedelta(seconds=LEASE_SECONDS)
         job.error_code = None
+        job.snapshot_policy = {"mode": snapshot_mode}
+        job.archive_result = None
+        if full_archive:
+            job.snapshot_policy = {"mode": snapshot_mode, "limits": full_archive.portable()}
         return ClaimedJob(
             job_id=job.id,
             source_id=job.source_id,
@@ -749,8 +755,9 @@ class MonitoringQueue:
             lease_id=job.lease_id,
             lease_expires_at=job.lease_expires_at,
             representation=REPRESENTATION,
-            visual_archive_version=VISUAL_ARCHIVE_VERSION,
+            snapshot_mode=snapshot_mode,
             selectors=definitions,
+            **({"full_archive": full_archive} if full_archive else {}),
             **(
                 {
                     "navigation": TrustedNavigation(
@@ -818,7 +825,18 @@ class MonitoringQueue:
         return {"leaseExpiresAt": job.lease_expires_at, "status": job.status}
 
     async def grant_visual_upload(self, job, request):
+        if job.snapshot_policy is not None:
+            raise MonitoringError(409, "LEGACY_ARCHIVE_NOT_REQUESTED")
         return await self.grant_upload(job, request, kind="visual")
+
+    async def grant_archive_object(self, job, request):
+        return await ArchiveUploads(self).grant(job, request)
+
+    async def seal_archive_object(self, job, request):
+        return await ArchiveUploads(self).seal(job, request)
+
+    async def report_archive(self, job, request):
+        return await ArchiveUploads(self).report(job, request)
 
     async def grant_upload(self, job, request, *, kind="evidence"):
         await self._lease(job, request.lease_id)
@@ -925,8 +943,9 @@ class MonitoringQueue:
             intent.storage_key, sealed_key, intent.content_size, intent.content_hash
         )
         intent.sealed_key = sealed_key
-        if request.visual_archive_upload_id is not None:
+        if request.visual_archive_upload_id is not None and job.snapshot_policy is None:
             await self._seal_visual_upload(job, request.visual_archive_upload_id)
+        bind_archive(job, request)
         job.completion_key = request.completion_key
         job.completion_digest = digest
         job.completion_json = supplied
@@ -1012,7 +1031,7 @@ class MonitoringQueue:
             if registered is None:
                 await self.store.delete(key)
             intent.cleaned_at = utc_now()
-        return len(rows)
+        return len(rows) + await ArchiveUploads(self).cleanup(limit)
 
     async def history(self, source_id, offset, limit):
         return [
@@ -1030,6 +1049,7 @@ class MonitoringQueue:
                 "schedulingFlowRunId": check.scheduling_flow_run_id,
                 "processingFlowRunId": check.processing_flow_run_id,
                 "fields": check.field_results or [],
+                "archive": archive_summary(job),
             }
             for job, check in (
                 await self.session.execute(

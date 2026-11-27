@@ -10,7 +10,7 @@ MinIO bucket throughout the workflow.
 
 1. Use the backend, Studio and Firefox extension versions with the snapshot bridge.
    Configure PostgreSQL, MinIO and the operator token as in [Monitoring setup](monitoring.md).
-2. Apply Alembic head so the backend includes `m105_monitoring_visual_archives`.
+2. Apply Alembic head so the backend includes `m106_monitoring_archive_modes`.
    For the Docker stack, run `docker compose run --rm --no-deps initialize alembic upgrade head`.
 3. Run Studio on loopback with `BURBOT_API_TARGET` set to the backend origin and
    the backend's `MONITORING_ADMIN_TOKEN` set in the Vite server environment.
@@ -59,21 +59,40 @@ again. Responses use `Cache-Control: no-store`.
 
 ## Visual archives
 
-When a claimed job includes `visualArchiveVersion: visual-html-1`, Firefox can
-request a separate upload at `POST /monitoring/jobs/{job_id}/archive-uploads`.
-The request includes `leaseId`, `contentHash`, `contentSize` and `mimeType`.
-The completion includes the optional `visualArchiveUploadId`. The backend
-verifies and seals that upload and associates it with a newly created snapshot.
-Unavailable visual uploads leave the original evidence usable. Checks reusing
-an existing snapshot keep its original files and hashes.
+Each new claim supplies `snapshotMode`. Minimal stores only the canonical
+evidence. Full also declares the `full-resource-1` format and its byte limits.
+Firefox passively records eligible CSS, images, SVG and fonts from the approved
+tab using the existing response-filter permission. It uses readable CSSOM
+rules for stylesheet fallbacks and captures available inline styles, responsive
+images, posters and open shadow roots. It leaves live navigation and the
+evidence DOM capture on their existing path.
 
-The optional Firefox response-filter permission records CSS, raster images and
-fonts already loaded in the approved monitoring tab. The agent never fetches
-missing resources to build the archive. It captures at most 4 MiB per resource
-and 8 MiB of response bodies per check. It embeds allowed bytes in the saved HTML.
-Inline styles and supported embedded images can be saved without this permission.
-Old captures contain only their original evidence. Dynamic site code, canvas,
-shadow DOM, video and missing resources can affect visual fidelity.
+The full format stores one manifest per successful archive attempt at
+`monitoring/archives/{job_id}/{lease_id}/manifest.json`. The manifest records
+the original page and base URLs, capture time, document digest, resource URL
+mappings, redirect destinations, media types, byte sizes and completeness
+counts. The document and static payloads are independently verified
+content-addressed objects at `monitoring/archive-resources/sha256/{digest}`.
+Hash and size checks occur before an object is sealed. Repeated payloads reuse
+the stored object. Interrupted uploads can reuse sealed receipts during the
+same lease. The cleanup flow removes expired staging PUTs. Sealed
+content-addressed objects, including those from interrupted attempts, are
+retained for reuse.
+
+Full archives track captured, missing and truncated resources. Browser-cache
+restrictions, denied permissions, inaccessible stylesheets, unfinished lazy
+loads and capture budgets can leave gaps. The capture observes resources
+already loaded by Firefox. It excludes site scripts, API traffic, frames and
+audio/video streams. Canvas pixels, closed shadow roots and browser-only
+interactive state can differ in offline replay. Full counts describe observed
+and referenced static resources available to the capture.
+
+A snapshot command can include the originating `checkId` to choose the
+appropriate archive when checks share a canonical snapshot. Firefox fetches
+the manifest at `/archive-manifest` and the verified document and resource
+objects at `/archive-objects/{sha256}` under the same expiring, agent-scoped
+command as the legacy artifact route. Existing `visual-html-1` records and
+their upload receipts continue to work through the original route.
 
 ## Native Firefox tabs
 
@@ -86,6 +105,8 @@ inspect its DOM and styles. Studio continues to show the pinned SelectorTree
 and recorded diagnostics, and the extension retains the selector IDs in the
 archive tab's session metadata.
 
+For full archives Firefox uses disk-backed chunks to assemble a bounded
+temporary Blob with local resource references. MinIO stores separate payloads.
 The loaded page works offline. Opening again from Studio produces a new URL
 when the original blob URL is no longer usable, including after a browser restart.
 
@@ -99,7 +120,7 @@ tabs are closed through normal Firefox controls.
 
 ## Verification
 
-Run `pytest tests/test_snapshot_open_commands.py tests/test_monitoring_snapshots.py`
+Run `pytest tests/test_monitoring_full_archive.py tests/test_snapshot_open_commands.py tests/test_monitoring_snapshots.py`
 using the disposable PostgreSQL and MinIO fixture variables from the monitoring
 test setup. Run `npm run test:snapshot-bridge` in the extension after installing
 its Playwright Firefox build. Studio's `npm run test:ui` covers command delivery,

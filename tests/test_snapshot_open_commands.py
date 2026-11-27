@@ -80,7 +80,10 @@ async def test_visual_archive_is_separate_and_never_replaces_evidence(domain, cl
     async def capture(evidence, archive, *, digest=None):
         await enqueue(client, owner.id)
         job = await claim_job(client, credentials)
-        assert job["visualArchiveVersion"] == VISUAL_ARCHIVE_VERSION
+        # Simulate an attempt claimed by a deployment predating pinned archive modes.
+        async with domain.factory.begin() as session:
+            running = await session.get(MonitoringJob, UUID(job["jobId"]))
+            running.snapshot_policy = None
         grant, completion = await prepare(client, credentials, job, evidence, "a" * 64)
         response = await client.post(
             operation(job, "archive-uploads"),

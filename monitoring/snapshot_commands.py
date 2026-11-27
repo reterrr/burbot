@@ -7,6 +7,7 @@ from sqlalchemy import and_, or_, select
 from sqlalchemy.dialects.postgresql import insert
 
 from extraction.schemas.common import utc_now
+from monitoring.archives import blob_key, manifest_key
 from monitoring.contracts import (
     MAX_BYTES,
     MAX_VISUAL_ARCHIVE_BYTES,
@@ -20,6 +21,7 @@ from monitoring.enrollment import approval_matches, trusted_enrollment_matches
 from monitoring.models import (
     MonitoringAgent,
     MonitoringAgentSource,
+    MonitoringArchiveUpload,
     MonitoringJob,
     MonitoringSource,
     MonitoringVisualArchive,
@@ -27,11 +29,13 @@ from monitoring.models import (
 )
 from monitoring.onboarding_config import onboarding_config
 from monitoring.security import MonitoringError
+from monitoring.snapshot_config import FULL_ARCHIVE_VERSION
 from monitoring.snapshots import snapshot_record
 from monitoring.workspace import field_review
 from sources.schemas.models import Source, SourceSnapshot, StoredFile
 
 COMMAND_TTL = timedelta(seconds=90)
+FULL_COMMAND_TTL = timedelta(minutes=5)
 PRESENCE_TTL = timedelta(seconds=45)
 PRESENCE_UPDATE = timedelta(seconds=10)
 ACTIVE_COMMANDS = ("pending", "claimed")
@@ -124,6 +128,7 @@ def repeat(command, request, context):
         command.source_id != request.source_id
         or command.snapshot_id != request.snapshot_id
         or command.selector_context != context
+        or command.check_id != request.check_id
         or request.target_agent_id not in (None, command.target_agent_id)
     ):
         raise MonitoringError(409, "SNAPSHOT_COMMAND_CONFLICT")
@@ -180,6 +185,11 @@ async def create_command(session, request):
     await selector_details(
         session, request.source_id, request.snapshot_id, request.selector_context
     )
+    check = await archive_check(
+        session, request.source_id, request.snapshot_id, request.check_id, context
+    )
+    if request.check_id is not None and check is None:
+        raise MonitoringError(422, "SNAPSHOT_CHECK_MISMATCH")
 
     now = utc_now()
     command = await session.scalar(
@@ -190,9 +200,10 @@ async def create_command(session, request):
             snapshot_id=request.snapshot_id,
             target_agent_id=agent.id,
             created_at=now,
-            expires_at=now + COMMAND_TTL,
+            expires_at=now + (FULL_COMMAND_TTL if full_manifest(check) else COMMAND_TTL),
             state="pending",
             selector_context=context,
+            check_id=request.check_id,
         )
         .on_conflict_do_nothing(index_elements=[SnapshotOpenCommand.id])
         .returning(SnapshotOpenCommand)
@@ -200,6 +211,35 @@ async def create_command(session, request):
     if command is None:
         return repeat(await command_row(session, request.request_id), request, context)
     return response(command)
+
+
+async def archive_check(
+    session, source_id, snapshot_id, check_id=None, selector_context=None, *, before=None
+):
+    query = select(MonitoringJob).where(
+        MonitoringJob.source_id == source_id,
+        MonitoringJob.source_snapshot_id == snapshot_id,
+        MonitoringJob.status.in_(("completed", "failed"))
+        if check_id is not None
+        else MonitoringJob.status == "completed",
+    )
+    if check_id is not None:
+        query = query.where(MonitoringJob.id == check_id)
+    if selector_context is not None:
+        query = query.where(MonitoringJob.extraction_run_id == selector_context["extractionRunId"])
+    if check_id is None and selector_context is None:
+        query = query.where(
+            MonitoringJob.archive_result["status"].as_string().in_(("stored", "partial"))
+        )
+    if before is not None:
+        query = query.where(MonitoringJob.completed_at <= before)
+    return await session.scalar(
+        query.order_by(MonitoringJob.completed_at.desc(), MonitoringJob.id.desc()).limit(1)
+    )
+
+
+def full_manifest(job):
+    return job and job.archive_result and job.archive_result.get("status") in {"stored", "partial"}
 
 
 async def claim_command(session, agent):
@@ -243,6 +283,14 @@ async def claim_command(session, agent):
         )
     except MonitoringError:
         selector, evaluation = None, None  # The snapshot remains available if a pin was removed.
+    check = await archive_check(
+        session,
+        command.source_id,
+        command.snapshot_id,
+        command.check_id,
+        command.selector_context,
+        before=command.created_at,
+    )
     return ClaimedSnapshotCommand(
         **response(command).model_dump(),
         source_url=snapshot.page_url or source_url,
@@ -250,17 +298,58 @@ async def claim_command(session, agent):
         selector_context=context,
         selector=selector,
         evaluation=evaluation,
+        archive_version=FULL_ARCHIVE_VERSION if full_manifest(check) else None,
     )
 
 
-async def command_artifact(session, agent, command_id, *, prefer_visual=False):
+async def authorized_command(session, agent, command_id):
     command = await command_row(session, command_id, agent_id=agent.id, lock=False)
     if command.expires_at <= utc_now():
         raise MonitoringError(410, "SNAPSHOT_COMMAND_EXPIRED")
     if command.state != "claimed":
         raise MonitoringError(409, "SNAPSHOT_COMMAND_NOT_CLAIMED")
     await assert_source_scope(session, agent, command.source_id)
+    return command
+
+
+async def command_archive_object(session, agent, command_id, digest=None):
+    command = await authorized_command(session, agent, command_id)
+    job = await archive_check(
+        session,
+        command.source_id,
+        command.snapshot_id,
+        command.check_id,
+        command.selector_context,
+        before=command.created_at,
+    )
+    if not full_manifest(job):
+        raise MonitoringError(404, "SNAPSHOT_ARCHIVE_UNAVAILABLE")
+    if digest is None:
+        archive = job.archive_result
+        return (
+            manifest_key(job),
+            archive["manifestSizeBytes"],
+            archive["manifestSha256"],
+            command.expires_at,
+        )
+    upload = await session.get(MonitoringArchiveUpload, (job.id, job.lease_id, digest))
+    if upload is None or not upload.included or not upload.sealed:
+        raise MonitoringError(404, "SNAPSHOT_ARCHIVE_UNAVAILABLE")
+    return blob_key(digest), upload.size_bytes, digest, command.expires_at
+
+
+async def command_artifact(session, agent, command_id, *, prefer_visual=False):
+    command = await authorized_command(session, agent, command_id)
     _, file = await snapshot_record(session, command.source_id, command.snapshot_id)
+    if prefer_visual and (command.check_id or command.selector_context):
+        check = await archive_check(
+            session,
+            command.source_id,
+            command.snapshot_id,
+            command.check_id,
+            command.selector_context,
+        )
+        prefer_visual = check is None or check.snapshot_policy is None
     if prefer_visual:
         archive = await session.scalar(
             select(StoredFile)

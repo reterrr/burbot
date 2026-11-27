@@ -14,6 +14,13 @@ from extraction.schemas.selector_tree import (
     SelectorVersionDefinition,
 )
 from monitoring.onboarding_config import PolicyName
+from monitoring.snapshot_config import (
+    MAX_ARCHIVE_DOCUMENT_BYTES,
+    MAX_ARCHIVE_ENTRIES,
+    MAX_ARCHIVE_RESOURCE_BYTES,
+    ArchiveLimits,
+    SnapshotMode,
+)
 from sources.schemas.api import SourceSnapshotResponse
 
 REPRESENTATION = "rendered_dom"
@@ -64,6 +71,7 @@ SnapshotCommandError = Literal[
     "INVALID_ARTIFACT",
     "VIEWER_OPEN_FAILED",
     "VIEWER_INTERRUPTED",
+    "SNAPSHOT_ARCHIVE_UNAVAILABLE",
 ]
 
 
@@ -80,6 +88,7 @@ class OpenSnapshotRequest(PortableModel):
     target_agent_id: UUID | None = None
     action: Literal["open_snapshot"] = "open_snapshot"
     selector_context: SnapshotSelectorContext | None = None
+    check_id: UUID | None = None
 
 
 class SnapshotAgentChoice(PortableModel):
@@ -105,6 +114,7 @@ class ClaimedSnapshotCommand(SnapshotCommandResponse):
     selector_context: SnapshotSelectorContext | None = None
     selector: dict[str, Any] | None = None
     evaluation: dict[str, Any] | None = None
+    archive_version: Literal["full-resource-1"] | None = None
 
 
 class SnapshotCommandAck(PortableModel):
@@ -157,6 +167,8 @@ class EvidenceReviewResponse(ReviewedFieldValues):
     evidenceChanged: bool | None
     requiresReview: bool
     referenceDisplays: dict[int, TaskReferenceDisplay] | None = None
+    archive: dict[str, Any] | None = None
+    checkId: UUID | None = None
 
 
 class TrackedFieldResponse(ReviewedFieldValues):
@@ -292,6 +304,118 @@ class VisualArchiveUpload(Lease):
     mime_type: Literal["text/html"]
 
 
+ArchiveSize = Annotated[int, Field(strict=True, gt=0, le=MAX_ARCHIVE_RESOURCE_BYTES)]
+ArchiveMedia = Literal[
+    "text/css",
+    "image/png",
+    "image/apng",
+    "image/jpeg",
+    "image/gif",
+    "image/webp",
+    "image/avif",
+    "image/bmp",
+    "image/x-icon",
+    "image/vnd.microsoft.icon",
+    "image/svg+xml",
+    "font/woff",
+    "font/woff2",
+    "font/ttf",
+    "font/otf",
+    "application/font-woff",
+    "application/vnd.ms-fontobject",
+]
+ArchiveIssue = Literal[
+    "response_unavailable",
+    "recording_unavailable",
+    "resource_limit",
+    "archive_limit",
+    "buffer_limit",
+    "request_limit",
+    "capture_timeout",
+    "upload_failed",
+    "unsupported_media",
+]
+ArchiveFailure = Literal["capture_unavailable", "upload_failed", "agent_incomplete"]
+
+
+class ArchiveObjectGrant(Lease):
+    sha256: Digest
+    size_bytes: ArchiveSize
+    kind: Literal["document", "resource"] = "resource"
+
+
+class ArchiveObjectTarget(PortableModel):
+    stored: bool
+    url: str | None = None
+
+
+class ArchiveDocument(PortableModel):
+    sha256: Digest
+    size_bytes: Annotated[int, Field(strict=True, gt=0, le=MAX_ARCHIVE_DOCUMENT_BYTES)]
+
+
+class ArchiveResource(PortableModel):
+    original_url: URL
+    response_url: URL | None = None
+    media_type: ArchiveMedia | None = None
+    status: Literal["captured", "missing", "truncated"]
+    sha256: Digest | None = None
+    size_bytes: Annotated[int, Field(strict=True, gt=0, le=2**53 - 1)] | None = None
+    reason: ArchiveIssue | None = None
+
+    @model_validator(mode="after")
+    def descriptor(self):
+        if self.status == "captured":
+            if not self.sha256 or not self.size_bytes or not self.media_type or self.reason:
+                raise ValueError("Captured resources require a digest, size and media type")
+            if self.size_bytes > MAX_ARCHIVE_RESOURCE_BYTES:
+                raise ValueError("Captured resource exceeds the format limit")
+        elif self.sha256 is not None or self.reason is None:
+            raise ValueError("Unavailable resources require a reason")
+        return self
+
+
+class FullArchiveManifest(PortableModel):
+    archive_version: Literal["full-resource-1"]
+    mode: Literal["full"]
+    page_url: URL
+    base_url: URL
+    captured_at: datetime
+    document: ArchiveDocument
+    resources: list[ArchiveResource] = Field(max_length=MAX_ARCHIVE_ENTRIES)
+    issues: list[ArchiveIssue] = Field(default_factory=list, max_length=12)
+
+    @model_validator(mode="after")
+    def validate_manifest(self):
+        if self.captured_at.utcoffset() is None:
+            raise ValueError("capturedAt must include a timezone")
+        if len({item.original_url for item in self.resources}) != len(self.resources):
+            raise ValueError("Archive resource URLs must be unique")
+        return self
+
+
+class ArchiveReport(Lease):
+    manifest: FullArchiveManifest | None = None
+    failure: ArchiveFailure | None = None
+
+    @model_validator(mode="after")
+    def validate_payload(self):
+        if (self.manifest is None) == (self.failure is None):
+            raise ValueError("Provide an archive manifest or a failure")
+        return self
+
+
+class ArchiveSummary(PortableModel):
+    mode: SnapshotMode
+    status: Literal["minimal", "stored", "partial", "failed"]
+    version: Literal["full-resource-1"] | None = None
+    captured: int = 0
+    missing: int = 0
+    truncated: int = 0
+    size_bytes: int = 0
+    failure: ArchiveFailure | Literal["capture_mismatch"] | None = None
+
+
 class SelectorReport(PortableModel):
     definition_fingerprint: Digest
     result: SelectorEvaluationResult
@@ -352,7 +476,9 @@ class ClaimedJob(PortableModel):
     representation: Literal["rendered_dom"] = "rendered_dom"
     selectors: list[PinnedSelector]
     navigation: TrustedNavigation | None = None
-    visual_archive_version: Literal["visual-html-1"] = VISUAL_ARCHIVE_VERSION
+    visual_archive_version: Literal["visual-html-1"] | None = None
+    snapshot_mode: SnapshotMode = "minimal"
+    full_archive: ArchiveLimits | None = None
 
 
 class UploadURL(PortableModel):
